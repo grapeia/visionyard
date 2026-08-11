@@ -212,6 +212,19 @@ async def test_descartar_prelabels_remove_so_rascunho(admin, client, tmp_path):
     assert (await admin.get(f"{base}/{humano}")).json()["minha_anotacao"] is not None
 
 
+async def test_prelabel_id_malformado_nao_e_500(admin, client, tmp_path):
+    """Id que não é uuid é erro de entrada: recusa na validação, não estoura no
+    cast do Postgres três camadas adiante."""
+    await _produzir_modelo(admin, client, tmp_path)
+    base = f"/v1/projects/{PROJ['slug']}/prelabel"
+    r = await admin.post(base, json={"model_slug": "detector",
+                                     "sample_id": "nao-e-uuid"})
+    assert r.status_code == 422, r.text
+    r = await admin.post(base, json={"model_slug": "detector",
+                                     "sample_ids": ["nao-e-uuid"]})
+    assert r.status_code == 422, r.text
+
+
 async def test_prelabel_superuser_slug_invalido_404(admin):
     """Superusuário passa por require_role sem checar existência — não pode 500."""
     r = await admin.post("/v1/projects/nao-existe/prelabel",

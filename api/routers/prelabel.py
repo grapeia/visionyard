@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 from typing import Annotated
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Request, status
 from pydantic import BaseModel, Field
@@ -31,9 +32,11 @@ class PrelabelIn(BaseModel):
     alias: str | None = None            # …ou o apelido (champion por padrão)
     # escopo (exatamente um): dataset inteiro, uma imagem só (tecla w) ou um
     # lote específico de imagens (ex.: só a página aberta na rotulagem).
+    # `UUID` e não `str`: id malformado é erro de entrada, e sem o tipo ele
+    # chegava cru ao `::uuid[]` e virava 500 no cast do Postgres.
     dataset_slug: str | None = None
-    sample_id: str | None = None
-    sample_ids: list[str] | None = None
+    sample_id: UUID | None = None
+    sample_ids: list[UUID] | None = None
     conf: float = Field(default=0.25, ge=0.01, le=0.99)
     only_missing: bool = True           # pula quem já tem anotação minha
 
@@ -100,8 +103,8 @@ async def enfileirar_prelabel(
                "weights_uri": mv["weights_uri"],
                "schema_id": str(mv["schema_id"]),
                "dataset_slug": body.dataset_slug,
-               "sample_id": body.sample_id,
-               "sample_ids": ids or None,
+               "sample_id": str(body.sample_id) if body.sample_id else None,
+               "sample_ids": [str(i) for i in ids] or None,
                "conf": body.conf, "only_missing": body.only_missing,
                "project_slug": project_slug}
     async with db.connection() as conn:
