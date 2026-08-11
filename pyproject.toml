@@ -35,12 +35,10 @@ ignore_missing_imports = true
 check_untyped_defs = true
 warn_unused_ignores = true
 warn_redundant_casts = true
-# `db.fetch_one` devolve `dict | None` e o código indexa o resultado direto em
-# ~60 lugares — parte é query que sempre devolve linha (INSERT ... RETURNING,
-# count(*)), parte é 404 que falta. Separar os dois casos é item próprio do
-# PLANO (item 9); até lá estes dois códigos ficam desligados para o resto do
-# mypy valer desde já.
-disable_error_code = ["index", "dict-item"]
+# `index` e `dict-item` ficaram desligados até o item 9 do PLANO: `db.fetch_one`
+# devolve `dict | None` e o código indexava o resultado direto em 55 lugares.
+# Agora ligados — é o mypy que impede a recaída. Query que sempre devolve linha
+# usa `db.fetch_row`; onde a linha pode faltar, o certo é `fetch_one` + 404.
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

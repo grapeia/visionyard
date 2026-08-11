@@ -14,6 +14,7 @@ from ..deps import (
     ROLE_RANK,
     CurrentUser,
     project_role,
+    projeto_ou_404,
     require_role,
     require_superuser,
 )
@@ -55,7 +56,7 @@ async def create_user(body: UserCreateIn, request: Request,
 
     async with db.connection() as conn:
         async with conn.transaction():
-            row = await db.fetch_one(
+            row = await db.fetch_row(
                 "INSERT INTO app_user (email, display_name, password_hash,"
                 " status, is_superuser, created_by) VALUES (%s,%s,%s,%s,%s,%s)"
                 " RETURNING id, email, display_name, status, is_superuser",
@@ -143,8 +144,7 @@ async def list_members(project_slug: Annotated[str, Path()]):
 async def upsert_member(body: MemberIn, project_slug: Annotated[str, Path()],
                         request: Request,
                         actor: Annotated[Principal, Depends(require_role("admin"))]):
-    proj = await db.fetch_one("SELECT id FROM project WHERE slug = %s",
-                              (project_slug,))
+    proj = await projeto_ou_404(project_slug)
     target = await db.fetch_one(
         "SELECT id FROM app_user WHERE lower(email) = %s", (body.email.lower(),))
     if target is None:
@@ -169,7 +169,7 @@ async def upsert_member(body: MemberIn, project_slug: Annotated[str, Path()],
         if actor_role != "owner":
             raise HTTPException(status.HTTP_403_FORBIDDEN,
                                 "só um owner pode rebaixar outro owner")
-        n = await db.fetch_one(
+        n = await db.fetch_row(
             "SELECT count(*) AS n FROM project_member"
             " WHERE project_id = %s AND role = 'owner'", (proj["id"],))
         if n["n"] <= 1:
@@ -197,8 +197,7 @@ async def upsert_member(body: MemberIn, project_slug: Annotated[str, Path()],
 async def remove_member(project_slug: Annotated[str, Path()], user_id: str,
                         request: Request,
                         actor: Annotated[Principal, Depends(require_role("admin"))]):
-    proj = await db.fetch_one("SELECT id FROM project WHERE slug = %s",
-                              (project_slug,))
+    proj = await projeto_ou_404(project_slug)
     # Um projeto sem owner fica órfão: ninguém pode mais gerenciar membros.
     row = await db.fetch_one(
         "SELECT role FROM project_member WHERE project_id=%s AND user_id=%s",
@@ -206,7 +205,7 @@ async def remove_member(project_slug: Annotated[str, Path()], user_id: str,
     if row is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "membro não encontrado")
     if row["role"] == "owner":
-        n = await db.fetch_one(
+        n = await db.fetch_row(
             "SELECT count(*) AS n FROM project_member"
             " WHERE project_id = %s AND role = 'owner'", (proj["id"],))
         if n["n"] <= 1:

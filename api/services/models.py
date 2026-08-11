@@ -130,7 +130,7 @@ async def enfileirar_export(project_slug: str, model_slug: str, version: int,
                "project_slug": project_slug}
     async with db.connection() as conn:
         async with conn.transaction():
-            job = await db.fetch_one(
+            job = await db.fetch_row(
                 "INSERT INTO job (project_id, type, payload, requires,"
                 " created_by)"
                 " VALUES (%s,'export',%s::jsonb,%s::jsonb,%s) RETURNING id",
@@ -198,7 +198,7 @@ async def enfileirar_avaliacao(project_slug: str, model_slug: str, version: int,
                "project_slug": project_slug}
     async with db.connection() as conn:
         async with conn.transaction():
-            job = await db.fetch_one(
+            job = await db.fetch_row(
                 "INSERT INTO job (project_id, type, payload, requires,"
                 " created_by)"
                 " VALUES (%s,'evaluate',%s::jsonb,%s::jsonb,%s) RETURNING id",
@@ -244,7 +244,7 @@ async def implantar(project_slug: str, model_slug: str, actor: Principal, *,
             f"'{dev['device_class']}' — compile para essa classe")
     async with db.connection() as conn:
         async with conn.transaction():
-            dep = await db.fetch_one(
+            dep = await db.fetch_row(
                 "INSERT INTO deployment (device_id, model_build_id, state,"
                 " requested_by) VALUES (%s,%s,'pending',%s) RETURNING id",
                 (dev["id"], build["id"], actor.id), conn=conn)

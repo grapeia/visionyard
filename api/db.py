@@ -65,6 +65,25 @@ async def fetch_one(sql: str, params: Params = (), *,
         return await cur.fetchone()
 
 
+async def fetch_row(sql: str, params: Params = (), *,
+                    conn: AsyncConnection | None = None) -> dict[str, Any]:
+    """Como `fetch_one`, mas para query que SEMPRE devolve linha: `INSERT ...
+    RETURNING`, `count(*)`, agregado sem `GROUP BY`.
+
+    Serve para distinguir os dois motivos de indexar o retorno sem checar
+    `None`. Aqui a ausência de linha é bug de programação, não entrada do
+    usuário — o que se quer é estourar na query, com o SQL à vista, em vez de um
+    `TypeError: 'NoneType' object is not subscriptable` algumas linhas adiante.
+    Onde a linha PODE faltar (o registro não existe), o certo continua sendo
+    `fetch_one` + 404.
+    """
+    row = await fetch_one(sql, params, conn=conn)
+    if row is None:
+        raise RuntimeError(
+            f"query que sempre devolve linha veio vazia: {' '.join(sql.split())[:160]}")
+    return row
+
+
 async def fetch_all(sql: str, params: Params = (), *,
                     conn: AsyncConnection | None = None
                     ) -> list[dict[str, Any]]:

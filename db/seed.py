@@ -96,6 +96,8 @@ def main() -> int:
                 " status, is_superuser) VALUES (%s,%s,%s,'active',true)"
                 " RETURNING id", (email, args.name, hash_password(password))
             ).fetchone()
+            if row is None:
+                raise RuntimeError("INSERT em app_user não devolveu id")
             conn.execute(
                 "INSERT INTO audit_log (actor_type, actor_label, action,"
                 " entity_type, entity_id, after, note)"

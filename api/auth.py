@@ -86,18 +86,18 @@ async def check_throttle(email: str, ip: str | None) -> None:
     since = _now() - timedelta(minutes=settings.login_window_minutes)
 
     if ip:
-        row = await db.fetch_one(
+        row = await db.fetch_row(
             "SELECT count(*) AS n FROM login_attempt"
             " WHERE NOT successful AND at > %s AND ip = %s", (since, ip))
-        if row and row["n"] >= settings.login_max_attempts:
+        if row["n"] >= settings.login_max_attempts:
             raise ThrottledError(
                 f"tentativas demais deste endereço — aguarde "
                 f"{settings.login_window_minutes} min")
 
-    row = await db.fetch_one(
+    row = await db.fetch_row(
         "SELECT count(*) AS n, max(at) AS last FROM login_attempt"
         " WHERE NOT successful AND at > %s AND email = %s", (since, email))
-    n = row["n"] if row else 0
+    n = row["n"]
     if n < settings.login_backoff_after:
         return
     delay = min(2 ** (n - settings.login_backoff_after + 1),

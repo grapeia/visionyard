@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import sys
+import time
 from pathlib import Path
 
 import psycopg
@@ -79,11 +80,9 @@ def main() -> int:
             print(f"aplicando {path.name} ...", end=" ", flush=True)
             # transação explícita: DDL + registro atômicos
             with psycopg.connect(settings.database_url) as tx:
-                t0 = tx.execute("SELECT clock_timestamp()").fetchone()[0]
+                t0 = time.monotonic()
                 tx.execute(path.read_text())
-                ms = tx.execute(
-                    "SELECT extract(milliseconds from clock_timestamp() - %s)",
-                    (t0,)).fetchone()[0]
+                ms = (time.monotonic() - t0) * 1000
                 tx.execute(
                     "INSERT INTO schema_migrations (version, checksum,"
                     " duration_ms) VALUES (%s, %s, %s)", (version, cs, int(ms)))

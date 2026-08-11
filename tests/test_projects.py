@@ -271,3 +271,20 @@ async def test_append_exige_engineer(admin, client):
 async def test_append_superuser_slug_invalido_404(admin):
     r = await admin.post("/v1/projects/nao-existe/schema", json={"add": ["x"]})
     assert r.status_code == 404
+
+
+@pytest.mark.parametrize("metodo,rota,corpo", [
+    ("GET",    "", None),
+    ("PATCH",  "", {"name": "outro nome"}),
+    ("GET",    "/samples", None),
+    ("POST",   "/datasets", {"slug": "ds", "name": "D", "kind": "train"}),
+    ("PUT",    "/members", {"email": "admin@teste.com", "role": "viewer"}),
+    ("DELETE", "/members/00000000-0000-0000-0000-000000000000", None),
+])
+async def test_superuser_em_projeto_inexistente_recebe_404(admin, metodo, rota,
+                                                           corpo):
+    """`require_role` deixa o superusuário passar sem conferir se o projeto
+    existe (`project_role` devolve 'owner' de bandeja). O handler indexava o
+    `SELECT ... FROM project` direto e o slug errado virava 500."""
+    r = await admin.request(metodo, f"/v1/projects/nao-existe{rota}", json=corpo)
+    assert r.status_code == 404, f"{metodo} {rota} → {r.status_code}: {r.text}"

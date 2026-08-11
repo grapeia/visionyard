@@ -6,7 +6,7 @@ que só rotula e não deve enxergar modelos nem disparar treino.
 """
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import Depends, HTTPException, Path, Request, status
 
@@ -77,6 +77,23 @@ def require_role(minimum: str):
         return user
 
     return dep
+
+
+async def projeto_ou_404(project_slug: str, colunas: str = "id") -> dict[str, Any]:
+    """O projeto da rota, ou 404.
+
+    `require_role` não garante que o projeto existe: superusuário recebe 'owner'
+    de `project_role` sem consultar nada, então um slug inexistente atravessava
+    a dependência e virava 500 no primeiro `proj["id"]` do handler. Para quem é
+    membro o 404 já veio da dependência; esta função fecha o caso dele.
+
+    `colunas` é SQL literal escrito no handler — nunca valor de requisição.
+    """
+    row = await db.fetch_one(
+        f"SELECT {colunas} FROM project WHERE slug = %s", (project_slug,))
+    if row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "projeto não encontrado")
+    return row
 
 
 async def require_superuser(user: CurrentUser) -> Principal:

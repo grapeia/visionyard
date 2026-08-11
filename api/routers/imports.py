@@ -105,7 +105,7 @@ async def _upsert_source(project_id: str, kind: str, uri: str, name: str,
     Reimportar o mesmo prefixo não pode criar uma segunda origem, senão o
     mesmo bucket apareceria duas vezes na tela do dataset.
     """
-    row = await db.fetch_one(
+    row = await db.fetch_row(
         "INSERT INTO data_source (project_id, kind, uri, name, config,"
         " created_by) VALUES (%s,%s,%s,%s,%s::jsonb,%s)"
         " ON CONFLICT (project_id, kind, uri) WHERE uri IS NOT NULL"
@@ -120,7 +120,9 @@ async def _project_context(slug: str) -> dict:
         (slug,))
     if proj is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "projeto não encontrado")
-    schema = await db.fetch_one(
+    # Todo projeto nasce com o schema v1 na mesma transação de `create_project`:
+    # existe projeto sem imagem, nunca projeto sem schema.
+    schema = await db.fetch_row(
         "SELECT id, classes FROM label_schema WHERE project_id = %s"
         " ORDER BY version DESC LIMIT 1", (proj["id"],))
     return {"project_id": str(proj["id"]), "schema_id": str(schema["id"]),
@@ -162,7 +164,7 @@ async def create_import(body: ImportIn, project_slug: Annotated[str, Path()],
 
     async with db.connection() as conn:
         async with conn.transaction():
-            job = await db.fetch_one(
+            job = await db.fetch_row(
                 "INSERT INTO job (project_id, type, payload, status,"
                 " created_by, data_source_id, started_at)"
                 " VALUES (%s,'import',%s::jsonb,'running',%s,%s,now())"

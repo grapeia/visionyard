@@ -35,6 +35,21 @@ CAPS_DIAGNOSTICO = {"gpu", "cuda", "vram_gb", "jetpack", "dla", "trt",
                     "torch", "host", "os", "driver", "arch"}
 
 
+async def _device_do_token(device_id: str) -> dict[str, Any]:
+    """Relê o device já autenticado, para as decisões que dependem do cadastro.
+
+    O `device_id` vem do token, então a linha existe — exceto se um admin apagar
+    a máquina entre a autenticação e esta consulta. Aí é 401 (o agente entende:
+    para de tentar), e não o 500 de indexar `None`.
+    """
+    row = await db.fetch_one(
+        "SELECT status, device_class FROM device WHERE id = %s", (device_id,))
+    if row is None:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED,
+                            "device não existe mais")
+    return row
+
+
 # --------------------------------------------------------------------------- #
 # Presença
 # --------------------------------------------------------------------------- #
@@ -88,8 +103,7 @@ async def reclamar_job(device_id: str) -> dict | None:
     máquina. `draining`/`disabled` não reclamam — só terminam o que já pegaram,
     para o dispositivo de produção poder sair do pool sem largar um job no
     meio."""
-    d = await db.fetch_one("SELECT status FROM device WHERE id = %s",
-                           (device_id,))
+    d = await _device_do_token(device_id)
     if d["status"] in ("draining", "disabled"):
         return None
 
@@ -391,8 +405,7 @@ async def registrar_build(job_id: str, device_id: str, *, formato: str, uri: str
     mvid = job["payload"].get("model_version_id")
     if mvid is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "job sem model_version")
-    d = await db.fetch_one(
-        "SELECT device_class FROM device WHERE id = %s", (device_id,))
+    d = await _device_do_token(device_id)
     alvo = {**target, "device_class": d["device_class"]}
     row = await db.fetch_one(
         "INSERT INTO model_build (model_version_id, format, target, uri, sha256,"
@@ -423,7 +436,7 @@ async def registrar_avaliacao(job_id: str, device_id: str, *, metrics: dict,
                             "job de avaliação sem model_version/dataset_version")
     # model_build_id distingue os artefatos (pt vs engine vs DLA) na mesma
     # versão+benchmark — é o que a comparação usa.
-    row = await db.fetch_one(
+    row = await db.fetch_row(
         "INSERT INTO evaluation (model_version_id, model_build_id,"
         " dataset_version_id, job_id, metrics, artifacts_uri, created_by)"
         " VALUES (%s,%s,%s,%s,%s::jsonb,%s,%s) RETURNING id",
@@ -438,8 +451,7 @@ async def registrar_avaliacao(job_id: str, device_id: str, *, metrics: dict,
 
 async def deployments_pendentes(device_id: str) -> list[dict[str, Any]]:
     """Implantações pendentes PARA ESTA máquina. Device desativado não recebe."""
-    d = await db.fetch_one("SELECT status FROM device WHERE id = %s",
-                           (device_id,))
+    d = await _device_do_token(device_id)
     if d["status"] == "disabled":
         return []
     return await db.fetch_all(

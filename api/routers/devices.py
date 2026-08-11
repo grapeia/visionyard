@@ -80,7 +80,7 @@ async def create_device(body: DeviceIn, request: Request,
     tok, digest = _emit_token(body.slug)
     async with db.connection() as conn:
         async with conn.transaction():
-            row = await db.fetch_one(
+            row = await db.fetch_row(
                 "INSERT INTO device (slug, name, device_class, capabilities,"
                 " labels, token_sha256, status, registered_by)"
                 " VALUES (%s,%s,%s,%s::jsonb,%s,%s,'offline',%s)"
@@ -128,7 +128,7 @@ async def delete_device(slug: Annotated[str, Path()], request: Request,
     dev = await db.fetch_one("SELECT id FROM device WHERE slug = %s", (slug,))
     if dev is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "device não encontrado")
-    n = await db.fetch_one("SELECT count(*) AS n FROM job WHERE device_id = %s",
+    n = await db.fetch_row("SELECT count(*) AS n FROM job WHERE device_id = %s",
                            (dev["id"],))
     if n["n"] > 0:
         raise HTTPException(

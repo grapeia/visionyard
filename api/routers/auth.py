@@ -144,7 +144,7 @@ async def create_my_token(body: TokenCreateIn, user: CurrentUser,
                if body.expires_in_days else None)
     async with db.connection() as conn:
         async with conn.transaction():
-            row = await db.fetch_one(
+            row = await db.fetch_row(
                 "INSERT INTO api_token (user_id, name, prefix, token_sha256,"
                 " expires_at) VALUES (%s,%s,%s,%s,%s)"
                 " RETURNING id, name, created_at",

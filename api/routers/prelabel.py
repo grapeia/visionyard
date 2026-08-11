@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field
 from .. import auth, db
 from ..audit import audit
 from ..auth import Principal
-from ..deps import require_role
+from ..deps import projeto_ou_404, require_role
 
 router = APIRouter(tags=["prelabel"])
 
@@ -75,10 +75,7 @@ async def enfileirar_prelabel(
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_ENTITY,
             "informe exatamente um escopo: dataset_slug, sample_id OU sample_ids")
-    proj = await db.fetch_one("SELECT id FROM project WHERE slug = %s",
-                              (project_slug,))
-    if proj is None:      # superuser passa por require_role sem checar existência
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "projeto não encontrado")
+    proj = await projeto_ou_404(project_slug)
     if body.dataset_slug:
         alvo = await db.fetch_one(
             "SELECT id FROM dataset WHERE project_id = %s AND slug = %s"
@@ -90,7 +87,7 @@ async def enfileirar_prelabel(
             (proj["id"], body.sample_id))
         erro = "imagem não encontrada"
     else:
-        achados = await db.fetch_one(
+        achados = await db.fetch_row(
             "SELECT count(*) AS n FROM sample"
             " WHERE project_id = %s AND id = ANY(%s::uuid[])", (proj["id"], ids))
         alvo = achados if achados["n"] == len(ids) else None
@@ -109,7 +106,7 @@ async def enfileirar_prelabel(
                "project_slug": project_slug}
     async with db.connection() as conn:
         async with conn.transaction():
-            job = await db.fetch_one(
+            job = await db.fetch_row(
                 "INSERT INTO job (project_id, type, payload, requires,"
                 " created_by)"
                 " VALUES (%s,'prelabel',%s::jsonb,%s::jsonb,%s) RETURNING id",

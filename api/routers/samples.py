@@ -20,7 +20,7 @@ from starlette.concurrency import run_in_threadpool
 
 from .. import db
 from ..auth import Principal
-from ..deps import CurrentUser, require_role
+from ..deps import CurrentUser, projeto_ou_404, require_role
 
 router = APIRouter(tags=["samples"])
 
@@ -94,8 +94,7 @@ async def listar(project_slug: Annotated[str, Path()], user: CurrentUser,
     rotulagem. A caixa que você desenha aqui vale para todo dataset que inclua
     a imagem.
     """
-    proj = await db.fetch_one("SELECT id FROM project WHERE slug = %s",
-                              (project_slug,))
+    proj = await projeto_ou_404(project_slug)
     # `minha` distingue "anotada por alguém" de "anotada por mim": o rotulador
     # precisa achar o que falta PARA ELE, não o que falta no geral.
     cond = {"todas": "", "pendentes": " AND a.id IS NULL",
@@ -126,7 +125,7 @@ async def listar(project_slug: Annotated[str, Path()], user: CurrentUser,
          LIMIT %(lim)s OFFSET %(off)s"""
     linhas = await db.fetch_all(sql, params)
     # O total respeita o escopo, senão a contagem no topo não bate com a grade.
-    total = await db.fetch_one(
+    total = await db.fetch_row(
         f"SELECT count(*) AS n FROM sample s WHERE s.project_id = %(p)s {escopo}",
         params)
     assinadas = await run_in_threadpool(_assinar, [r["uri"] for r in linhas])
@@ -150,7 +149,7 @@ async def detalhe(project_slug: Annotated[str, Path()], sample_id: str,
         " WHERE sample_id = %s AND author_id = %s", (sample_id, user.id))
     # As dos outros aparecem só como contagem: ver a caixa alheia antes de
     # desenhar a sua enviesa a anotação e destrói a medida de concordância.
-    outros = await db.fetch_one(
+    outros = await db.fetch_row(
         "SELECT count(*) AS n FROM annotation"
         " WHERE sample_id = %s AND author_id <> %s", (sample_id, user.id))
     url = (await run_in_threadpool(_assinar, [s["uri"]])).get(s["uri"])

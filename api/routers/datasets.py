@@ -14,7 +14,7 @@ from .. import auth, db
 from ..audit import audit
 from ..auth import Principal
 from ..config import settings
-from ..deps import require_role
+from ..deps import projeto_ou_404, require_role
 from ..services.datasets import (
     assign_splits,
     build_manifest,
@@ -113,8 +113,7 @@ async def list_datasets(project_slug: Annotated[str, P()]):
 async def create_dataset(
         body: DatasetIn, project_slug: Annotated[str, P()], request: Request,
         actor: Annotated[Principal, Depends(require_role("engineer"))]):
-    proj = await db.fetch_one("SELECT id FROM project WHERE slug = %s",
-                              (project_slug,))
+    proj = await projeto_ou_404(project_slug)
     dup = await db.fetch_one(
         "SELECT id FROM dataset WHERE project_id = %s AND slug = %s",
         (proj["id"], body.slug))
@@ -124,7 +123,7 @@ async def create_dataset(
     roi_json = json.dumps(body.roi.model_dump()) if body.roi else None
     async with db.connection() as conn:
         async with conn.transaction():
-            row = await db.fetch_one(
+            row = await db.fetch_row(
                 "INSERT INTO dataset (project_id, slug, name, kind, roi,"
                 " created_by) VALUES (%s,%s,%s,%s,%s::jsonb,%s)"
                 " RETURNING id, slug, name, kind, roi, created_at",
@@ -180,7 +179,7 @@ async def get_dataset(project_slug: Annotated[str, P()],
         " WHERE v.dataset_id = %s ORDER BY v.version DESC", (ds["id"],))
     # Pré-tags rascunho ainda por revisar: é o que o botão "Descartar pré-tags"
     # remove. Só conta saída de máquina intocada (corrigir vira 'correction').
-    pretags = await db.fetch_one(
+    pretags = await db.fetch_row(
         "SELECT count(*) AS n FROM annotation a"
         " WHERE a.origin = 'prelabel' AND a.status = 'draft'"
         "   AND a.sample_id IN (SELECT ss.sample_id FROM sample_source ss"
@@ -269,7 +268,7 @@ async def freeze(body: FreezeIn, project_slug: Annotated[str, P()],
                  dataset_slug: Annotated[str, P()], request: Request,
                  actor: Annotated[Principal, Depends(require_role("engineer"))]):
     ds = await _dataset(project_slug, dataset_slug)
-    schema = await db.fetch_one(
+    schema = await db.fetch_row(
         "SELECT id, classes FROM label_schema WHERE project_id = %s"
         " ORDER BY version DESC LIMIT 1", (ds["project_id"],))
     classes = [c["name"] for c in schema["classes"]]
@@ -358,7 +357,7 @@ async def freeze(body: FreezeIn, project_slug: Annotated[str, P()],
                     f"nada mudou desde ela")
 
             destino = raiz / project_slug / dataset_slug / f"v{version}"
-            cur = await conn.execute(
+            dv = await db.fetch_row(
                 "INSERT INTO dataset_version (dataset_id, version, schema_id,"
                 " manifest_uri, content_hash, split_policy, stats, roi, notes,"
                 " created_by)"
@@ -366,8 +365,7 @@ async def freeze(body: FreezeIn, project_slug: Annotated[str, P()],
                 " RETURNING id",
                 (ds["id"], version, schema["id"], str(destino), content_hash,
                  json.dumps(policy), json.dumps(meta["stats"]), roi_json,
-                 body.descricao, actor.id))
-            dv = await cur.fetchone()
+                 body.descricao, actor.id), conn=conn)
             # Índice consultável: permite diff e contagem sem abrir o manifesto.
             for it in itens:
                 await conn.execute(

@@ -16,7 +16,13 @@ from pydantic import BaseModel, Field, field_validator
 from .. import auth, db
 from ..audit import audit
 from ..auth import Principal
-from ..deps import CurrentUser, project_role, require_role, require_superuser
+from ..deps import (
+    CurrentUser,
+    project_role,
+    projeto_ou_404,
+    require_role,
+    require_superuser,
+)
 
 router = APIRouter(tags=["projects"])
 
@@ -136,9 +142,9 @@ async def create_project(body: ProjectCreateIn, user: CurrentUser,
 @router.get("/projects/{project_slug}",
             dependencies=[Depends(require_role("viewer"))])
 async def get_project(project_slug: Annotated[str, Path()], user: CurrentUser):
-    proj = await db.fetch_one(
-        "SELECT id, slug, name, task_type, description, created_at,"
-        "       archived_at FROM project WHERE slug = %s", (project_slug,))
+    proj = await projeto_ou_404(
+        project_slug, "id, slug, name, task_type, description, created_at,"
+                      " archived_at")
     schema = await db.fetch_one(
         "SELECT version, classes FROM label_schema WHERE project_id = %s"
         " ORDER BY version DESC LIMIT 1", (proj["id"],))
@@ -166,9 +172,7 @@ async def patch_project(body: ProjectPatchIn,
     fields = body.model_dump(exclude_unset=True)
     if not fields:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "nada a alterar")
-    before = await db.fetch_one(
-        "SELECT id, name, description FROM project WHERE slug = %s",
-        (project_slug,))
+    before = await projeto_ou_404(project_slug, "id, name, description")
     sets = ", ".join(f"{k} = %({k})s" for k in fields)
     async with db.connection() as conn:
         async with conn.transaction():
@@ -198,10 +202,7 @@ async def append_classes(
     a compatibilidade e mandaria anotações para needs_review, e é operação para
     um caminho próprio, com as devidas travas.
     """
-    proj = await db.fetch_one("SELECT id FROM project WHERE slug = %s",
-                              (project_slug,))
-    if proj is None:      # superuser passa por require_role sem checar existência
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "projeto não encontrado")
+    proj = await projeto_ou_404(project_slug)
     async with db.connection() as conn:
         async with conn.transaction():
             # Serializa por projeto: dois appends simultâneos calculariam a mesma
