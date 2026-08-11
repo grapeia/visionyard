@@ -61,6 +61,7 @@ async def exportar(body: ExportIn, project_slug: Annotated[str, Path()],
                    model_slug: Annotated[str, Path()], version: int,
                    request: Request,
                    actor: Annotated[Principal, Depends(require_role("engineer"))]):
+    """Enfileira a compilação de uma versão para um formato implantável."""
     return await svc.enfileirar_export(
         project_slug, model_slug, version, actor, formato=body.format,
         imgsz=body.imgsz, precision=body.precision, dla=body.dla,
@@ -84,6 +85,7 @@ async def avaliar(body: EvaluateIn, project_slug: Annotated[str, Path()],
                   model_slug: Annotated[str, Path()], version: int,
                   request: Request,
                   actor: Annotated[Principal, Depends(require_role("engineer"))]):
+    """Enfileira a medição de um artefato (peso ou build) contra um benchmark."""
     return await svc.enfileirar_avaliacao(
         project_slug, model_slug, version, actor,
         dataset_slug=body.dataset_slug, dataset_version=body.dataset_version,
@@ -102,6 +104,7 @@ class DeployIn(BaseModel):
 async def implantar(body: DeployIn, project_slug: Annotated[str, Path()],
                     model_slug: Annotated[str, Path()], request: Request,
                     actor: Annotated[Principal, Depends(require_role("engineer"))]):
+    """Marca um build para ser implantado num dispositivo."""
     return await svc.implantar(
         project_slug, model_slug, actor, version=body.version,
         formato=body.format, device_slug=body.device_slug,
@@ -111,6 +114,7 @@ async def implantar(body: DeployIn, project_slug: Annotated[str, Path()],
 @router.get("/projects/{project_slug}/deployments",
             dependencies=[Depends(require_role("viewer"))])
 async def list_deployments(project_slug: Annotated[str, Path()]):
+    """Implantações do projeto, com device, build e estado."""
     return await svc.listar_deployments(project_slug)
 
 
@@ -120,6 +124,7 @@ async def set_alias(project_slug: Annotated[str, Path()],
                     alias: Annotated[str, Path()], body: AliasIn,
                     request: Request,
                     actor: Annotated[Principal, Depends(require_role("engineer"))]):
+    """Aponta um apelido para uma versão (promover). A versão não muda."""
     return await svc.definir_alias(project_slug, model_slug, alias, body.version,
                                    actor, ip=auth.client_ip(request))
 

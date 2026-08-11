@@ -49,6 +49,7 @@ async def criar_run(body: RunIn, project_slug: Annotated[str, P()],
 @router.get("/train-devices",
             dependencies=[Depends(require_role("engineer"))])
 async def train_devices():
+    """Máquinas que podem ser alvo de um treino: capazes de treinar e ativas."""
     return await svc.maquinas_de_treino()
 
 
@@ -70,6 +71,7 @@ async def detalhe_run(project_slug: Annotated[str, P()], run_id: str):
 async def stream_run(project_slug: Annotated[str, P()], run_id: str,
                      desde_seq: int = Query(0, ge=0),
                      desde_epoca: int = Query(-1, ge=-1)):
+    """Leitura incremental para a tela ao vivo: eventos e métricas após o cursor."""
     return await svc.stream_run(project_slug, run_id, desde_seq=desde_seq,
                                 desde_epoca=desde_epoca)
 
@@ -78,5 +80,7 @@ async def stream_run(project_slug: Annotated[str, P()], run_id: str,
 async def cancelar_run(project_slug: Annotated[str, P()], run_id: str,
                        request: Request,
                        actor: Annotated[Principal, Depends(require_role("engineer"))]):
+    """Pede cancelamento. Na fila cancela na hora; rodando, o agente para no
+    próximo heartbeat."""
     return await svc.cancelar_run(project_slug, run_id, actor,
                                   ip=auth.client_ip(request))

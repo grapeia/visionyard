@@ -1,8 +1,13 @@
 """Porta HTTP do agente: autenticação por `X-Agent-Token` e forma do corpo.
 
 A regra de cada passo (quem pode reclamar o quê, o que uma escrita pode tocar)
-mora em `services/agents.py`. Aqui ficam só a rota, o modelo de entrada e a
-tradução do retorno — inclusive as chaves em português que o agente já consome.
+mora em `services/agents.py`. Aqui ficam a rota e o modelo de entrada.
+
+O corpo da resposta vem em parte de cada lado: `gravados`, `gravadas`/
+`recebidas`, `job`, `deployments` e `device_id`/`slug` nascem aqui, o resto
+(`conf`/`alvos`, `cancel`/`status`, `model_version_id`, `evaluation_id`,
+`build_id`) vem pronto do serviço. As chaves são contrato de rede com o agente —
+procure nos dois arquivos antes de renomear qualquer uma.
 
 Autenticação é por device, nunca pela porta de usuário: `CurrentDevice` resolve
 o header próprio e todas as rotas deste arquivo passam por ele.
@@ -53,6 +58,10 @@ async def heartbeat(body: HeartbeatIn, dev: CurrentDevice):
 
 @router.post("/claim")
 async def claim(dev: CurrentDevice):
+    """Reclama o próximo job compatível com esta máquina.
+
+    `{"job": null}` quando não há nada para ela. `draining`/`disabled` não
+    reclamam — só terminam o que já pegaram."""
     return {"job": await svc.reclamar_job(dev.id)}
 
 
@@ -87,6 +96,8 @@ class JobHeartbeatIn(BaseModel):
 @router.post("/jobs/{job_id}/heartbeat")
 async def job_heartbeat(body: JobHeartbeatIn, job_id: Annotated[str, Path()],
                         dev: CurrentDevice):
+    """Bate ponto do job. A resposta diz se foi pedido cancelamento — é como o
+    agente sabe que precisa parar."""
     return await svc.atualizar_progresso(job_id, dev.id, body.progress)
 
 
@@ -132,6 +143,7 @@ async def push_metricas(body: MetricasIn, job_id: Annotated[str, Path()],
 
 @router.get("/jobs/{job_id}/targets")
 async def prelabel_targets(job_id: Annotated[str, Path()], dev: CurrentDevice):
+    """Imagens que este job de pré-tag deve prever."""
     return await svc.alvos_prelabel(job_id, dev.id)
 
 
@@ -156,6 +168,9 @@ class PrelabelIn(BaseModel):
 @router.post("/jobs/{job_id}/prelabel")
 async def prelabel_gravar(body: PrelabelIn, job_id: Annotated[str, Path()],
                           dev: CurrentDevice):
+    """Grava as caixas previstas como anotação `prelabel` do autor do job.
+
+    Nunca sobrescreve trabalho humano; predição vazia é ignorada."""
     gravadas = await svc.gravar_prelabels(
         job_id, dev.id, [p.model_dump() for p in body.predicoes])
     return {"gravadas": gravadas, "recebidas": len(body.predicoes)}
@@ -175,6 +190,7 @@ class ModelIn(BaseModel):
 @router.post("/jobs/{job_id}/model")
 async def registrar_modelo(body: ModelIn, job_id: Annotated[str, Path()],
                            dev: CurrentDevice):
+    """Cria uma versão imutável do modelo a partir do peso que o agente subiu."""
     return await svc.registrar_modelo(
         job_id, dev.id, weights_uri=body.weights_uri, sha256=body.sha256,
         tamanho=body.bytes, metrics=body.metrics)
@@ -197,6 +213,7 @@ class BuildIn(BaseModel):
 @router.post("/jobs/{job_id}/build")
 async def registrar_build(body: BuildIn, job_id: Annotated[str, Path()],
                           dev: CurrentDevice):
+    """Registra o artefato compilado. O device_class do alvo a API acrescenta."""
     return await svc.registrar_build(
         job_id, dev.id, formato=body.format, uri=body.uri, sha256=body.sha256,
         tamanho=body.bytes, target=body.target, bench=body.bench)
@@ -214,6 +231,7 @@ class EvaluationIn(BaseModel):
 @router.post("/jobs/{job_id}/evaluation")
 async def registrar_avaliacao(body: EvaluationIn, job_id: Annotated[str, Path()],
                               dev: CurrentDevice):
+    """Registra a métrica do modelo naquele benchmark. Imutável."""
     return await svc.registrar_avaliacao(
         job_id, dev.id, metrics=body.metrics, artifacts_uri=body.artifacts_uri)
 
@@ -224,6 +242,7 @@ async def registrar_avaliacao(body: EvaluationIn, job_id: Annotated[str, Path()]
 
 @router.get("/deployments/pending")
 async def deployments_pendentes(dev: CurrentDevice):
+    """Implantações pendentes PARA ESTA máquina. Device desativado não recebe."""
     rows = await svc.deployments_pendentes(dev.id)
     return {"deployments": [dict(r) for r in rows]}
 
@@ -236,6 +255,7 @@ class DeployState(BaseModel):
 @router.post("/deployments/{dep_id}/state")
 async def deployment_estado(body: DeployState, dep_id: Annotated[str, Path()],
                             dev: CurrentDevice):
+    """O agente reporta o resultado. Ativar supersede a implantação anterior."""
     await svc.atualizar_deployment(dep_id, dev.id, estado=body.state,
                                    error=body.error)
     return {"deployment_id": dep_id, "state": body.state}
