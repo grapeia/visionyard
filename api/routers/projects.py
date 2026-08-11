@@ -249,6 +249,11 @@ async def archive_project(project_slug: Annotated[str, Path()],
                           actor: Annotated[Principal, Depends(require_role("owner"))]):
     """Arquiva (some das listagens). Não deleta: os dados seguem referenciados
     por datasets, runs e modelos, e apagá-los quebraria a linhagem."""
+    # O 404 vem antes porque o UPDATE não distingue "não existe" de "já
+    # arquivado": sem isto, um slug digitado errado respondia 409 "projeto já
+    # arquivado" e um script que trata 409 como "já feito" dava por concluído
+    # um projeto que nunca existiu.
+    await projeto_ou_404(project_slug)
     async with db.connection() as conn:
         async with conn.transaction():
             row = await db.fetch_one(

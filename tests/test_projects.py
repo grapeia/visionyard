@@ -280,6 +280,7 @@ async def test_append_superuser_slug_invalido_404(admin):
     ("POST",   "/datasets", {"slug": "ds", "name": "D", "kind": "train"}),
     ("PUT",    "/members", {"email": "admin@teste.com", "role": "viewer"}),
     ("DELETE", "/members/00000000-0000-0000-0000-000000000000", None),
+    ("POST",   "/archive", None),
 ])
 async def test_superuser_em_projeto_inexistente_recebe_404(admin, metodo, rota,
                                                            corpo):
