@@ -219,6 +219,27 @@ porque é decisão de modelo, não conserto.
 
 Os dois eram pré-existentes — nenhum dos commits desta semana os tocou.
 
+### 12. Achados do review do item 11 — `pendente`
+O que o review de 2026-08-11 confirmou e ficou de fora da leva de correções.
+Tudo em `routers/samples.py`, fora o último — cabe numa passada só, quando o
+arquivo for mexido a sério (é candidato a virar `services/samples.py`).
+
+- **A contagem e a página leem snapshots diferentes.** `fetch_all` e
+  `fetch_row` pegam uma conexão cada, então uma anotação gravada entre as duas
+  idas ao banco reabre o descompasso que o `da7e21f` fechou. Cuidado: passar
+  `conn=conn` às duas **não** resolve — sob READ COMMITTED cada comando ainda
+  tira o próprio snapshot. Fechar de verdade pede transação REPEATABLE READ,
+  cara para uma contagem de tela; a alternativa é a tela assumir a folga.
+- **O `count` junta `annotation` mesmo com `filtro=todas`**, que é o padrão da
+  aba: o join só existe para o `{cond}` ter de onde falar de `a`, e com `cond`
+  vazio é trabalho jogado fora em toda carga de página.
+- **O esqueleto `FROM ... WHERE` está escrito duas vezes** (itens e contagem) —
+  é a duplicação que produziu o bug original. Montar o rabo comum uma vez e
+  interpolar nas duas torna a divergência impossível em vez de remendada.
+- **`test_prelabel_id_malformado_nao_e_500` roda `_produzir_modelo` à toa**: o
+  422 sai da validação do pydantic antes de qualquer linha do handler, e o
+  `admin` é superusuário, então nada daquele setup é lido.
+
 ## Registro
 
 - **2026-08-10** — revisão de arquitetura, criação do `CLAUDE.md` e deste plano.
@@ -266,3 +287,12 @@ Os dois eram pré-existentes — nenhum dos commits desta semana os tocou.
   o dataset com imagem sem md5, que é escolha de modelo (manifesto v1.1 com
   identidade no `sha256` ou rota de manutenção que remaneje a anotação) e não
   conserto. Suíte: **167 testes passando**.
+- **2026-08-11** — review dos dois commits acima (alto esforço, 15 agentes, 7
+  achados verificados de 12 candidatos, 2 refutados). Os três de correção
+  confirmados foram corrigidos com teste antes: `9e1ab06` juntou os dois de
+  `samples.py` — o `sample_id` de rota que ia cru para coluna uuid (o mesmo
+  buraco que o `3efde0f` fechara no prelabel, deixado aberto uma função abaixo)
+  e o `origin` que caía de 'correction' para 'manual' no segundo save, corroendo
+  justamente a métrica que o módulo existe para medir; `bc69c18` apelido
+  inexistente virou 404 no prelabel, em vez de rodar calado a última versão.
+  Item 12 criado com os quatro restantes. Suíte: **169 testes passando**.
