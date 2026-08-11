@@ -132,6 +132,39 @@ async def test_relato_repetido_do_mesmo_estado_e_idempotente(admin, client,
     assert len(ativos) == 1 and ativos[0]["id"] == dep2
 
 
+async def test_ativacoes_simultaneas_no_mesmo_device_nao_colidem(admin, client,
+                                                                 tmp_path):
+    """Duas implantações pendentes na MESMA máquina, ativadas ao mesmo tempo.
+
+    O `FOR UPDATE` travava só a linha relatada, então as duas transações
+    passavam pela checagem de 'pending', nenhuma enxergava o `active` não
+    comitado da outra e a segunda batia no índice único
+    `deployment_active_idx` — 500 para o agente, e o deployment ficava preso em
+    'pending' na tela embora a máquina já estivesse rodando o build.
+    """
+    import asyncio
+    await _modelo_com_build(admin, client, tmp_path)
+    prod = await _device(admin, {"infer": True}, slug="edge-prod")
+    tok = prod["token"]
+    url = f"/v1/projects/{PROJ['slug']}/models/detector/deploy"
+    corpo = {"version": 1, "format": "onnx", "device_slug": "edge-prod"}
+    dep1 = (await admin.post(url, json=corpo)).json()["deployment_id"]
+    dep2 = (await admin.post(url, json=corpo)).json()["deployment_id"]
+
+    respostas = await asyncio.gather(*(
+        client.post(f"/v1/agent/deployments/{d}/state",
+                    json={"state": "active"}, headers=_h(tok))
+        for d in (dep1, dep2)), return_exceptions=True)
+    for r in respostas:
+        assert not isinstance(r, Exception), r
+        assert r.status_code < 500, r.text
+
+    deps = (await admin.get(f"/v1/projects/{PROJ['slug']}/deployments")).json()
+    ativos = [d for d in deps if d["state"] == "active"]
+    assert len(ativos) == 1, f"esperava uma ativa, veio {len(ativos)}"
+    assert {_estado(dep1), _estado(dep2)} == {"active", "superseded"}
+
+
 async def test_deploy_sem_build_recusa(admin, client, tmp_path):
     await _produzir_modelo(admin, client, tmp_path)   # sem build
     await _device(admin, {"infer": True}, slug="edge-prod")

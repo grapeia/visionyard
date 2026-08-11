@@ -476,21 +476,26 @@ async def atualizar_deployment(dep_id: str, device_id: str, *, estado: str,
     ressuscitaria a antiga, deixando a tela mostrando um build que a máquina não
     roda. Reenviar o estado JÁ registrado é sucesso (o desfecho é o mesmo);
     qualquer outra transição é 409."""
-    alvo = "active" if estado == "active" else "failed"
     async with db.connection() as conn:
         async with conn.transaction():
-            # `AND device_id` no próprio WHERE é o controle de acesso (não há
-            # `job_da_maquina` aqui); o FOR UPDATE segura a linha até o fim da
-            # transação, para dois relatos simultâneos não passarem os dois pela
-            # checagem de 'pending'.
+            # Lock pelo DEVICE, não pela linha. Travar só a implantação relatada
+            # (`SELECT ... FOR UPDATE` nela) não bastava: duas implantações
+            # pendentes da mesma máquina ativadas ao mesmo tempo travavam linhas
+            # diferentes, nenhuma enxergava o `active` não comitado da outra, e a
+            # segunda batia no índice único `deployment_active_idx` — 500 para o
+            # agente, com a implantação presa em 'pending' na tela.
+            await conn.execute("SELECT pg_advisory_xact_lock(hashtext(%s))",
+                               (f"deployment:{device_id}",))
+            # `AND device_id` no próprio WHERE é o controle de acesso: não há
+            # `job_da_maquina` aqui.
             cur = await conn.execute(
-                "SELECT state FROM deployment WHERE id = %s AND device_id = %s"
-                " FOR UPDATE", (dep_id, device_id))
+                "SELECT state FROM deployment WHERE id = %s AND device_id = %s",
+                (dep_id, device_id))
             dep = await cur.fetchone()
             if dep is None:
                 raise HTTPException(status.HTTP_404_NOT_FOUND,
                                     "deployment não é desta máquina")
-            if dep["state"] == alvo:
+            if dep["state"] == estado:
                 return
             if dep["state"] != "pending":
                 raise HTTPException(
