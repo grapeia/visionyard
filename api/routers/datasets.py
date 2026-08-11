@@ -259,6 +259,9 @@ async def preview(project_slug: Annotated[str, P()],
             "entrariam": len(itens),
             "sem_dimensao": sum(1 for r in itens
                                 if not (r["width"] and r["height"])),
+            # Congelar recusa se houver qualquer uma (ver `build_manifest`).
+            # Sai aqui para a tela não oferecer um botão que sempre dá 409.
+            "sem_md5": sum(1 for r in itens if r["md5"] is None),
             "proxima_versao": (ultima["version"] + 1) if ultima else 1}
 
 
@@ -299,12 +302,12 @@ async def freeze(body: FreezeIn, project_slug: Annotated[str, P()],
         " ORDER BY version DESC LIMIT 1", (ds["id"],))
     version = (ultima["version"] + 1) if ultima else 1
 
-    try:
-        items_jsonl, meta = build_manifest(
-            itens, classes, [o["uri"] for o in origens], version, body.descricao,
-            policy, project_slug, dataset_slug, roi=ds["roi"])
-    except ValueError as e:
-        raise HTTPException(status.HTTP_409_CONFLICT, str(e)) from e
+    # `build_manifest` levanta a HTTPException por conta própria (é a convenção
+    # do repositório): um `except ValueError` aqui pegaria também o `float()`
+    # das caixas e devolveria erro interno em inglês como se fosse conflito.
+    items_jsonl, meta = build_manifest(
+        itens, classes, [o["uri"] for o in origens], version, body.descricao,
+        policy, project_slug, dataset_slug, roi=ds["roi"])
     items_hash = hashlib.sha256(items_jsonl.encode()).digest()
 
     # Identidade da versão = items + ROI. Com a MESMA lista de imagens, ROIs

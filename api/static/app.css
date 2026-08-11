@@ -249,6 +249,7 @@ dialog .ajuda { color: var(--texto-fraco); font-size: 13px; margin: 0 0 18px; }
 dialog label { display: block; margin: 14px 0 6px; }
 dialog .acoes { display: flex; gap: 8px; justify-content: flex-end; margin-top: 22px; }
 .dica { color: var(--texto-tenue); font-size: 12px; margin-top: 5px; }
+.dica.ruim { color: var(--alerta); }
 
 /* ---------------------------------------------------------------- aviso -- */
 

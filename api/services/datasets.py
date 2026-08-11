@@ -28,6 +28,8 @@ import random
 from datetime import UTC, datetime
 from pathlib import Path
 
+from fastapi import HTTPException, status
+
 from .. import db
 
 MANIFEST_VERSION = "1.0"
@@ -167,21 +169,32 @@ def build_manifest(items: list, classes: list, origins: list, version: int,
     em coordenadas do quadro CHEIO — o agente reprojeta ao materializar, para
     que o manifesto siga independente da ROI (mudar a ROI não reescreve caixas).
 
-    Levanta `ValueError` se alguma imagem estiver sem md5 (ver abaixo).
+    Levanta `HTTPException` 409 se alguma imagem estiver sem md5 (ver abaixo).
     """
     # `sample.md5` é anulável desde a 008 — linha pendente de backfill, que só
     # existe em base que passou pela 006 e teve o placeholder zerado. Sem md5 o
     # agente não tem chave de cache nem nome de arquivo para materializar, então
     # o item não pode entrar no manifesto. Recusar aqui é o que transforma o
     # `TypeError` no meio da geração num 409 que diz qual imagem trava.
+    #
+    # A mensagem NÃO manda reimportar: o dedup de `importers/runner.py` casa por
+    # md5, e o índice parcial da 008 ignora linha nula — reimportar cria uma
+    # SEGUNDA imagem com o md5 verdadeiro e deixa a anotação humana presa à
+    # antiga, que continua sendo o que `resolve_items` devolve. O congelamento
+    # seguiria barrado, agora com a duplicata que a própria 008 avisa. Como
+    # `sample` é imutável por trigger, também não há backfill por UPDATE: sair
+    # daqui é retirar a origem do dataset (ver PLANO, item 11).
     sem_md5 = [it["uri"] for it in items if it.get("md5") is None]
     if sem_md5:
         amostra = ", ".join(sem_md5[:3]) + (" …" if len(sem_md5) > 3 else "")
-        raise ValueError(
-            f"{len(sem_md5)} imagem(ns) sem md5, pendentes do backfill da "
-            f"migration 008: {amostra}. Sem a identidade de conteúdo o agente "
-            f"não consegue materializar o dataset — reimporte a origem dessas "
-            f"imagens ou tire-as das origens deste dataset.")
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            f"{len(sem_md5)} imagem(ns) sem md5, resquício do backfill da "
+            f"migration 008 — sem identidade de conteúdo o agente não sabe "
+            f"baixar nem cachear o arquivo. Reimportar não resolve (o dedup é "
+            f"por md5 e a linha nula nunca casa: nasce uma imagem nova e a "
+            f"anotação fica na antiga); retire do dataset a origem dessas "
+            f"imagens. Primeiras: {amostra}")
 
     lines = []
     per_class = dict.fromkeys(classes, 0)

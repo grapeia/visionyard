@@ -214,7 +214,9 @@ async function abrirDataset(slug) {
 }
 
 function render(ds, previa) {
-  const podeCongelar = previa.entrariam > 0;
+  // imagem sem md5 barra o congelamento inteiro no servidor: sem isto o botão
+  // ficava ativo e todo clique voltava 409
+  const podeCongelar = previa.entrariam > 0 && !previa.sem_md5;
   $("painelDataset").innerHTML = `
     <div class="cabeca">
       <h1>${esc(ds.name)}</h1>
@@ -264,6 +266,10 @@ function render(ds, previa) {
       </div>
       ${previa.sem_dimensao ? `<p class="dica">${num(previa.sem_dimensao)} imagens ainda
          sem dimensão registrada — só é descoberta ao abrir o arquivo.</p>` : ""}
+      ${previa.sem_md5 ? `<p class="dica ruim">${num(previa.sem_md5)} imagens sem md5
+         (resquício de uma migração antiga). Sem identidade de conteúdo o agente não
+         consegue baixá-las, então o congelamento fica bloqueado até que a origem
+         delas saia deste dataset.</p>` : ""}
     </section>
 
     <section class="secao">

@@ -7,6 +7,7 @@ from pathlib import Path
 
 import psycopg
 import pytest
+from fastapi import HTTPException
 
 from api.services.datasets import assign_splits, build_manifest
 
@@ -81,10 +82,25 @@ def test_manifesto_recusa_imagem_sem_md5():
               "width": 100, "height": 80, "split": "train", "boxes": []},
              {"sample_id": "s2", "uri": "gs://b/2.jpg", "md5": None,
               "width": 100, "height": 80, "split": "train", "boxes": []}]
-    with pytest.raises(ValueError) as e:
+    with pytest.raises(HTTPException) as e:
         build_manifest(itens, ["classe_a"], ["gs://b/"], 1, "x",
                        {"method": "random"}, "proj", "ds")
-    assert "md5" in str(e.value) and "gs://b/2.jpg" in str(e.value)
+    assert e.value.status_code == 409
+    assert "md5" in e.value.detail and "gs://b/2.jpg" in e.value.detail
+    # a mensagem não pode mandar reimportar: o dedup é por md5 e a linha nula
+    # nunca casa, então reimportar duplica a imagem em vez de consertá-la
+    assert "não resolve" in e.value.detail
+
+
+def test_manifesto_nao_engole_erro_de_conversao_como_conflito():
+    """Caixa com valor não numérico é dado corrompido, não conflito do usuário:
+    tem de subir como erro interno, e não virar 409 com texto do Python."""
+    itens = [{"sample_id": "s1", "uri": "gs://b/1.jpg", "md5": b"\x01" * 16,
+              "width": 100, "height": 80, "split": "train",
+              "boxes": [{"cls": 0, "cx": "x", "cy": .5, "w": .2, "h": .2}]}]
+    with pytest.raises(ValueError):
+        build_manifest(itens, ["classe_a"], ["gs://b/"], 1, "x",
+                       {"method": "random"}, "proj", "ds")
 
 
 def test_manifesto_carrega_roi():
@@ -246,6 +262,25 @@ async def test_congelar_duas_vezes_sem_mudanca_e_rejeitado(admin, tmp_path):
     assert "idêntico à v1" in r.json()["detail"]
 
 
+def _zerar_md5_de_uma_anotada() -> None:
+    """Reproduz o backfill pendente da 008: md5 zerado à mão numa imagem
+    ANOTADA (é a que entra no congelamento).
+
+    `sample` é imutável por trigger, daí o desligamento — que vai em
+    try/finally porque o banco de teste é da SESSÃO inteira: uma falha no meio
+    deixaria `sample` mutável para todos os testes seguintes, e uma regressão
+    que faça UPDATE em `sample` passaria no CI em verde.
+    """
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        conn.execute("ALTER TABLE sample DISABLE TRIGGER sample_immutable")
+        try:
+            conn.execute(
+                "UPDATE sample SET md5 = NULL WHERE id ="
+                " (SELECT sample_id FROM annotation LIMIT 1)")
+        finally:
+            conn.execute("ALTER TABLE sample ENABLE TRIGGER sample_immutable")
+
+
 async def test_congelar_com_imagem_sem_md5_recusa(admin, tmp_path):
     """Base que passou pela 006 e teve o placeholder zerado tem sample com md5
     NULL. Congelar precisa recusar dizendo qual imagem trava — não estourar 500.
@@ -256,14 +291,13 @@ async def test_congelar_com_imagem_sem_md5_recusa(admin, tmp_path):
     await admin.put(
         f"/v1/projects/{PROJ['slug']}/datasets/{DS['slug']}/origens/{src}")
 
-    # o backfill pendente da 008: md5 zerado à mão numa imagem ANOTADA (é a que
-    # entra no congelamento). `sample` é imutável por trigger, daí o desligamento.
-    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
-        conn.execute("ALTER TABLE sample DISABLE TRIGGER sample_immutable")
-        conn.execute(
-            "UPDATE sample SET md5 = NULL WHERE id ="
-            " (SELECT sample_id FROM annotation LIMIT 1)")
-        conn.execute("ALTER TABLE sample ENABLE TRIGGER sample_immutable")
+    _zerar_md5_de_uma_anotada()
+
+    # a tela precisa saber ANTES de oferecer o botão: sem isto o preview conta a
+    # imagem em `entrariam` e o congelamento dá 409 toda vez que o usuário clica
+    r = await admin.get(
+        f"/v1/projects/{PROJ['slug']}/datasets/{DS['slug']}/preview")
+    assert r.json()["sem_md5"] == 1
 
     r = await admin.post(
         f"/v1/projects/{PROJ['slug']}/datasets/{DS['slug']}/freeze",
