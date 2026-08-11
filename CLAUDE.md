@@ -57,10 +57,13 @@ Duas escolhas dentro dessa divisão, feitas para não criar cerimônia: o servi�
 uma segunda descrição do mesmo erro) e o serviço **não conhece pydantic** —
 recebe escalares e `dict`/`list[dict]`, e é o router que valida e converte.
 
-`agents`, `datasets`, `models` e `training` já estão assim. Os routers menores
-(`auth`, `buckets`, `devices`, `imports`, `jobs`, `prelabel`, `projects`,
-`samples`, `users`) ainda carregam o SQL inline; quando um deles for mexido a
-sério, a regra vai junto para `services/`.
+`agents`, `models` e `training` já estão assim: o router não tem uma linha de
+SQL. `datasets` está pela metade — `services/datasets.py` tem os auxiliares do
+congelamento (resolve → split → manifesto), mas a regra de versionamento e as 22
+consultas seguem em `routers/datasets.py:268` (`freeze`). Os demais (`auth`,
+`buckets`, `devices`, `imports`, `jobs`, `prelabel`, `projects`, `samples`,
+`users`) carregam o SQL inline por inteiro. Quando um deles for mexido a sério,
+a regra vai junto para `services/`.
 
 **SQL direto, sem ORM.** O schema é escrito à mão em `db/migrations/`; um ORM por
 cima seria uma segunda descrição do mesmo modelo para manter em sincronia. Query
@@ -98,8 +101,12 @@ papel `viewer`.
   revelaria que o projeto existe.
 - **Agente e usuário são portas diferentes.** Device autentica por
   `X-Agent-Token` e nunca por `Authorization`. Rota de agente vive em
-  `routers/agents.py`, e toda operação passa por `services/agents.py:
-  job_da_maquina`, que valida que o job é daquela máquina.
+  `routers/agents.py` e a regra em `services/agents.py`. **Toda** operação sobre
+  um job confere que ele é daquela máquina, por um de dois caminhos: a maioria
+  chama `job_da_maquina`; `atualizar_progresso`, `finalizar_job` e
+  `atualizar_deployment` fazem a conferência no próprio `WHERE`
+  (`AND device_id = %s`). Nesses três o `WHERE` **é** o controle de acesso —
+  não o simplifique achando que `job_da_maquina` já cobriu.
 - **O agente não declara capacidade de roteamento.** `registrar_presenca` filtra
   por `CAPS_DIAGNOSTICO`; deixar `train`/`infer` passar permite que um
   dispositivo de borda reclame treino.
@@ -118,8 +125,9 @@ papel `viewer`.
   recebe `conn=conn` — inclusive o `audit()`, para que o fato e o seu registro
   comitem juntos.
 - Job de importação roda em `asyncio.create_task` dentro do processo da API e
-  fica preso em `running` se o processo reiniciar — o reaper de `routers/agents.py`
-  não o alcança, porque filtra por `heartbeat_at`, que em job de importação é NULL.
+  fica preso em `running` se o processo reiniciar — o reaper
+  (`services/agents.py: recolher_orfaos`) não o alcança, porque filtra por
+  `heartbeat_at`, que em job de importação é NULL.
 - O front monta HTML por template string. Todo valor vindo do servidor passa por
   `esc()`. Não há build nem lint: o descuido não é detectado.
 - `db.fetch_one` devolve `dict | None` e boa parte do código indexa o resultado

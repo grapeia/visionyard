@@ -71,10 +71,31 @@ O que mudou:
   só sob `TYPE_CHECKING`, que é o que mantém o ciclo aberto em tempo de
   execução.
 
-Os routers menores (`auth`, `buckets`, `devices`, `imports`, `jobs`, `prelabel`,
-`projects`, `samples`, `users`) seguem com SQL inline. Não é mais ambiguidade —
-a regra está escrita; é dívida a pagar quando cada um for mexido a sério.
-`imports.py` é o mais provável de puxar cedo, pelo item 5.
+`datasets` ficou pela metade, de propósito: os auxiliares do congelamento estão
+no serviço, mas a regra de versionamento (`routers/datasets.py:268`, `freeze`)
+não foi mexida — ela tem lock consultivo, ordem de escrita e publicação de
+manifesto entrelaçados, e movê-la junto teria dobrado o tamanho do diff. Os
+demais routers (`auth`, `buckets`, `devices`, `imports`, `jobs`, `prelabel`,
+`projects`, `samples`, `users`) seguem com SQL inline por inteiro. Não é mais
+ambiguidade — a regra está escrita; é dívida a pagar quando cada um for mexido a
+sério. `imports.py` é o mais provável de puxar cedo, pelo item 5.
+
+O review do item 4 achou dois defeitos que **foram corrigidos aqui** e três que
+viraram o item 10:
+
+- **Regressão introduzida:** com a auditoria dentro da transação de
+  `accept_invite`, um `X-Forwarded-For` que não é endereço (o `unknown` do
+  nginx) estourava o cast para `inet` e passava a derrubar a ativação da conta
+  junto — antes só se perdia o registro. `client_ip` agora devolve endereço
+  válido ou nada, caindo no peer da conexão.
+- **Bug pré-existente, corrigido por ser barato:** `finalizar_job` casava só por
+  (id, device_id). Como o reaper deixa o job terminal mas mantém o `device_id`,
+  o agente que voltava de uma partição ressuscitava como `succeeded` um treino
+  que o usuário tinha cancelado.
+- As docstrings dos handlers foram restauradas: ao mudar o corpo para o serviço,
+  17 rotas ficaram sem `description` no OpenAPI (o FastAPI lê a do handler, não
+  a do serviço). Conferido rota a rota — as mesmas 41 rotas sem descrição antes
+  e depois.
 
 ### 5. Importação sair do processo da API — `pendente`
 `imports.py:175` usa `asyncio.create_task`. Três consequências: deploy no meio
@@ -105,6 +126,31 @@ o causou.
   orquestrador. Separar liveness de readiness.
 - Convenção de idioma PT/EN agora está escrita no `CLAUDE.md`; conferir se o
   código diverge dela em algum ponto e alinhar.
+
+### 10. Achados do review do item 4, não corrigidos — `pendente`
+Três bugs pré-existentes que o item 4 só mudou de arquivo. Nenhum foi
+introduzido pela refatoração, e por isso nenhum foi corrigido junto — mas todos
+foram confirmados contra o código.
+
+- **`build_manifest` não trata `md5` nulo** (`services/datasets.py:190`).
+  `bytes(it["md5"]).hex()` estoura `TypeError` quando a coluna é NULL, e a 008
+  tornou `sample.md5` anulável (a própria migration manda o operador zerar o
+  placeholder da 006). O `freeze` só captura `ValueError`, então vira 500 e o
+  dataset não congela mais. Numa instalação nova não acontece: depende de a
+  instalação ter passado pela 006.
+- **`atualizar_deployment` não olha o estado atual** (`services/agents.py:467`).
+  Um `state=active` reenviado após timeout supersede a implantação que está
+  valendo e reativa a antiga: a tela passa a mostrar um build que a máquina não
+  está rodando. Pede `AND state = 'pending'` no UPDATE.
+- **`fetch_one` indexado sem checar `None`** em `reclamar_job`,
+  `registrar_build` e `deployments_pendentes` (device apagado no meio de um
+  `/claim` vira 500 em vez de 401). É um caso concreto do item 9 — resolver lá.
+
+Uma armadilha de teste, também descoberta no review: `tests/conftest.py` fixa o
+nome `visionyard_test` e derruba/recria o banco por sessão. **Duas suítes
+simultâneas se atropelam** (`DeadlockDetected` nas migrations, depois
+`AdminShutdown`). Se algum dia rodar suíte em paralelo, o nome do banco tem de
+sair de uma variável por processo.
 
 ### 9. Ligar `index` e `dict-item` no `mypy` — `pendente`
 Nasceu do item 1: com esses dois códigos ligados, o `mypy` aponta ~60 lugares
