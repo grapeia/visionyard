@@ -48,12 +48,19 @@ async def test_salvar_anotacao_e_marcar_correcao(admin, tmp_path):
     """
     await _projeto_com_dados(admin, tmp_path)
     sid = await _primeiro(admin)
+    base = f"/v1/projects/{PROJ['slug']}/samples/{sid}/annotation"
     r = await admin.put(
-        f"/v1/projects/{PROJ['slug']}/samples/{sid}/annotation",
-        json={"boxes": [{"cls": 0, "cx": .5, "cy": .5, "w": .2, "h": .2}]})
+        base, json={"boxes": [{"cls": 0, "cx": .5, "cy": .5, "w": .2, "h": .2}]})
     assert r.status_code == 200
     assert r.json()["origin"] == "correction"
     assert r.json()["caixas"] == 1
+
+    # Continuar mexendo na mesma caixa não apaga a procedência: se o segundo
+    # save virasse 'manual', a taxa de correção zeraria justo nas imagens que
+    # deram mais trabalho — o oposto do que ela mede.
+    r = await admin.put(
+        base, json={"boxes": [{"cls": 0, "cx": .4, "cy": .5, "w": .2, "h": .2}]})
+    assert r.json()["origin"] == "correction"
 
 
 async def test_caixa_invalida_e_recusada(admin, tmp_path):
@@ -71,6 +78,16 @@ async def test_caixa_invalida_e_recusada(admin, tmp_path):
     # largura zero
     r = await admin.put(base, json={"boxes": [{"cls": 0, "cx": .5, "cy": .5,
                                                "w": 0, "h": .2}]})
+    assert r.status_code == 422
+
+
+async def test_sample_id_malformado_nao_e_500(admin, tmp_path):
+    """Id que não é uuid é erro de entrada: recusa na rota, não estoura no cast
+    do Postgres antes do 404 que o handler já tem."""
+    await _projeto_com_dados(admin, tmp_path)
+    base = f"/v1/projects/{PROJ['slug']}/samples/nao-e-uuid"
+    assert (await admin.get(base)).status_code == 422
+    r = await admin.put(f"{base}/annotation", json={"boxes": []})
     assert r.status_code == 422
 
 

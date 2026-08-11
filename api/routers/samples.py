@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 from datetime import timedelta
 from typing import Annotated, Literal
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, status
 from pydantic import BaseModel, Field, field_validator
@@ -138,8 +139,8 @@ async def listar(project_slug: Annotated[str, Path()], user: CurrentUser,
 
 @router.get("/projects/{project_slug}/samples/{sample_id}",
             dependencies=[Depends(require_role("viewer"))])
-async def detalhe(project_slug: Annotated[str, Path()], sample_id: str,
-                  user: CurrentUser):
+async def detalhe(project_slug: Annotated[str, Path()],
+                  sample_id: Annotated[UUID, Path()], user: CurrentUser):
     s = await db.fetch_one(
         "SELECT s.id, s.uri, s.width, s.height, s.metadata"
         "  FROM sample s JOIN project p ON p.id = s.project_id"
@@ -161,7 +162,7 @@ async def detalhe(project_slug: Annotated[str, Path()], sample_id: str,
 
 @router.put("/projects/{project_slug}/samples/{sample_id}/annotation")
 async def salvar(body: AnotacaoIn, project_slug: Annotated[str, Path()],
-                 sample_id: str, request: Request,
+                 sample_id: Annotated[UUID, Path()], request: Request,
                  user: Annotated[Principal, Depends(require_role("annotator"))]):
     """Grava a SUA anotação. A de outro rotulador não é tocada."""
     ctx = await db.fetch_one(
@@ -194,8 +195,13 @@ async def salvar(body: AnotacaoIn, project_slug: Annotated[str, Path()],
             # diferença é o que permite medir depois quanto o humano mudou do
             # que o modelo sugeriu. Se essa taxa cair muito, o ciclo virou
             # autoconfirmação — o modelo treinando na própria saída.
+            # 'correction' está na tupla porque a procedência é do trabalho,
+            # não do último clique: sem ela o segundo save da mesma imagem a
+            # rebaixava para 'manual' e a taxa zerava justo onde o humano mais
+            # mexeu.
             origem = ("correction"
-                      if antes and antes["origin"] in ("prelabel", "import")
+                      if antes and antes["origin"] in ("prelabel", "import",
+                                                       "correction")
                       else "manual")
             nova = await db.fetch_row(
                 "INSERT INTO annotation (sample_id, schema_id, boxes, origin,"
