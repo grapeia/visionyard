@@ -139,7 +139,7 @@ distintas, que era o ponto do item:
 
 - **`db.fetch_row`** para query que sempre devolve linha (`INSERT ...
   RETURNING`, `count(*)`, agregado sem `GROUP BY`) — estoura na query, com o SQL
-  à vista, em vez do `TypeError` obscuro três linhas adiante. 30 chamadas.
+  à vista, em vez do `TypeError` obscuro três linhas adiante. 35 chamadas.
 - **`deps.projeto_ou_404`** para o 404 que faltava. `require_role` não garante
   que o projeto existe: `project_role` devolve `owner` ao superusuário sem
   consultar nada, então slug inexistente virava 500 no primeiro `proj["id"]`.
@@ -150,6 +150,13 @@ distintas, que era o ponto do item:
 Mudou comportamento (500 → 404), e é o que o teste parametrizado em
 `test_projects.py` fixa. `db/migrate.py` passou a medir duração em Python: as
 duas consultas a `clock_timestamp()` existiam só para isso.
+
+A primeira leva cobriu só `db.fetch_one`: `db.connection()` não tinha anotação
+de retorno, então o `conn` do `async with` saía `Any` e todo
+`(await conn.execute(...).fetchone())["x"]` — metade das leituras, e justamente
+a que roda dentro de transação — seguia invisível ao `mypy`. Fechado com
+`db.Conn = AsyncConnection[dict[str, Any]]` no pool e nos helpers, mais os 24
+sites que a anotação revelou.
 
 ### 10. Achados do review do item 4 — `feito` (2026-08-11)
 Três bugs pré-existentes que o item 4 só mudou de arquivo. Todos corrigidos.
@@ -166,8 +173,10 @@ Três bugs pré-existentes que o item 4 só mudou de arquivo. Todos corrigidos.
   (o cliente do agente repete de propósito em erro de rede), qualquer outra
   transição é 409. Sem isso, o `active` reenviado ressuscitava a implantação
   superseded E supersedia a que estava valendo, e o `failed` de fallback do
-  `main.py` derrubava a que o servidor já tinha ativado. A leitura virou
-  `SELECT ... FOR UPDATE` na própria transação.
+  `main.py` derrubava a que o servidor já tinha ativado. A serialização é
+  `pg_advisory_xact_lock` pelo **device**: o `SELECT ... FOR UPDATE` que usei
+  primeiro travava só a linha relatada e deixava duas ativações simultâneas de
+  implantações diferentes colidirem no índice único.
 - **`fetch_one` indexado sem checar `None`** em `reclamar_job`,
   `registrar_build` e `deployments_pendentes` — resolvido no item 9 com
   `_device_do_token`: device apagado no meio de um `/claim` dá 401, não 500.
@@ -177,6 +186,32 @@ nome `visionyard_test` e derruba/recria o banco por sessão. **Duas suítes
 simultâneas se atropelam** (`DeadlockDetected` nas migrations, depois
 `AdminShutdown`). Se algum dia rodar suíte em paralelo, o nome do banco tem de
 sair de uma variável por processo.
+
+### 11. Achados do review dos itens 9 e 10 — `pendente`
+Sobrou o que o review de 2026-08-11 confirmou e que não cabia nas correções.
+
+- **Dataset com imagem sem md5 não tem saída fina.** O congelamento recusa (e
+  agora avisa antes, no `preview`), mas a única forma de destravar é tirar do
+  dataset a origem inteira daquelas imagens — leva junto todas as outras da
+  mesma origem. Reimportar não serve: o dedup é por md5 e a linha nula nunca
+  casa, então nasce uma imagem nova e a anotação humana fica presa à antiga.
+  `sample` é imutável por trigger, então não há backfill por UPDATE.
+  Saídas possíveis: manifesto v1.1 com identidade de conteúdo caindo no
+  `sha256` (que essas linhas têm — o placeholder da 006 nasceu dele), ou uma
+  rota de manutenção que troque `annotation.sample_id` para a linha reimportada
+  e apague a velha. Nenhuma urgente: só afeta instalação que passou pela 006.
+- **O total da grade de imagens ignora o filtro** (`routers/samples.py`). A
+  consulta dos itens aplica `{escopo}` E `{cond}` sobre o LEFT JOIN com
+  `annotation`; o `count(*)` aplica só `{escopo}`, sem join. Com 1000 imagens e
+  10 pendentes, `?filtro=pendentes` devolve 10 itens e `total: 1000`, e a tela
+  escreve "1000 imagens" sobre uma grade de 10. O comentário logo acima da query
+  afirma exatamente o invariante que ela quebra.
+- **`sample_id`/`sample_ids` do prelabel não são validados** (`routers/prelabel.py`).
+  São `str` puro e vão direto para `id = ANY(%s::uuid[])`: id malformado vira
+  `InvalidTextRepresentation` e 500, em vez do 404 que o handler já tem. A forma
+  certa já está em `routers/jobs.py:43`.
+
+Os dois últimos são pré-existentes — nenhum dos commits desta semana os tocou.
 
 ## Registro
 
@@ -209,3 +244,13 @@ sair de uma variável por processo.
   (`9e87e26`), que ligou `index`/`dict-item` no `mypy` e separou os 55 sites em
   `db.fetch_row` (query que sempre devolve linha) e `deps.projeto_ou_404` (404
   que faltava para superusuário). Suíte: **162 testes passando** (eram 151).
+- **2026-08-11** — review dos quatro commits acima (alto esforço, 25 agentes, 16
+  achados verificados de 22 candidatos). Quatro commits de correção: `cce999f`
+  404 no `archive` de projeto inexistente (rota esquecida pela varredura do item
+  9); `826a3a8` a mensagem do md5 mandava reimportar, o que cria duplicata em vez
+  de consertar — e o `preview` agora avisa antes de a tela oferecer o botão;
+  `a8c84bb` o lock do relato de deployment passou a ser pelo device, porque o
+  `FOR UPDATE` por linha deixava duas ativações simultâneas colidirem no índice
+  único; `1c03d1e` `db.connection()` anotado, que era o que faltava para o item 9
+  valer para as leituras dentro de transação. Item 11 criado com o que sobrou.
+  Suíte: **165 testes passando**.

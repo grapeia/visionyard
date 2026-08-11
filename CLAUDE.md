@@ -144,3 +144,6 @@ papel `viewer`.
   pode faltar, é `fetch_one` + 404 — e num handler de rota com `{project_slug}`
   o 404 do projeto vem de `deps.projeto_ou_404`: `require_role` deixa o
   superusuário passar sem conferir se o projeto existe.
+  Dentro de transação, prefira `db.fetch_row(..., conn=conn)` a
+  `conn.execute(...).fetchone()`: o `conn` é tipado (`db.Conn`), então as duas
+  formas são checadas, mas só a primeira já traz a mensagem com o SQL à vista.
