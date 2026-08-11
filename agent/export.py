@@ -46,7 +46,8 @@ def executar(cli: Client, job: dict, work_dir: Path, models_bucket: str,
 
     if not models_bucket:
         cli.finish(job_id, "failed",
-                   error="VISIONYARD_MODELS_BUCKET não configurado — sem onde publicar o build")
+                   error="VISIONYARD_MODELS_BUCKET não configurado — sem onde "
+                         "publicar o build")
         return
 
     raiz = work_dir / job_id
@@ -78,7 +79,7 @@ def executar(cli: Client, job: dict, work_dir: Path, models_bucket: str,
     try:
         compilado = YOLO(str(saida))
         compilado.predict(dummy, imgsz=imgsz, verbose=False)   # aquecimento + smoke
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         cli.finish(job_id, "failed",
                    error=f"o artefato compilado não carrega/roda: {e}")
         return
@@ -97,7 +98,7 @@ def executar(cli: Client, job: dict, work_dir: Path, models_bucket: str,
         bench = {"p50_ms": round(amostras[len(amostras) // 2], 2),
                  "p95_ms": round(amostras[-1], 2)}
         log(f"latência p50={bench['p50_ms']}ms p95={bench['p95_ms']}ms")
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         log(f"latência não medida: {e}", "warn")
 
     destino = (f"gs://{models_bucket}/{models_prefix}/"
@@ -107,6 +108,7 @@ def executar(cli: Client, job: dict, work_dir: Path, models_bucket: str,
     sha = gcs.sha256_arquivo(saida)
     reg = cli.register_build(job_id, fmt, destino, sha, saida.stat().st_size,
                              _detectar_alvo(payload), bench)
-    log(f"build registrado ({fmt})" + (" — já existia" if reg.get("ja_existia") else ""))
+    log(f"build registrado ({fmt})"
+        + (" — já existia" if reg.get("ja_existia") else ""))
     cli.finish(job_id, "succeeded",
                result={"format": fmt, "uri": destino, "bench": bench})

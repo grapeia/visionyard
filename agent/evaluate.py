@@ -24,6 +24,7 @@ def _finita(v) -> float | None:
 
 def executar(cli: Client, job: dict, work_dir: Path) -> None:
     from ultralytics import YOLO
+
     from . import gcs
 
     job_id = job["id"]

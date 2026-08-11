@@ -4,15 +4,22 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Path as P, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import Path as P
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .. import auth, db
+from ..auth import Principal
 from ..config import settings
-from ..datasets import (assign_splits, build_manifest, resolve_items,
-                        schemas_compativeis, write_manifest)
+from ..datasets import (
+    assign_splits,
+    build_manifest,
+    resolve_items,
+    schemas_compativeis,
+    write_manifest,
+)
 from ..deps import audit, require_role
 from .projects import SLUG_RE
 
@@ -35,7 +42,7 @@ class Roi(BaseModel):
     h_pct: float | None = Field(default=None, ge=0.0, le=1.0)
 
     @model_validator(mode="after")
-    def _dentro(self) -> "Roi":
+    def _dentro(self) -> Roi:
         # Ultrapassar a borda cortaria fora da imagem: o recorte em pixels ficaria
         # sem sentido e o des-recorte na inferência escalaria errado.
         if self.x + self.w > 1.0 + 1e-6 or self.y + self.h > 1.0 + 1e-6:
@@ -102,9 +109,9 @@ async def list_datasets(project_slug: Annotated[str, P()]):
 
 @router.post("/projects/{project_slug}/datasets",
              status_code=status.HTTP_201_CREATED)
-async def create_dataset(body: DatasetIn, project_slug: Annotated[str, P()],
-                         request: Request,
-                         actor: Annotated[object, Depends(require_role("engineer"))]):
+async def create_dataset(
+        body: DatasetIn, project_slug: Annotated[str, P()], request: Request,
+        actor: Annotated[Principal, Depends(require_role("engineer"))]):
     proj = await db.fetch_one("SELECT id FROM project WHERE slug = %s",
                               (project_slug,))
     dup = await db.fetch_one(
@@ -114,21 +121,24 @@ async def create_dataset(body: DatasetIn, project_slug: Annotated[str, P()],
         raise HTTPException(status.HTTP_409_CONFLICT,
                             f"já existe dataset '{body.slug}'")
     roi_json = json.dumps(body.roi.model_dump()) if body.roi else None
-    row = await db.fetch_one(
-        "INSERT INTO dataset (project_id, slug, name, kind, roi, created_by)"
-        " VALUES (%s,%s,%s,%s,%s::jsonb,%s)"
-        " RETURNING id, slug, name, kind, roi, created_at",
-        (proj["id"], body.slug, body.name, body.kind, roi_json, actor.id))
-    await audit(actor, "dataset.create", "dataset", str(row["id"]),
-                project_id=str(proj["id"]), after={"slug": body.slug},
-                ip=auth.client_ip(request))
+    async with db.connection() as conn:
+        async with conn.transaction():
+            row = await db.fetch_one(
+                "INSERT INTO dataset (project_id, slug, name, kind, roi,"
+                " created_by) VALUES (%s,%s,%s,%s,%s::jsonb,%s)"
+                " RETURNING id, slug, name, kind, roi, created_at",
+                (proj["id"], body.slug, body.name, body.kind, roi_json,
+                 actor.id), conn=conn)
+            await audit(actor, "dataset.create", "dataset", str(row["id"]),
+                        project_id=str(proj["id"]), after={"slug": body.slug},
+                        ip=auth.client_ip(request), conn=conn)
     return row
 
 
 @router.patch("/projects/{project_slug}/datasets/{dataset_slug}")
 async def update_roi(body: RoiIn, project_slug: Annotated[str, P()],
                      dataset_slug: Annotated[str, P()], request: Request,
-                     actor: Annotated[object, Depends(require_role("engineer"))]):
+                     actor: Annotated[Principal, Depends(require_role("engineer"))]):
     """Define ou remove a ROI do dataset.
 
     Só afeta as PRÓXIMAS versões congeladas — as já existentes carregam a ROI
@@ -137,13 +147,17 @@ async def update_roi(body: RoiIn, project_slug: Annotated[str, P()],
     """
     ds = await _dataset(project_slug, dataset_slug)
     roi_json = json.dumps(body.roi.model_dump()) if body.roi else None
-    await db.execute("UPDATE dataset SET roi = %s::jsonb WHERE id = %s",
-                     (roi_json, ds["id"]))
-    await audit(actor, "dataset.roi", "dataset", str(ds["id"]),
+    async with db.connection() as conn:
+        async with conn.transaction():
+            await db.execute(
+                "UPDATE dataset SET roi = %s::jsonb WHERE id = %s",
+                (roi_json, ds["id"]), conn=conn)
+            await audit(
+                actor, "dataset.roi", "dataset", str(ds["id"]),
                 project_id=str(ds["project_id"]),
                 before={"roi": ds["roi"]},
                 after={"roi": body.roi.model_dump() if body.roi else None},
-                ip=auth.client_ip(request))
+                ip=auth.client_ip(request), conn=conn)
     return {"slug": ds["slug"], "roi": body.roi.model_dump() if body.roi else None}
 
 
@@ -180,20 +194,23 @@ async def get_dataset(project_slug: Annotated[str, P()],
 async def add_origin(project_slug: Annotated[str, P()],
                      dataset_slug: Annotated[str, P()], source_id: str,
                      request: Request,
-                     actor: Annotated[object, Depends(require_role("engineer"))]):
+                     actor: Annotated[Principal, Depends(require_role("engineer"))]):
     ds = await _dataset(project_slug, dataset_slug)
     src = await db.fetch_one(
         "SELECT id FROM data_source WHERE id = %s AND project_id = %s",
         (source_id, ds["project_id"]))
     if src is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "origem não encontrada")
-    await db.execute(
-        "INSERT INTO dataset_source (dataset_id, data_source_id, added_by)"
-        " VALUES (%s,%s,%s) ON CONFLICT DO NOTHING",
-        (ds["id"], source_id, actor.id))
-    await audit(actor, "dataset.origin.add", "dataset", str(ds["id"]),
-                project_id=str(ds["project_id"]), after={"source": source_id},
-                ip=auth.client_ip(request))
+    async with db.connection() as conn:
+        async with conn.transaction():
+            await db.execute(
+                "INSERT INTO dataset_source (dataset_id, data_source_id,"
+                " added_by) VALUES (%s,%s,%s) ON CONFLICT DO NOTHING",
+                (ds["id"], source_id, actor.id), conn=conn)
+            await audit(actor, "dataset.origin.add", "dataset", str(ds["id"]),
+                        project_id=str(ds["project_id"]),
+                        after={"source": source_id},
+                        ip=auth.client_ip(request), conn=conn)
 
 
 @router.delete("/projects/{project_slug}/datasets/{dataset_slug}/origens/{source_id}",
@@ -201,7 +218,7 @@ async def add_origin(project_slug: Annotated[str, P()],
 async def remove_origin(project_slug: Annotated[str, P()],
                         dataset_slug: Annotated[str, P()], source_id: str,
                         request: Request,
-                        actor: Annotated[object, Depends(require_role("engineer"))]):
+                        actor: Annotated[Principal, Depends(require_role("engineer"))]):
     """Remove a origem da definição.
 
     Não apaga sample nem anotação, e não toca nas versões já congeladas: elas
@@ -209,12 +226,16 @@ async def remove_origin(project_slug: Annotated[str, P()],
     incluir essas imagens.
     """
     ds = await _dataset(project_slug, dataset_slug)
-    await db.execute(
-        "DELETE FROM dataset_source WHERE dataset_id=%s AND data_source_id=%s",
-        (ds["id"], source_id))
-    await audit(actor, "dataset.origin.remove", "dataset", str(ds["id"]),
-                project_id=str(ds["project_id"]), before={"source": source_id},
-                ip=auth.client_ip(request))
+    async with db.connection() as conn:
+        async with conn.transaction():
+            await db.execute(
+                "DELETE FROM dataset_source"
+                " WHERE dataset_id=%s AND data_source_id=%s",
+                (ds["id"], source_id), conn=conn)
+            await audit(actor, "dataset.origin.remove", "dataset",
+                        str(ds["id"]), project_id=str(ds["project_id"]),
+                        before={"source": source_id},
+                        ip=auth.client_ip(request), conn=conn)
 
 
 @router.get("/projects/{project_slug}/datasets/{dataset_slug}/preview",
@@ -245,7 +266,7 @@ async def preview(project_slug: Annotated[str, P()],
              status_code=status.HTTP_201_CREATED)
 async def freeze(body: FreezeIn, project_slug: Annotated[str, P()],
                  dataset_slug: Annotated[str, P()], request: Request,
-                 actor: Annotated[object, Depends(require_role("engineer"))]):
+                 actor: Annotated[Principal, Depends(require_role("engineer"))]):
     ds = await _dataset(project_slug, dataset_slug)
     schema = await db.fetch_one(
         "SELECT id, classes FROM label_schema WHERE project_id = %s"
@@ -260,8 +281,8 @@ async def freeze(body: FreezeIn, project_slug: Annotated[str, P()],
             status.HTTP_409_CONFLICT,
             "nada a congelar — nenhuma imagem anotada nas origens do dataset")
 
-    policy = {"method": body.split_method, "seed": body.seed,
-              "val_ratio": body.val_ratio}
+    policy: dict[str, Any] = {"method": body.split_method, "seed": body.seed,
+                              "val_ratio": body.val_ratio}
     if body.split_method == "by_group":
         policy["group_by"] = body.group_by
     try:
@@ -355,10 +376,10 @@ async def freeze(body: FreezeIn, project_slug: Annotated[str, P()],
             out, _ = write_manifest(raiz, project_slug, dataset_slug, version,
                                     items_jsonl, meta)
 
-    await audit(actor, "dataset.freeze", "dataset_version", str(dv["id"]),
-                project_id=str(ds["project_id"]),
-                after={"version": version, "stats": meta["stats"]},
-                ip=auth.client_ip(request))
+            await audit(actor, "dataset.freeze", "dataset_version",
+                        str(dv["id"]), project_id=str(ds["project_id"]),
+                        after={"version": version, "stats": meta["stats"]},
+                        ip=auth.client_ip(request), conn=conn)
     return {"version": version, "manifest_uri": str(out),
             "items_sha256": items_hash.hex(), "stats": meta["stats"],
             "split_policy": policy}

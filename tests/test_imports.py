@@ -9,8 +9,8 @@ from pathlib import Path
 
 import pytest
 
-from api.importers.label_studio import LabelStudioImporter, _to_yolo, _unwrap_path
 from api.importers.base import ImportReport, map_classes
+from api.importers.label_studio import LabelStudioImporter, _to_yolo, _unwrap_path
 
 pytestmark = pytest.mark.anyio
 
@@ -39,7 +39,7 @@ def test_bbox_percentual_canto_vira_yolo_centro():
 
 def test_caso_real_do_dump():
     """Valores tirados de um result de verdade do dump do usuário."""
-    cx, cy, w, h = _to_yolo({"x": 17.08507670850767, "y": 0,
+    cx, cy, w, _h = _to_yolo({"x": 17.08507670850767, "y": 0,
                              "width": 27.71966527196652,
                              "height": 18.410041841004183})
     assert cx == pytest.approx(0.3094, abs=1e-4)
@@ -134,7 +134,7 @@ def _dump(tmp_path: Path, n_tasks: int = 3, annotate: int = 2,
 
 
 def test_importer_le_classes_e_samples(tmp_path):
-    db_path, images = _dump(tmp_path)
+    db_path, _images = _dump(tmp_path)
     imp = LabelStudioImporter(str(db_path), image_root=str(tmp_path))
     assert imp.classes() == ["classe_a", "classe_b"]
 

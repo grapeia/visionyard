@@ -19,12 +19,12 @@ os.environ["VISIONYARD_DATABASE_URL"] = TEST_DSN   # antes de importar api.confi
 # de um, então fixam aqui — também antes do import de api.config.
 os.environ["VISIONYARD_BUCKETS"] = '["bucket-de-teste"]'
 
-import httpx           # noqa: E402
-import psycopg         # noqa: E402
-import pytest          # noqa: E402
+import httpx
+import psycopg
+import pytest
 
-from api.main import app          # noqa: E402
-from api.security import hash_password   # noqa: E402
+from api.main import app
+from api.security import hash_password
 
 MIGRATIONS = Path(__file__).resolve().parents[1] / "db" / "migrations"
 

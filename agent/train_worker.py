@@ -46,7 +46,7 @@ def normalizar(trainer) -> dict:
     bruto = dict(getattr(trainer, "metrics", {}) or {})
     try:
         bruto.update(trainer.label_loss_items(trainer.tloss, prefix="train"))
-    except Exception:  # noqa: BLE001 — perda de treino é bônus, não essencial
+    except Exception:      # perda de treino é bônus, não essencial
         pass
     norm: dict = {}
     for col, val in bruto.items():

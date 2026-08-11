@@ -9,8 +9,9 @@ import psycopg
 import pytest
 
 from api.datasets import assign_splits, build_manifest
+
 from .conftest import TEST_DSN
-from .test_imports import _dump, PROJ as IMPORT_PROJ
+from .test_imports import _dump
 
 pytestmark = pytest.mark.anyio
 
@@ -98,8 +99,9 @@ async def _projeto_com_dados(admin, tmp_path):
                                "sqlite_path": str(db_path),
                                "image_root": str(tmp_path),
                                "image_base_uri": "gs://bucket/frames"})
-    from .test_imports import _aguarda
     import tests.test_imports as ti
+
+    from .test_imports import _aguarda
     ti.PROJ = PROJ                       # _aguarda usa o slug do módulo
     await _aguarda(admin, r.json()["job_id"])
     fontes = await admin.get(f"/v1/projects/{PROJ['slug']}/datasets")
@@ -206,7 +208,7 @@ async def test_roi_muda_identidade_da_versao(admin, tmp_path):
 
     # a versão carrega a ROI carimbada (imutável)
     r = await admin.get(base)
-    v2 = [v for v in r.json()["versoes"] if v["version"] == 2][0]
+    v2 = next(v for v in r.json()["versoes"] if v["version"] == 2)
     assert (v2["roi"]["x"], v2["roi"]["w"], v2["roi"]["h"]) == (0.3, 0.4, 0.35)
 
     # mesma ROI + mesmo conteúdo → barrado de novo
@@ -337,15 +339,19 @@ async def test_imagem_em_duas_origens_pertence_as_duas(admin, tmp_path):
     db2, imgs2 = _dump(outro, n_tasks=0, annotate=0)   # cria frames/ vazio
     for f in sorted(imgs1.glob("*.png")):
         (imgs2 / f.name).write_bytes(f.read_bytes())   # mesmos bytes
-    import sqlite3, json as _json
+    import json as _json
+    import sqlite3
     c = sqlite3.connect(db2)
     for i, f in enumerate(sorted((outro / "frames").glob("*.png"))):
+        imagem = f"/data/local-files/?d=frames/{f.name}"
         c.execute("INSERT INTO task VALUES (?,1,?)",
-                  (i + 1, _json.dumps({"image": f"/data/local-files/?d=frames/{f.name}"})))
-    c.commit(); c.close()
+                  (i + 1, _json.dumps({"image": imagem})))
+    c.commit()
+    c.close()
+
+    import tests.test_imports as ti
 
     from .test_imports import _aguarda
-    import tests.test_imports as ti
     ti.PROJ = PROJ
     for caminho, raiz in ((db1, tmp_path), (db2, outro)):
         r = await admin.post(f"/v1/projects/{PROJ['slug']}/imports?dry_run=false",

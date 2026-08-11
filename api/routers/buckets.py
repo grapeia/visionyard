@@ -12,14 +12,13 @@ aparece sem imagem em vez de falhar.
 """
 from __future__ import annotations
 
+import logging
 from datetime import timedelta
 from pathlib import Path
 from typing import Annotated
 
-import logging
-
-from fastapi import (APIRouter, Depends, HTTPException, Path as P, Query,
-                     status)
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import Path as P
 from starlette.concurrency import run_in_threadpool
 
 from ..config import settings
@@ -38,7 +37,7 @@ def _client():
     from google.cloud import storage
     try:
         return storage.Client()
-    except Exception:  # noqa: BLE001
+    except Exception:
         # Chave exportada pelo gcloud não traz project_id — mesmo caso tratado
         # no importador de prefixo GCS.
         import json
@@ -103,7 +102,7 @@ def _navegar(bucket: str, prefixo: str) -> dict:
                                             expiration=timedelta(minutes=30),
                                             method="GET")
                 miniaturas += 1
-            except Exception:  # noqa: BLE001 — sem assinatura, segue sem imagem
+            except Exception:      # sem assinatura, segue sem imagem
                 url = None
         objetos.append({"nome": nome, "caminho": b.name, "bytes": b.size,
                         "imagem": eh_imagem, "url": url})
@@ -137,7 +136,7 @@ async def navegar(project_slug: Annotated[str, P()],
         return await run_in_threadpool(_navegar, bucket, prefixo)
     except HTTPException:
         raise
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         # O detalhe fica no log do servidor: erro do GCS costuma citar
         # projeto, conta de serviço e caminho interno, que não têm por que
         # chegar ao navegador.

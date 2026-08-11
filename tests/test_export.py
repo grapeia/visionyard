@@ -46,7 +46,8 @@ async def test_export_enfileira_e_registra_build(admin, client, tmp_path):
     assert v1["builds"][0]["target"]["precision"] == "int8"
 
 
-async def test_export_engine_dynamic_por_padrao_e_estatico_no_dla(admin, client, tmp_path):
+async def test_export_engine_dynamic_por_padrao_e_estatico_no_dla(
+        admin, client, tmp_path):
     """Engine compila com shapes dinâmicos por padrão — letterbox igual ao do
     .pt, detecções idênticas (medido em produção: 100% vs 96,7% estático).
     DLA só aceita shapes estáticos, então dla=True desliga o dynamic."""

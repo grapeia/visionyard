@@ -1,0 +1,47 @@
+# Ferramental do repositório. Não descreve um pacote instalável: a API roda a
+# partir da raiz (`uvicorn api.main:app`) e o agente é copiado para a máquina de
+# execução. Aqui ficam só as configurações de lint, tipo e teste.
+
+[tool.ruff]
+line-length = 88
+target-version = "py312"
+extend-exclude = [".venv", "tmp", "agent-work", "data"]
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "B", "UP", "C4", "SIM", "RUF"]
+ignore = [
+    # `async with db.connection() as conn:` + `conn.transaction()` aninhados são
+    # o idioma do repositório: a transação numa linha própria deixa visível onde
+    # ela começa e termina.
+    "SIM117",
+    # try/except/pass costuma vir acompanhado do comentário que explica por que
+    # o erro é engolido; contextlib.suppress esconderia essa explicação.
+    "SIM105",
+    # Texto em português usa travessão e ×; não são descuido de digitação.
+    "RUF001", "RUF002", "RUF003",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# conftest fixa o DSN em variável de ambiente antes de importar `api`, porque as
+# settings são lidas no import — os imports não têm como subir para o topo.
+"tests/conftest.py" = ["E402"]
+
+[tool.mypy]
+python_version = "3.12"
+files = ["api", "db"]
+# Permissivo de propósito no começo: o objetivo imediato é travar recaída de
+# tipo em quem já está anotado (ver PLANO, item 2), não anotar o mundo.
+ignore_missing_imports = true
+check_untyped_defs = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+# `db.fetch_one` devolve `dict | None` e o código indexa o resultado direto em
+# ~60 lugares — parte é query que sempre devolve linha (INSERT ... RETURNING,
+# count(*)), parte é 404 que falta. Separar os dois casos é item próprio do
+# PLANO (item 9); até lá estes dois códigos ficam desligados para o resto do
+# mypy valer desde já.
+disable_error_code = ["index", "dict-item"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --tb=short"

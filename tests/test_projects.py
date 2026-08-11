@@ -227,8 +227,10 @@ async def test_append_classe_gera_versao_back_compatible(admin):
 
 async def test_append_nao_invalida_anotacao_antiga(admin, tmp_path):
     """Uma anotação em cls=1 feita na v1 continua válida na v2 (append)."""
-    from .test_datasets import _projeto_com_dados, PROJ as DPROJ
     import tests.test_imports as ti
+
+    from .test_datasets import PROJ as DPROJ
+    from .test_datasets import _projeto_com_dados
     ti.PROJ = DPROJ
     await _projeto_com_dados(admin, tmp_path)   # cria projeto com 5 anotações
     antes = (await admin.get(f"/v1/projects/{DPROJ['slug']}")).json()

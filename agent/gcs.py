@@ -25,7 +25,7 @@ def _cli() -> storage.Client:
     if _client is None:
         try:
             _client = storage.Client()
-        except Exception:  # noqa: BLE001
+        except Exception:
             projeto = os.environ.get("GOOGLE_CLOUD_PROJECT", "")
             chave = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "")
             if not projeto and chave and Path(chave).is_file():

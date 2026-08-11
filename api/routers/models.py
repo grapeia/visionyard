@@ -15,6 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Request, status
 from pydantic import BaseModel, Field, model_validator
 
 from .. import auth, db
+from ..auth import Principal
 from ..deps import audit, require_role
 
 router = APIRouter(tags=["models"])
@@ -46,7 +47,8 @@ async def list_models(project_slug: Annotated[str, Path()]):
     return await db.fetch_all(
         "SELECT m.slug, m.name, m.task_type, m.created_at,"
         "  (SELECT count(*) FROM model_version v WHERE v.model_id = m.id) AS versoes,"
-        "  (SELECT max(version) FROM model_version v WHERE v.model_id = m.id) AS ultima,"
+        "  (SELECT max(version) FROM model_version v WHERE v.model_id = m.id)"
+        "    AS ultima,"
         "  (SELECT jsonb_object_agg(a.alias, mv.version)"
         "     FROM model_alias a JOIN model_version mv ON mv.id = a.model_version_id"
         "    WHERE a.model_id = m.id) AS aliases"
@@ -131,7 +133,7 @@ class ExportIn(BaseModel):
 async def exportar(body: ExportIn, project_slug: Annotated[str, Path()],
                    model_slug: Annotated[str, Path()], version: int,
                    request: Request,
-                   actor: Annotated[object, Depends(require_role("engineer"))]):
+                   actor: Annotated[Principal, Depends(require_role("engineer"))]):
     """Enfileira a compilação de uma versão para um formato implantável.
 
     ONNX é portátil; o engine TensorRT é específico do dispositivo (JetPack/TRT),
@@ -150,16 +152,20 @@ async def exportar(body: ExportIn, project_slug: Annotated[str, Path()],
                "dynamic": body.dynamic,
                "model_slug": model_slug, "version": version,
                "project_slug": project_slug}
-    job = await db.fetch_one(
-        "INSERT INTO job (project_id, type, payload, requires, created_by)"
-        " VALUES (%s,'export',%s::jsonb,%s::jsonb,%s) RETURNING id",
-        (m["project_id"], json.dumps(payload), json.dumps({"infer": True}),
-         actor.id))
-    await audit(actor, "model.export", "model_version", str(mv["id"]),
-                project_id=str(m["project_id"]),
-                after={"format": body.format, "precision": body.precision,
-                       "imgsz": body.imgsz, "dynamic": body.dynamic},
-                ip=auth.client_ip(request))
+    async with db.connection() as conn:
+        async with conn.transaction():
+            job = await db.fetch_one(
+                "INSERT INTO job (project_id, type, payload, requires,"
+                " created_by)"
+                " VALUES (%s,'export',%s::jsonb,%s::jsonb,%s) RETURNING id",
+                (m["project_id"], json.dumps(payload),
+                 json.dumps({"infer": True}), actor.id), conn=conn)
+            await audit(actor, "model.export", "model_version", str(mv["id"]),
+                        project_id=str(m["project_id"]),
+                        after={"format": body.format,
+                               "precision": body.precision,
+                               "imgsz": body.imgsz, "dynamic": body.dynamic},
+                        ip=auth.client_ip(request), conn=conn)
     return {"job_id": str(job["id"]), "version": version, "status": "queued"}
 
 
@@ -204,7 +210,7 @@ async def _artefato_para_avaliar(model_id, version, weights_uri, body):
 async def avaliar(body: EvaluateIn, project_slug: Annotated[str, Path()],
                   model_slug: Annotated[str, Path()], version: int,
                   request: Request,
-                  actor: Annotated[object, Depends(require_role("engineer"))]):
+                  actor: Annotated[Principal, Depends(require_role("engineer"))]):
     """Enfileira a medição de um ARTEFATO (peso ou build) contra uma versão de
     dataset (o benchmark). Além do mAP, mede pré/inferência/pós no alvo — é o
     que permite comparar pt × engine × DLA. Roda numa máquina `infer`."""
@@ -230,16 +236,20 @@ async def avaliar(body: EvaluateIn, project_slug: Annotated[str, Path()],
                "dataset_version_id": str(dv["id"]),
                "dataset_slug": body.dataset_slug, "imgsz": body.imgsz,
                "project_slug": project_slug}
-    job = await db.fetch_one(
-        "INSERT INTO job (project_id, type, payload, requires, created_by)"
-        " VALUES (%s,'evaluate',%s::jsonb,%s::jsonb,%s) RETURNING id",
-        (m["project_id"], json.dumps(payload), json.dumps({"infer": True}),
-         actor.id))
-    await audit(actor, "model.evaluate", "model_version", str(mv["id"]),
-                project_id=str(m["project_id"]),
-                after={"benchmark": body.dataset_slug, "artefato": rotulo,
-                       "benchmark_version": body.dataset_version},
-                ip=auth.client_ip(request))
+    async with db.connection() as conn:
+        async with conn.transaction():
+            job = await db.fetch_one(
+                "INSERT INTO job (project_id, type, payload, requires,"
+                " created_by)"
+                " VALUES (%s,'evaluate',%s::jsonb,%s::jsonb,%s) RETURNING id",
+                (m["project_id"], json.dumps(payload),
+                 json.dumps({"infer": True}), actor.id), conn=conn)
+            await audit(actor, "model.evaluate", "model_version",
+                        str(mv["id"]), project_id=str(m["project_id"]),
+                        after={"benchmark": body.dataset_slug,
+                               "artefato": rotulo,
+                               "benchmark_version": body.dataset_version},
+                        ip=auth.client_ip(request), conn=conn)
     return {"job_id": str(job["id"]), "version": version, "artefato": rotulo,
             "status": "queued"}
 
@@ -254,7 +264,7 @@ class DeployIn(BaseModel):
              status_code=status.HTTP_201_CREATED)
 async def implantar(body: DeployIn, project_slug: Annotated[str, Path()],
                     model_slug: Annotated[str, Path()], request: Request,
-                    actor: Annotated[object, Depends(require_role("engineer"))]):
+                    actor: Annotated[Principal, Depends(require_role("engineer"))]):
     """Marca um build para ser implantado num dispositivo. O agente daquele
     device puxa o artefato e ativa; a troca do modelo em produção é do coletor,
     que lê o artefato do caminho conhecido."""
@@ -282,14 +292,18 @@ async def implantar(body: DeployIn, project_slug: Annotated[str, Path()],
             status.HTTP_409_CONFLICT,
             f"o build engine é para '{alvo_classe}', mas a máquina é "
             f"'{dev['device_class']}' — compile para essa classe")
-    dep = await db.fetch_one(
-        "INSERT INTO deployment (device_id, model_build_id, state, requested_by)"
-        " VALUES (%s,%s,'pending',%s) RETURNING id",
-        (dev["id"], build["id"], actor.id))
-    await audit(actor, "model.deploy", "deployment", str(dep["id"]),
-                project_id=str(m["project_id"]),
-                after={"device": body.device_slug, "versao": body.version,
-                       "format": body.format}, ip=auth.client_ip(request))
+    async with db.connection() as conn:
+        async with conn.transaction():
+            dep = await db.fetch_one(
+                "INSERT INTO deployment (device_id, model_build_id, state,"
+                " requested_by) VALUES (%s,%s,'pending',%s) RETURNING id",
+                (dev["id"], build["id"], actor.id), conn=conn)
+            await audit(actor, "model.deploy", "deployment", str(dep["id"]),
+                        project_id=str(m["project_id"]),
+                        after={"device": body.device_slug,
+                               "versao": body.version,
+                               "format": body.format},
+                        ip=auth.client_ip(request), conn=conn)
     return {"deployment_id": str(dep["id"]), "device": body.device_slug,
             "state": "pending"}
 
@@ -317,7 +331,7 @@ async def set_alias(project_slug: Annotated[str, Path()],
                     model_slug: Annotated[str, Path()],
                     alias: Annotated[str, Path()], body: AliasIn,
                     request: Request,
-                    actor: Annotated[object, Depends(require_role("engineer"))]):
+                    actor: Annotated[Principal, Depends(require_role("engineer"))]):
     """Aponta um apelido para uma versão (promover). Move o ponteiro; a versão
     não muda."""
     if alias not in ALIASES:
@@ -335,18 +349,22 @@ async def set_alias(project_slug: Annotated[str, Path()],
         "SELECT mv.version FROM model_alias a"
         "  JOIN model_version mv ON mv.id = a.model_version_id"
         " WHERE a.model_id = %s AND a.alias = %s", (m["id"], alias))
-    await db.execute(
-        "INSERT INTO model_alias (model_id, alias, model_version_id, moved_by)"
-        " VALUES (%s,%s,%s,%s)"
-        " ON CONFLICT (model_id, alias) DO UPDATE"
-        "   SET model_version_id = EXCLUDED.model_version_id,"
-        "       moved_by = EXCLUDED.moved_by, moved_at = now()",
-        (m["id"], alias, mv["id"], actor.id))
-    await audit(actor, "model.alias", "model", str(m["id"]),
-                project_id=str(m["project_id"]),
-                before={"alias": alias, "version": before["version"] if before else None},
-                after={"alias": alias, "version": body.version},
-                ip=auth.client_ip(request))
+    async with db.connection() as conn:
+        async with conn.transaction():
+            await db.execute(
+                "INSERT INTO model_alias (model_id, alias, model_version_id,"
+                " moved_by) VALUES (%s,%s,%s,%s)"
+                " ON CONFLICT (model_id, alias) DO UPDATE"
+                "   SET model_version_id = EXCLUDED.model_version_id,"
+                "       moved_by = EXCLUDED.moved_by, moved_at = now()",
+                (m["id"], alias, mv["id"], actor.id), conn=conn)
+            await audit(actor, "model.alias", "model", str(m["id"]),
+                        project_id=str(m["project_id"]),
+                        before={"alias": alias,
+                                "version": before["version"] if before
+                                else None},
+                        after={"alias": alias, "version": body.version},
+                        ip=auth.client_ip(request), conn=conn)
     return {"alias": alias, "version": body.version}
 
 
@@ -355,13 +373,17 @@ async def set_alias(project_slug: Annotated[str, Path()],
 async def remove_alias(project_slug: Annotated[str, Path()],
                        model_slug: Annotated[str, Path()],
                        alias: Annotated[str, Path()], request: Request,
-                       actor: Annotated[object, Depends(require_role("engineer"))]):
+                       actor: Annotated[Principal, Depends(require_role("engineer"))]):
     m = await _model(project_slug, model_slug)
-    row = await db.fetch_one(
-        "DELETE FROM model_alias WHERE model_id = %s AND alias = %s RETURNING alias",
-        (m["id"], alias))
-    if row is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "apelido não definido")
-    await audit(actor, "model.alias.remove", "model", str(m["id"]),
-                project_id=str(m["project_id"]), before={"alias": alias},
-                ip=auth.client_ip(request))
+    async with db.connection() as conn:
+        async with conn.transaction():
+            row = await db.fetch_one(
+                "DELETE FROM model_alias WHERE model_id = %s AND alias = %s"
+                " RETURNING alias", (m["id"], alias), conn=conn)
+            if row is None:
+                raise HTTPException(status.HTTP_404_NOT_FOUND,
+                                    "apelido não definido")
+            await audit(actor, "model.alias.remove", "model", str(m["id"]),
+                        project_id=str(m["project_id"]),
+                        before={"alias": alias},
+                        ip=auth.client_ip(request), conn=conn)

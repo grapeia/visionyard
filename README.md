@@ -119,14 +119,23 @@ aba Pool. O agente anuncia capacidades (`train`, `infer`, `prelabel`), faz
 long-poll, reclama o que sabe fazer e devolve progresso por época enquanto
 treina. Ver [`agent/README.md`](agent/README.md).
 
-## Testes
+## Testes e verificação
 
-Precisam de um Postgres acessível — a suíte cria e derruba `visionyard_test`
-a cada sessão, aplicando todas as migrations do zero.
+Os testes precisam de um Postgres acessível — a suíte cria e derruba
+`visionyard_test` a cada sessão, aplicando todas as migrations do zero.
 
 ```bash
+.venv/bin/pip install -r requirements-dev.txt   # ruff e mypy
+
 .venv/bin/python -m pytest
+.venv/bin/ruff check .
+.venv/bin/mypy
 ```
+
+São exatamente os três comandos que o CI roda
+([`.github/workflows/ci.yml`](.github/workflows/ci.yml)), em push na `main` e
+em pull request, contra um Postgres de serviço. A configuração dos três está
+no `pyproject.toml`.
 
 ## Importação
 

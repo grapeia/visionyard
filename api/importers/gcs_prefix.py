@@ -13,8 +13,8 @@ anotação abre a imagem.
 from __future__ import annotations
 
 import base64
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Iterator
 
 from .base import ImportReport, SourceSample
 
@@ -39,7 +39,7 @@ class GCSPrefixImporter:
             from google.cloud import storage
             try:
                 self._client = storage.Client()
-            except Exception:  # noqa: BLE001
+            except Exception:
                 # A chave que o gcloud exporta nem sempre traz project_id;
                 # deduz pelo domínio do client_email da conta de serviço.
                 import json

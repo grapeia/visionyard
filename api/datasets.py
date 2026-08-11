@@ -25,7 +25,7 @@ from __future__ import annotations
 import hashlib
 import json
 import random
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from . import db
@@ -34,7 +34,7 @@ MANIFEST_VERSION = "1.0"
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 async def schemas_compativeis(project_id: str) -> list:
@@ -168,7 +168,7 @@ def build_manifest(items: list, classes: list, origins: list, version: int,
     que o manifesto siga independente da ROI (mudar a ROI não reescreve caixas).
     """
     lines = []
-    per_class = {c: 0 for c in classes}
+    per_class = dict.fromkeys(classes, 0)
     n_train = n_val = 0
     sem_dimensao = 0
     for it in items:
@@ -176,8 +176,9 @@ def build_manifest(items: list, classes: list, origins: list, version: int,
                   round(float(b["w"]), 6), round(float(b["h"]), 6)]
                  for b in (it.get("boxes") or [])]
         for b in boxes:
-            if 0 <= b[0] < len(classes):
-                per_class[classes[b[0]]] += 1
+            cls = int(b[0])
+            if 0 <= cls < len(classes):
+                per_class[classes[cls]] += 1
         if it["split"] == "val":
             n_val += 1
         else:

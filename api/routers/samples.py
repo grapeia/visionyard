@@ -18,8 +18,9 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, sta
 from pydantic import BaseModel, Field, field_validator
 from starlette.concurrency import run_in_threadpool
 
-from .. import auth, db
-from ..deps import CurrentUser, audit, require_role
+from .. import db
+from ..auth import Principal
+from ..deps import CurrentUser, require_role
 
 router = APIRouter(tags=["samples"])
 
@@ -57,11 +58,11 @@ def _assinar(uris: list) -> dict:
     from google.cloud import storage
     try:
         cliente = storage.Client()
-    except Exception:  # noqa: BLE001
+    except Exception:
         from .buckets import _client
         try:
             cliente = _client()
-        except Exception:  # noqa: BLE001
+        except Exception:
             return {}
     if not hasattr(getattr(cliente, "_credentials", None), "signer_email"):
         return {}
@@ -74,7 +75,7 @@ def _assinar(uris: list) -> dict:
             out[uri] = cliente.bucket(bucket).blob(chave).generate_signed_url(
                 version="v4", expiration=timedelta(minutes=MINIATURA_MIN),
                 method="GET")
-        except Exception:  # noqa: BLE001
+        except Exception:
             continue
     return out
 
@@ -160,7 +161,7 @@ async def detalhe(project_slug: Annotated[str, Path()], sample_id: str,
 @router.put("/projects/{project_slug}/samples/{sample_id}/annotation")
 async def salvar(body: AnotacaoIn, project_slug: Annotated[str, Path()],
                  sample_id: str, request: Request,
-                 user: Annotated[object, Depends(require_role("annotator"))]):
+                 user: Annotated[Principal, Depends(require_role("annotator"))]):
     """Grava a SUA anotação. A de outro rotulador não é tocada."""
     ctx = await db.fetch_one(
         "SELECT s.id, p.id AS project_id,"

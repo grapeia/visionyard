@@ -119,7 +119,8 @@ async def test_deploy_engine_classe_incompativel_recusa(admin, client, tmp_path)
                      json={"format": "engine", "precision": "int8"})
     # o build sai com o device_class da máquina que compilou: gpu-server
     builder = await _device(admin, {"infer": True}, slug="build-box")
-    job = (await client.post("/v1/agent/claim", headers=_h(builder["token"]))).json()["job"]
+    r = await client.post("/v1/agent/claim", headers=_h(builder["token"]))
+    job = r.json()["job"]
     await client.post(f"/v1/agent/jobs/{job['id']}/build", json={
         "format": "engine", "uri": "gs://b/x.engine", "sha256": "bb" * 32,
         "bytes": 1, "target": {"precision": "int8"}, "bench": {}},

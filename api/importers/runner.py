@@ -11,7 +11,7 @@ import json
 from pathlib import Path
 
 from .. import db
-from .base import ImportReport, Importer, SourceSample, map_classes
+from .base import Importer, ImportReport, SourceSample, map_classes
 
 CHUNK = 1 << 20
 
@@ -37,7 +37,7 @@ def _dimensions(path: Path) -> tuple[int, int] | None:
     try:
         with Image.open(path) as img:
             return img.size
-    except Exception:      # noqa: BLE001 — arquivo corrompido não aborta o lote
+    except Exception:      # arquivo corrompido não aborta o lote
         return None
 
 

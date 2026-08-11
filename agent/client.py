@@ -49,7 +49,8 @@ class Client:
                 ultimo = ApiError(f"{method} {path} → {r.status_code}")
             if i < self._tentativas - 1:
                 time.sleep(min(2 ** i, 8))
-        raise ApiError(f"{method} {path} falhou após {self._tentativas} tentativas: {ultimo}")
+        raise ApiError(f"{method} {path} falhou após {self._tentativas} "
+                       f"tentativas: {ultimo}")
 
     def _post(self, path: str, json: dict | None = None) -> Any:
         r = self._send("POST", path, json=json or {})

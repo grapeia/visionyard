@@ -2,7 +2,8 @@
 
 O usuário escolhe uma **versão** (imutável) do dataset e os hiperparâmetros; a
 API enfileira um `job` do tipo `train` e cria o `training_run` que o vincula à
-versão e ao schema. Quem executa é um agente com capacidade `train` — a API não treina nada, só orquestra.
+versão e ao schema. Quem executa é um agente com capacidade `train` — a API não
+treina nada, só orquestra.
 
 Dois principais no registro: `created_by` é quem pediu (pessoa), `device_id` é
 quem executou (máquina). É o que permite auditar "quem disparou este treino".
@@ -13,10 +14,12 @@ import json
 import re
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Path as P, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import Path as P
 from pydantic import BaseModel, Field
 
 from .. import auth, db
+from ..auth import Principal
 from ..deps import audit, require_role
 
 router = APIRouter(tags=["training"])
@@ -50,7 +53,7 @@ def _slug(texto: str) -> str:
              status_code=status.HTTP_201_CREATED)
 async def criar_run(body: RunIn, project_slug: Annotated[str, P()],
                     request: Request,
-                    actor: Annotated[object, Depends(require_role("engineer"))]):
+                    actor: Annotated[Principal, Depends(require_role("engineer"))]):
     if body.base_model not in BASES:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
                             f"base '{body.base_model}' não suportada "
@@ -129,10 +132,12 @@ async def criar_run(body: RunIn, project_slug: Annotated[str, P()],
                 "UPDATE job SET payload = payload || %s::jsonb WHERE id = %s",
                 (json.dumps({"run_id": str(run["id"])}), job["id"]))
 
-    await audit(actor, "run.create", "training_run", str(run["id"]),
-                project_id=str(dv["project_id"]),
-                after={"experimento": exp_slug, "versao": dv["version"],
-                       "base": body.base_model}, ip=auth.client_ip(request))
+            await audit(actor, "run.create", "training_run", str(run["id"]),
+                        project_id=str(dv["project_id"]),
+                        after={"experimento": exp_slug,
+                               "versao": dv["version"],
+                               "base": body.base_model},
+                        ip=auth.client_ip(request), conn=conn)
     return {"run_id": str(run["id"]), "job_id": str(job["id"]),
             "experimento": exp_slug, "status": "queued"}
 
@@ -231,7 +236,7 @@ async def stream_run(project_slug: Annotated[str, P()], run_id: str,
 @router.post("/projects/{project_slug}/runs/{run_id}/cancel")
 async def cancelar_run(project_slug: Annotated[str, P()], run_id: str,
                        request: Request,
-                       actor: Annotated[object, Depends(require_role("engineer"))]):
+                       actor: Annotated[Principal, Depends(require_role("engineer"))]):
     """Pede cancelamento. Se ainda na fila, cancela na hora; se já rodando,
     marca a flag e o agente para no próximo heartbeat."""
     run = await _run(project_slug, run_id)
@@ -252,6 +257,6 @@ async def cancelar_run(project_slug: Annotated[str, P()], run_id: str,
                 await conn.execute(
                     "UPDATE training_run SET status = 'stopped',"
                     " finished_at = now() WHERE id = %s", (run_id,))
-    await audit(actor, "run.cancel", "training_run", run_id,
-                ip=auth.client_ip(request))
+            await audit(actor, "run.cancel", "training_run", run_id,
+                        ip=auth.client_ip(request), conn=conn)
     return {"run_id": run_id, "status": j["status"]}

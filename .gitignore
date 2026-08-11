@@ -23,6 +23,9 @@ visionyard-deploy/
 *.onnx
 *.engine
 
+# Claude Code: o plano e as convenções são versionados; a config local não.
+.claude/settings.local.json
+
 # Editor / SO
 .vscode/
 .idea/

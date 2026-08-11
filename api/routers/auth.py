@@ -1,7 +1,7 @@
 """Rotas de autenticação: login, logout, quem sou eu, trocar senha."""
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, HTTPException, Request, Response, status
 from pydantic import BaseModel, EmailStr, Field
@@ -9,12 +9,17 @@ from pydantic import BaseModel, EmailStr, Field
 from .. import auth, db
 from ..config import settings
 from ..deps import CurrentUser, audit
-from ..security import (hash_password, new_token, token_digest, token_prefix,
-                        verify_password)
+from ..security import (
+    hash_password,
+    new_token,
+    token_digest,
+    token_prefix,
+    verify_password,
+)
 
 
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 router = APIRouter(tags=["auth"])
 
@@ -137,13 +142,17 @@ async def create_my_token(body: TokenCreateIn, user: CurrentUser,
     token = new_token()
     expires = (_utcnow() + timedelta(days=body.expires_in_days)
                if body.expires_in_days else None)
-    row = await db.fetch_one(
-        "INSERT INTO api_token (user_id, name, prefix, token_sha256,"
-        " expires_at) VALUES (%s,%s,%s,%s,%s) RETURNING id, name, created_at",
-        (user.id, body.name, token_prefix(token), token_digest(token),
-         expires))
-    await audit(user, "token.create", "api_token", str(row["id"]),
-                after={"name": body.name}, ip=auth.client_ip(request))
+    async with db.connection() as conn:
+        async with conn.transaction():
+            row = await db.fetch_one(
+                "INSERT INTO api_token (user_id, name, prefix, token_sha256,"
+                " expires_at) VALUES (%s,%s,%s,%s,%s)"
+                " RETURNING id, name, created_at",
+                (user.id, body.name, token_prefix(token), token_digest(token),
+                 expires), conn=conn)
+            await audit(user, "token.create", "api_token", str(row["id"]),
+                        after={"name": body.name},
+                        ip=auth.client_ip(request), conn=conn)
     return {**row, "token": token,
             "aviso": "guarde agora — não é possível recuperá-lo depois"}
 
@@ -151,14 +160,17 @@ async def create_my_token(body: TokenCreateIn, user: CurrentUser,
 @router.delete("/me/tokens/{token_id}",
                status_code=status.HTTP_204_NO_CONTENT)
 async def revoke_my_token(token_id: str, user: CurrentUser, request: Request):
-    row = await db.fetch_one(
-        "UPDATE api_token SET revoked_at = now()"
-        " WHERE id = %s AND user_id = %s AND revoked_at IS NULL RETURNING id",
-        (token_id, user.id))
-    if row is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "token não encontrado")
-    await audit(user, "token.revoke", "api_token", token_id,
-                ip=auth.client_ip(request))
+    async with db.connection() as conn:
+        async with conn.transaction():
+            row = await db.fetch_one(
+                "UPDATE api_token SET revoked_at = now()"
+                " WHERE id = %s AND user_id = %s AND revoked_at IS NULL"
+                " RETURNING id", (token_id, user.id), conn=conn)
+            if row is None:
+                raise HTTPException(status.HTTP_404_NOT_FOUND,
+                                    "token não encontrado")
+            await audit(user, "token.revoke", "api_token", token_id,
+                        ip=auth.client_ip(request), conn=conn)
 
 
 @router.post("/me/password", status_code=status.HTTP_204_NO_CONTENT)
@@ -170,17 +182,23 @@ async def change_password(body: PasswordChangeIn, user: CurrentUser,
                                       row["password_hash"]):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "senha atual incorreta")
 
-    await db.execute("UPDATE app_user SET password_hash = %s WHERE id = %s",
-                     (hash_password(body.new_password), user.id))
     # Trocar senha derruba TODO acesso anterior — sessões e tokens de API. Só
     # revogar sessão deixava o atacante dentro: um token criado por ele segue
     # autenticando via Bearer e, sem expires_at, nunca expira. Quem troca a
-    # senha porque ela vazou espera exatamente o contrário.
-    await auth.revoke_all_sessions(user.id)
-    await db.execute("UPDATE api_token SET revoked_at = now()"
-                     " WHERE user_id = %s AND revoked_at IS NULL", (user.id,))
-    await audit(user, "user.password.change", "app_user", user.id,
-                ip=auth.client_ip(request))
+    # senha porque ela vazou espera exatamente o contrário. Numa transação só:
+    # senha nova com sessão antiga viva é o pior dos dois mundos.
+    async with db.connection() as conn:
+        async with conn.transaction():
+            await db.execute(
+                "UPDATE app_user SET password_hash = %s WHERE id = %s",
+                (hash_password(body.new_password), user.id), conn=conn)
+            await auth.revoke_all_sessions(user.id, conn=conn)
+            await db.execute(
+                "UPDATE api_token SET revoked_at = now()"
+                " WHERE user_id = %s AND revoked_at IS NULL", (user.id,),
+                conn=conn)
+            await audit(user, "user.password.change", "app_user", user.id,
+                        ip=auth.client_ip(request), conn=conn)
 
     token = await auth.create_session(user.id, auth.client_ip(request),
                                       request.headers.get("user-agent"))

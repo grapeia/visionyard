@@ -14,8 +14,8 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Request, status
 from pydantic import BaseModel, Field, field_validator
 
 from .. import auth, db
-from ..deps import (CurrentUser, audit, project_role, require_role,
-                    require_superuser)
+from ..auth import Principal
+from ..deps import CurrentUser, audit, project_role, require_role, require_superuser
 
 router = APIRouter(tags=["projects"])
 
@@ -125,11 +125,10 @@ async def create_project(body: ProjectCreateIn, user: CurrentUser,
                 "INSERT INTO label_schema (project_id, version, classes,"
                 " change_note, created_by) VALUES (%s,1,%s::jsonb,%s,%s)",
                 (proj["id"], json.dumps(classes), "schema inicial", user.id))
-
-    await audit(user, "project.create", "project", str(proj["id"]),
-                project_id=str(proj["id"]),
-                after={"slug": body.slug, "classes": body.classes},
-                ip=auth.client_ip(request))
+            await audit(user, "project.create", "project", str(proj["id"]),
+                        project_id=str(proj["id"]),
+                        after={"slug": body.slug, "classes": body.classes},
+                        ip=auth.client_ip(request), conn=conn)
     return {**proj, "role": "owner", "classes": body.classes}
 
 
@@ -162,7 +161,7 @@ async def get_project(project_slug: Annotated[str, Path()], user: CurrentUser):
 @router.patch("/projects/{project_slug}")
 async def patch_project(body: ProjectPatchIn,
                         project_slug: Annotated[str, Path()], request: Request,
-                        actor: Annotated[object, Depends(require_role("admin"))]):
+                        actor: Annotated[Principal, Depends(require_role("admin"))]):
     fields = body.model_dump(exclude_unset=True)
     if not fields:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "nada a alterar")
@@ -170,22 +169,25 @@ async def patch_project(body: ProjectPatchIn,
         "SELECT id, name, description FROM project WHERE slug = %s",
         (project_slug,))
     sets = ", ".join(f"{k} = %({k})s" for k in fields)
-    row = await db.fetch_one(
-        f"UPDATE project SET {sets} WHERE slug = %(slug)s"
-        " RETURNING id, slug, name, task_type, description",
-        {**fields, "slug": project_slug})
-    await audit(actor, "project.update", "project", str(before["id"]),
-                project_id=str(before["id"]),
-                before={k: before[k] for k in fields}, after=fields,
-                ip=auth.client_ip(request))
+    async with db.connection() as conn:
+        async with conn.transaction():
+            row = await db.fetch_one(
+                f"UPDATE project SET {sets} WHERE slug = %(slug)s"
+                " RETURNING id, slug, name, task_type, description",
+                {**fields, "slug": project_slug}, conn=conn)
+            await audit(actor, "project.update", "project", str(before["id"]),
+                        project_id=str(before["id"]),
+                        before={k: before[k] for k in fields}, after=fields,
+                        ip=auth.client_ip(request), conn=conn)
     return row
 
 
 @router.post("/projects/{project_slug}/schema",
              status_code=status.HTTP_201_CREATED)
-async def append_classes(body: SchemaAppendIn,
-                         project_slug: Annotated[str, Path()], request: Request,
-                         actor: Annotated[object, Depends(require_role("engineer"))]):
+async def append_classes(
+        body: SchemaAppendIn, project_slug: Annotated[str, Path()],
+        request: Request,
+        actor: Annotated[Principal, Depends(require_role("engineer"))]):
     """Acrescenta classe(s) no fim → nova versão de schema, back-compatible.
 
     O schema é imutável (não há UPDATE): toda mudança é uma versão nova. Como só
@@ -229,11 +231,11 @@ async def append_classes(body: SchemaAppendIn,
                  actor.id))
             nova = await cur.fetchone()
 
-    await audit(actor, "schema.append", "label_schema", str(nova["id"]),
-                project_id=str(proj["id"]),
-                before={"classes": nomes},
-                after={"classes": [c["name"] for c in novas]},
-                ip=auth.client_ip(request))
+            await audit(actor, "schema.append", "label_schema",
+                        str(nova["id"]), project_id=str(proj["id"]),
+                        before={"classes": nomes},
+                        after={"classes": [c["name"] for c in novas]},
+                        ip=auth.client_ip(request), conn=conn)
     return {"version": nova["version"],
             "classes": [c["name"] for c in novas]}
 
@@ -242,14 +244,18 @@ async def append_classes(body: SchemaAppendIn,
              status_code=status.HTTP_204_NO_CONTENT)
 async def archive_project(project_slug: Annotated[str, Path()],
                           request: Request,
-                          actor: Annotated[object, Depends(require_role("owner"))]):
+                          actor: Annotated[Principal, Depends(require_role("owner"))]):
     """Arquiva (some das listagens). Não deleta: os dados seguem referenciados
     por datasets, runs e modelos, e apagá-los quebraria a linhagem."""
-    row = await db.fetch_one(
-        "UPDATE project SET archived_at = now()"
-        " WHERE slug = %s AND archived_at IS NULL RETURNING id",
-        (project_slug,))
-    if row is None:
-        raise HTTPException(status.HTTP_409_CONFLICT, "projeto já arquivado")
-    await audit(actor, "project.archive", "project", str(row["id"]),
-                project_id=str(row["id"]), ip=auth.client_ip(request))
+    async with db.connection() as conn:
+        async with conn.transaction():
+            row = await db.fetch_one(
+                "UPDATE project SET archived_at = now()"
+                " WHERE slug = %s AND archived_at IS NULL RETURNING id",
+                (project_slug,), conn=conn)
+            if row is None:
+                raise HTTPException(status.HTTP_409_CONFLICT,
+                                    "projeto já arquivado")
+            await audit(actor, "project.archive", "project", str(row["id"]),
+                        project_id=str(row["id"]),
+                        ip=auth.client_ip(request), conn=conn)

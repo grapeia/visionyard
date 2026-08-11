@@ -1,6 +1,8 @@
 """Configuração por ambiente. Nada de segredo com default utilizável."""
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -14,7 +16,9 @@ class Settings(BaseSettings):
     # em produção o proxy termina TLS e isto vira True.
     cookie_name: str = "visionyard_session"
     cookie_secure: bool = False
-    cookie_samesite: str = "lax"
+    # Literal e não str: é o conjunto que o Set-Cookie aceita, e um valor fora
+    # dele viraria cookie sem SameSite — sem CSRF nenhum barrado.
+    cookie_samesite: Literal["lax", "strict", "none"] = "lax"
 
     # Sessão expira em 12h de inatividade ou 7 dias absolutos — o teto absoluto
     # existe pra que uma sessão em uso contínuo não viva pra sempre.

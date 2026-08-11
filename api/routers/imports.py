@@ -20,8 +20,9 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, Depends, HTTPException, Path, Request, status
 from pydantic import BaseModel, Field
 
-from ..config import settings
 from .. import auth, db
+from ..auth import Principal
+from ..config import settings
 from ..deps import audit, require_role
 from ..importers.base import ImportReport
 from ..importers.gcs_prefix import GCSPrefixImporter
@@ -128,7 +129,7 @@ async def _project_context(slug: str) -> dict:
 @router.post("/projects/{project_slug}/imports")
 async def create_import(body: ImportIn, project_slug: Annotated[str, Path()],
                         request: Request,
-                        actor: Annotated[object, Depends(require_role("engineer"))],
+                        actor: Annotated[Principal, Depends(require_role("engineer"))],
                         dry_run: bool = True):
     """Importa (ou simula) dados de uma origem para o projeto.
 
@@ -158,17 +159,21 @@ async def create_import(body: ImportIn, project_slug: Annotated[str, Path()],
         uri, importer.describe(), body.model_dump(), actor.id)
     source = {"id": source_id}
 
-    job = await db.fetch_one(
-        "INSERT INTO job (project_id, type, payload, status, created_by,"
-        " data_source_id, started_at) VALUES (%s,'import',%s::jsonb,'running',"
-        " %s,%s,now()) RETURNING id",
-        (ctx["project_id"], json.dumps(body.model_dump()), actor.id,
-         source["id"]))
-    job_id = str(job["id"])
+    async with db.connection() as conn:
+        async with conn.transaction():
+            job = await db.fetch_one(
+                "INSERT INTO job (project_id, type, payload, status,"
+                " created_by, data_source_id, started_at)"
+                " VALUES (%s,'import',%s::jsonb,'running',%s,%s,now())"
+                " RETURNING id",
+                (ctx["project_id"], json.dumps(body.model_dump()), actor.id,
+                 source["id"]), conn=conn)
+            job_id = str(job["id"])
 
-    await audit(actor, "import.start", "job", job_id,
-                project_id=ctx["project_id"],
-                after={"kind": body.kind}, ip=auth.client_ip(request))
+            await audit(actor, "import.start", "job", job_id,
+                        project_id=ctx["project_id"],
+                        after={"kind": body.kind},
+                        ip=auth.client_ip(request), conn=conn)
 
     # Guardar a referência: sem isso o coletor pode recolher a task no meio da
     # importação e o job fica preso em 'running' para sempre.
@@ -216,7 +221,7 @@ async def _run_job(job_id: str, ctx: dict, importer, actor_id: str,
                    f"{report.samples_existing} já existentes, "
                    f"{report.annotations_created} anotações, "
                    f"{report.skipped_total} puladas")
-    except Exception as e:                      # noqa: BLE001
+    except Exception as e:
         # `job.error` e os eventos são lidos com papel `viewer`. Erro do GCS ou
         # do banco cita conta de serviço, projeto e caminho interno — detalhe
         # fica no log, mesmo tratamento já aplicado na navegação de bucket.

@@ -4,6 +4,7 @@ from __future__ import annotations
 import pytest
 
 from api.config import settings
+
 from .test_projects import novo_usuario
 
 pytestmark = pytest.mark.anyio

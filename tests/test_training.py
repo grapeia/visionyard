@@ -71,7 +71,8 @@ async def test_ciclo_completo_treino(admin, client, tmp_path):
     assert meta["classes"] == ["classe_a", "classe_b"]
     itens = await client.get(f"/v1/agent/jobs/{jid}/manifest/items", headers=_h(tok))
     assert itens.status_code == 200
-    assert all(l.startswith("{") for l in itens.text.strip().splitlines())
+    assert all(linha.startswith("{")
+               for linha in itens.text.strip().splitlines())
 
     # heartbeat move claimed -> running e não pede cancelamento
     r = await client.post(f"/v1/agent/jobs/{jid}/heartbeat",
@@ -124,8 +125,8 @@ async def test_ciclo_completo_treino(admin, client, tmp_path):
 # --------------------------------------------------------------------------- #
 
 async def test_device_sem_capacidade_nao_reclama_treino(admin, client, tmp_path):
-    """dispositivo de borda (só infer) não pode pegar job de treino: capabilities @> requires
-    falha, e o claim devolve nada."""
+    """dispositivo de borda (só infer) não pode pegar job de treino:
+    capabilities @> requires falha, e o claim devolve nada."""
     await _versao_congelada(admin, tmp_path)
     await _criar_run(admin)
     edge = await _device(admin, {"infer": True}, slug="edge-1")
@@ -248,7 +249,7 @@ async def test_run_exige_versao_congelada(admin, tmp_path):
 
 async def test_excluir_device_sem_historico(admin, client, tmp_path):
     """Máquina que nunca rodou nada pode ser excluída."""
-    dev = await _device(admin, {"infer": True}, slug="descartavel")
+    await _device(admin, {"infer": True}, slug="descartavel")
     r = await admin.delete("/v1/devices/descartavel")
     assert r.status_code == 204
     devs = (await admin.get("/v1/devices")).json()
@@ -305,6 +306,7 @@ async def test_reaper_encerra_job_orfao(admin, client, tmp_path):
     """Job 'running' órfão no limite de tentativas vira terminal no próximo
     claim — senão ficaria preso para sempre."""
     import psycopg
+
     from .conftest import TEST_DSN
     await admin.post("/v1/projects", json=PROJ)
     with psycopg.connect(TEST_DSN, autocommit=True) as c:

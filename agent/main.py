@@ -30,7 +30,7 @@ def detectar_capacidades() -> dict:
         if torch.cuda.is_available():
             caps["gpu"] = torch.cuda.get_device_name(0)
             caps["cuda"] = torch.version.cuda
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
     return caps
 
@@ -64,6 +64,7 @@ def processar_deployments(cli: Client, cfg: Config) -> None:
     coletor lê. Ativar troca o link `current` — a implantação anterior é
     superseded no controlador."""
     from pathlib import Path
+
     from . import gcs
     for dep in cli.pending_deployments():
         try:
@@ -88,7 +89,7 @@ def processar_deployments(cli: Client, cfg: Config) -> None:
             print(f"deploy {dep['id']}: {dep['model_slug']} v{dep['version']} "
                   f"({dep['format']}) ativo em {link}")
             cli.deployment_state(dep["id"], "active")
-        except Exception as e:  # noqa: BLE001 — falha de um deploy não derruba o agente
+        except Exception as e:      # falha de um deploy não derruba o agente
             print(f"deploy {dep['id']} falhou: {e}")
             try:
                 cli.deployment_state(dep["id"], "failed", str(e)[:500])
@@ -123,7 +124,7 @@ def main() -> int:
                 print(f"job {job['id']} concluído")
             except ApiError:
                 raise
-            except Exception as e:  # noqa: BLE001 — falha do job, não do agente
+            except Exception as e:      # falha do job, não do agente
                 print(f"job {job['id']} falhou: {e}")
                 traceback.print_exc()
                 try:

@@ -51,8 +51,8 @@ def main() -> int:
 
     with psycopg.connect(settings.database_url, autocommit=True) as conn:
         conn.execute(BOOTSTRAP)
-        applied = {v: c for v, c in conn.execute(
-            "SELECT version, checksum FROM schema_migrations").fetchall()}
+        applied: dict[str, str] = dict(conn.execute(
+            "SELECT version, checksum FROM schema_migrations").fetchall())
 
         pending = []
         for version, path in discover():

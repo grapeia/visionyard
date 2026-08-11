@@ -16,14 +16,21 @@ from __future__ import annotations
 
 import ipaddress
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from fastapi import Request
+from psycopg import AsyncConnection
 
 from . import db
 from .config import settings
-from .security import (dummy_verify, hash_password, needs_rehash, new_token,
-                       token_digest, verify_password)
+from .security import (
+    dummy_verify,
+    hash_password,
+    needs_rehash,
+    new_token,
+    token_digest,
+    verify_password,
+)
 
 
 @dataclass(frozen=True)
@@ -58,7 +65,7 @@ class ThrottledError(Exception):
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 # --------------------------------------------------------------------------- #
@@ -191,10 +198,16 @@ async def revoke_session(session_id: str) -> None:
                      " WHERE id = %s AND revoked_at IS NULL", (session_id,))
 
 
-async def revoke_all_sessions(user_id: str) -> None:
-    """Usado ao trocar senha ou desativar usuário."""
+async def revoke_all_sessions(user_id: str, *,
+                              conn: AsyncConnection | None = None) -> None:
+    """Usado ao trocar senha ou desativar usuário.
+
+    Aceita `conn` porque quem chama costuma estar derrubando vários acessos de
+    uma vez: revogar as sessões sem revogar os tokens deixaria o acesso de pé.
+    """
     await db.execute("UPDATE user_session SET revoked_at = now()"
-                     " WHERE user_id = %s AND revoked_at IS NULL", (user_id,))
+                     " WHERE user_id = %s AND revoked_at IS NULL", (user_id,),
+                     conn=conn)
 
 
 # --------------------------------------------------------------------------- #

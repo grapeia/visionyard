@@ -140,7 +140,8 @@ async def test_prelabel_escopo_de_sample(admin, client, tmp_path):
                               headers=_h(tok))).json()["alvos"]
     assert [a["sample_id"] for a in alvos] == [sid], "escopo não ficou na imagem"
     await client.post(f"/v1/agent/jobs/{job['id']}/prelabel", json={"predicoes": [
-        {"sample_id": sid, "boxes": [{"cls": 0, "cx": 0.5, "cy": 0.5, "w": 0.3, "h": 0.3}]}]},
+        {"sample_id": sid, "boxes": [
+            {"cls": 0, "cx": 0.5, "cy": 0.5, "w": 0.3, "h": 0.3}]}]},
         headers=_h(tok))
     d = (await admin.get(f"/v1/projects/{PROJ['slug']}/samples/{sid}")).json()
     assert d["minha_anotacao"]["origin"] == "prelabel"
@@ -165,7 +166,8 @@ async def test_prelabel_nao_escreve_sample_de_outro_projeto(admin, client, tmp_p
     tok, job = await _claim_prelabel(admin, client)
     alheio = "00000000-0000-0000-0000-000000000000"   # uuid válido, fora do projeto
     r = await client.post(f"/v1/agent/jobs/{job['id']}/prelabel", json={"predicoes": [
-        {"sample_id": alheio, "boxes": [{"cls": 0, "cx": 0.5, "cy": 0.5, "w": 0.2, "h": 0.2}]}]},
+        {"sample_id": alheio, "boxes": [
+            {"cls": 0, "cx": 0.5, "cy": 0.5, "w": 0.2, "h": 0.2}]}]},
         headers=_h(tok))
     assert r.json()["gravadas"] == 0, "escreveu em sample fora do projeto"
 
@@ -197,7 +199,8 @@ async def test_descartar_prelabels_remove_so_rascunho(admin, client, tmp_path):
             {"cls": 0, "cx": 0.5, "cy": 0.5, "w": 0.2, "h": 0.2}]}]},
         headers=_h(tok))
     base = f"/v1/projects/{PROJ['slug']}/samples"
-    assert (await admin.get(f"{base}/{sid}")).json()["minha_anotacao"]["origin"] == "prelabel"
+    anot = (await admin.get(f"{base}/{sid}")).json()["minha_anotacao"]
+    assert anot["origin"] == "prelabel"
 
     r = await admin.post(
         f"/v1/projects/{PROJ['slug']}/datasets/{DS['slug']}/prelabel/discard")

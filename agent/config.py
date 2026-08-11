@@ -27,12 +27,13 @@ class Config:
     heartbeat_seconds: float
 
     @classmethod
-    def from_env(cls) -> "Config":
+    def from_env(cls) -> Config:
         api = os.environ.get("VISIONYARD_API_URL", "").rstrip("/")
         token = os.environ.get("VISIONYARD_AGENT_TOKEN", "")
         if not api or not token:
             raise SystemExit(
-                "defina VISIONYARD_API_URL e VISIONYARD_AGENT_TOKEN antes de subir o agente")
+                "defina VISIONYARD_API_URL e VISIONYARD_AGENT_TOKEN antes de "
+                "subir o agente")
         return cls(
             api_url=api,
             token=token,
@@ -41,5 +42,6 @@ class Config:
             models_prefix=os.environ.get("VISIONYARD_MODELS_PREFIX", "models"),
             deploy_dir=os.environ.get("VISIONYARD_DEPLOY_DIR", "./visionyard-deploy"),
             poll_seconds=float(os.environ.get("VISIONYARD_POLL_SECONDS", "5")),
-            heartbeat_seconds=float(os.environ.get("VISIONYARD_HEARTBEAT_SECONDS", "30")),
+            heartbeat_seconds=float(
+                os.environ.get("VISIONYARD_HEARTBEAT_SECONDS", "30")),
         )

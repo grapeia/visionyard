@@ -1,0 +1,4 @@
+# Ferramental de desenvolvimento: lint e tipo. Versão fixada para que o CI e a
+# máquina de quem programa reprovem exatamente as mesmas coisas.
+mypy==2.3.0
+ruff==0.16.2

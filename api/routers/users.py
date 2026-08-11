@@ -7,9 +7,16 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Request, status
 from pydantic import BaseModel, EmailStr, Field
 
 from .. import auth, db
+from ..auth import Principal
 from ..config import settings
-from ..deps import (CurrentUser, ROLE_RANK, audit, project_role,
-                    require_role, require_superuser)
+from ..deps import (
+    ROLE_RANK,
+    CurrentUser,
+    audit,
+    project_role,
+    require_role,
+    require_superuser,
+)
 from ..security import hash_password
 
 router = APIRouter(tags=["users"])
@@ -40,29 +47,32 @@ async def list_users():
 
 @router.post("/users", status_code=status.HTTP_201_CREATED)
 async def create_user(body: UserCreateIn, request: Request,
-                      admin: Annotated[object, Depends(require_superuser)]):
+                      admin: Annotated[Principal, Depends(require_superuser)]):
     exists = await db.fetch_one("SELECT id FROM app_user WHERE lower(email)=%s",
                                 (body.email.lower(),))
     if exists:
         raise HTTPException(status.HTTP_409_CONFLICT, "email já cadastrado")
 
-    row = await db.fetch_one(
-        "INSERT INTO app_user (email, display_name, password_hash, status,"
-        " is_superuser, created_by) VALUES (%s,%s,%s,%s,%s,%s)"
-        " RETURNING id, email, display_name, status, is_superuser",
-        (body.email.lower(), body.display_name,
-         hash_password(body.password) if body.password else None,
-         "active" if body.password else "invited",
-         body.is_superuser, admin.id))
-    await audit(admin, "user.create", "app_user", str(row["id"]),
-                after={"email": row["email"], "superuser": body.is_superuser},
-                ip=auth.client_ip(request))
+    async with db.connection() as conn:
+        async with conn.transaction():
+            row = await db.fetch_one(
+                "INSERT INTO app_user (email, display_name, password_hash,"
+                " status, is_superuser, created_by) VALUES (%s,%s,%s,%s,%s,%s)"
+                " RETURNING id, email, display_name, status, is_superuser",
+                (body.email.lower(), body.display_name,
+                 hash_password(body.password) if body.password else None,
+                 "active" if body.password else "invited",
+                 body.is_superuser, admin.id), conn=conn)
+            await audit(admin, "user.create", "app_user", str(row["id"]),
+                        after={"email": row["email"],
+                               "superuser": body.is_superuser},
+                        ip=auth.client_ip(request), conn=conn)
     return row
 
 
 @router.post("/users/{user_id}/invite", status_code=status.HTTP_201_CREATED)
 async def invite_user(user_id: str, request: Request,
-                      admin: Annotated[object, Depends(require_superuser)],
+                      admin: Annotated[Principal, Depends(require_superuser)],
                       purpose: Literal["invite", "password_reset"] = "invite"):
     """Emite um convite de uso único e devolve o token.
 
@@ -93,17 +103,24 @@ async def set_user_status(user_id: str, status_: Literal["active", "disabled"],
     if user_id == user.id and status_ == "disabled":
         raise HTTPException(status.HTTP_400_BAD_REQUEST,
                             "não dá pra desativar a si mesmo")
-    row = await db.fetch_one(
-        "UPDATE app_user SET status = %s,"
-        " disabled_at = CASE WHEN %s = 'disabled' THEN now() ELSE NULL END"
-        " WHERE id = %s RETURNING id, email, status", (status_, status_, user_id))
-    if row is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "usuário não encontrado")
-    # Desativar precisa cortar o acesso agora, não quando a sessão expirar.
-    if status_ == "disabled":
-        await auth.revoke_all_sessions(user_id)
-    await audit(user, "user.status", "app_user", user_id,
-                after={"status": status_}, ip=auth.client_ip(request))
+    async with db.connection() as conn:
+        async with conn.transaction():
+            row = await db.fetch_one(
+                "UPDATE app_user SET status = %s,"
+                " disabled_at = CASE WHEN %s = 'disabled' THEN now()"
+                "                    ELSE NULL END"
+                " WHERE id = %s RETURNING id, email, status",
+                (status_, status_, user_id), conn=conn)
+            if row is None:
+                raise HTTPException(status.HTTP_404_NOT_FOUND,
+                                    "usuário não encontrado")
+            # Desativar precisa cortar o acesso agora, não quando a sessão
+            # expirar.
+            if status_ == "disabled":
+                await auth.revoke_all_sessions(user_id, conn=conn)
+            await audit(user, "user.status", "app_user", user_id,
+                        after={"status": status_},
+                        ip=auth.client_ip(request), conn=conn)
     return row
 
 
@@ -125,7 +142,7 @@ async def list_members(project_slug: Annotated[str, Path()]):
 @router.put("/projects/{project_slug}/members")
 async def upsert_member(body: MemberIn, project_slug: Annotated[str, Path()],
                         request: Request,
-                        actor: Annotated[object, Depends(require_role("admin"))]):
+                        actor: Annotated[Principal, Depends(require_role("admin"))]):
     proj = await db.fetch_one("SELECT id FROM project WHERE slug = %s",
                               (project_slug,))
     target = await db.fetch_one(
@@ -158,17 +175,20 @@ async def upsert_member(body: MemberIn, project_slug: Annotated[str, Path()],
         if n["n"] <= 1:
             raise HTTPException(status.HTTP_409_CONFLICT,
                                 "o projeto ficaria sem owner")
-    await db.execute(
-        "INSERT INTO project_member (project_id, user_id, role, granted_by)"
-        " VALUES (%s,%s,%s,%s)"
-        " ON CONFLICT (project_id, user_id) DO UPDATE"
-        " SET role = EXCLUDED.role, granted_by = EXCLUDED.granted_by,"
-        "     granted_at = now()",
-        (proj["id"], target["id"], body.role, actor.id))
-    await audit(actor, "member.grant", "project_member", str(target["id"]),
-                project_id=str(proj["id"]),
-                before=dict(before) if before else None,
-                after={"role": body.role}, ip=auth.client_ip(request))
+    async with db.connection() as conn:
+        async with conn.transaction():
+            await db.execute(
+                "INSERT INTO project_member (project_id, user_id, role,"
+                " granted_by) VALUES (%s,%s,%s,%s)"
+                " ON CONFLICT (project_id, user_id) DO UPDATE"
+                " SET role = EXCLUDED.role, granted_by = EXCLUDED.granted_by,"
+                "     granted_at = now()",
+                (proj["id"], target["id"], body.role, actor.id), conn=conn)
+            await audit(actor, "member.grant", "project_member",
+                        str(target["id"]), project_id=str(proj["id"]),
+                        before=dict(before) if before else None,
+                        after={"role": body.role},
+                        ip=auth.client_ip(request), conn=conn)
     return {"email": body.email, "role": body.role}
 
 
@@ -176,7 +196,7 @@ async def upsert_member(body: MemberIn, project_slug: Annotated[str, Path()],
                status_code=status.HTTP_204_NO_CONTENT)
 async def remove_member(project_slug: Annotated[str, Path()], user_id: str,
                         request: Request,
-                        actor: Annotated[object, Depends(require_role("admin"))]):
+                        actor: Annotated[Principal, Depends(require_role("admin"))]):
     proj = await db.fetch_one("SELECT id FROM project WHERE slug = %s",
                               (project_slug,))
     # Um projeto sem owner fica órfão: ninguém pode mais gerenciar membros.
@@ -192,9 +212,11 @@ async def remove_member(project_slug: Annotated[str, Path()], user_id: str,
         if n["n"] <= 1:
             raise HTTPException(status.HTTP_409_CONFLICT,
                                 "o projeto ficaria sem owner")
-    await db.execute(
-        "DELETE FROM project_member WHERE project_id=%s AND user_id=%s",
-        (proj["id"], user_id))
-    await audit(actor, "member.revoke", "project_member", user_id,
-                project_id=str(proj["id"]), before=dict(row),
-                ip=auth.client_ip(request))
+    async with db.connection() as conn:
+        async with conn.transaction():
+            await db.execute(
+                "DELETE FROM project_member WHERE project_id=%s AND user_id=%s",
+                (proj["id"], user_id), conn=conn)
+            await audit(actor, "member.revoke", "project_member", user_id,
+                        project_id=str(proj["id"]), before=dict(row),
+                        ip=auth.client_ip(request), conn=conn)

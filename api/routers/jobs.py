@@ -12,6 +12,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Path, Request, status
 
 from .. import auth, db
+from ..auth import Principal
 from ..deps import audit, require_superuser
 
 router = APIRouter(tags=["jobs"])
@@ -39,7 +40,7 @@ async def fila():
 
 @router.post("/jobs/{job_id}/cancel")
 async def cancelar(job_id: Annotated[UUID, Path()], request: Request,
-                   admin: Annotated[object, Depends(require_superuser)]):
+                   admin: Annotated[Principal, Depends(require_superuser)]):
     """Se ainda na fila, cancela na hora; se já rodando, marca a flag e o
     agente para no próximo heartbeat (mesma semântica do cancelar do treino)."""
     j = await db.fetch_one("SELECT id, type, status FROM job WHERE id = %s",
@@ -65,6 +66,6 @@ async def cancelar(job_id: Annotated[UUID, Path()], request: Request,
                 await conn.execute(
                     "UPDATE training_run SET status = 'stopped',"
                     " finished_at = now() WHERE job_id = %s", (job_id,))
-    await audit(admin, "job.cancel", "job", str(job_id),
-                ip=auth.client_ip(request))
+            await audit(admin, "job.cancel", "job", str(job_id),
+                        ip=auth.client_ip(request), conn=conn)
     return {"id": str(job_id), "status": novo}

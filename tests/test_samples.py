@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from .test_datasets import _projeto_com_dados, PROJ
+from .test_datasets import PROJ, _projeto_com_dados
 from .test_projects import novo_usuario
 
 pytestmark = pytest.mark.anyio
@@ -122,6 +122,7 @@ async def test_escopo_por_dataset(admin, tmp_path):
     await admin.post(f"/v1/projects/{PROJ['slug']}/datasets",
                      json={"slug": "d1", "name": "D1", "kind": "train"})
     import psycopg
+
     from .conftest import TEST_DSN
     with psycopg.connect(TEST_DSN, autocommit=True) as conn:
         src = str(conn.execute(

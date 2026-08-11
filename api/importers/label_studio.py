@@ -24,8 +24,8 @@ import json
 import re
 import sqlite3
 import urllib.parse
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Iterator
 
 from .base import ImportReport, SourceBox, SourceSample
 
@@ -39,7 +39,7 @@ def _unwrap_path(raw: str) -> str | None:
         return None
     if "?" in raw:
         qs = urllib.parse.parse_qs(urllib.parse.urlparse(raw).query)
-        if "d" in qs and qs["d"]:
+        if qs.get("d"):
             return qs["d"][0].lstrip("/")
     if raw.startswith(("gs://", "s3://", "http://", "https://")):
         return raw

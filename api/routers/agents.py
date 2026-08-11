@@ -7,9 +7,10 @@ que o agente roda:
 
 O *claim* é uma corrida entre agentes resolvida no banco: `FOR UPDATE SKIP
 LOCKED` garante que dois agentes nunca peguem o mesmo job, e `capabilities @>
-requires` garante que só uma máquina compatível o pegue (uma máquina de GPU pega `train`,
-um dispositivo de inferência não). Job cujo dono morreu — heartbeat velho — volta a ser reclamável,
-para que um reboot não deixe treino preso para sempre.
+requires` garante que só uma máquina compatível o pegue (uma máquina de GPU pega
+`train`, um dispositivo de inferência não). Job cujo dono morreu — heartbeat
+velho — volta a ser reclamável, para que um reboot não deixe treino preso para
+sempre.
 """
 from __future__ import annotations
 
@@ -18,7 +19,7 @@ import math
 from pathlib import Path as FsPath
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Path, status
+from fastapi import APIRouter, HTTPException, Path, status
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 

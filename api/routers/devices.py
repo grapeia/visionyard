@@ -17,6 +17,7 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Request, status
 from pydantic import BaseModel, Field, field_validator
 
 from .. import auth, db
+from ..auth import Principal
 from ..deps import CurrentUser, audit, require_superuser
 from ..security import new_token, token_digest
 from .projects import SLUG_RE
@@ -69,24 +70,28 @@ async def deploy_devices(user: CurrentUser):
 
 @router.post("/devices", status_code=status.HTTP_201_CREATED)
 async def create_device(body: DeviceIn, request: Request,
-                        admin: Annotated[object, Depends(require_superuser)]):
+                        admin: Annotated[Principal, Depends(require_superuser)]):
     dup = await db.fetch_one("SELECT id FROM device WHERE slug = %s",
                              (body.slug,))
     if dup:
         raise HTTPException(status.HTTP_409_CONFLICT,
                             f"já existe device '{body.slug}'")
     tok, digest = _emit_token(body.slug)
-    row = await db.fetch_one(
-        "INSERT INTO device (slug, name, device_class, capabilities, labels,"
-        " token_sha256, status, registered_by)"
-        " VALUES (%s,%s,%s,%s::jsonb,%s,%s,'offline',%s)"
-        " RETURNING id, slug, name, device_class, capabilities, labels, status",
-        (body.slug, body.name, body.device_class,
-         json.dumps(body.capabilities), body.labels, digest,
-         admin.id))
-    await audit(admin, "device.create", "device", str(row["id"]),
-                after={"slug": body.slug, "class": body.device_class},
-                ip=auth.client_ip(request))
+    async with db.connection() as conn:
+        async with conn.transaction():
+            row = await db.fetch_one(
+                "INSERT INTO device (slug, name, device_class, capabilities,"
+                " labels, token_sha256, status, registered_by)"
+                " VALUES (%s,%s,%s,%s::jsonb,%s,%s,'offline',%s)"
+                " RETURNING id, slug, name, device_class, capabilities,"
+                " labels, status",
+                (body.slug, body.name, body.device_class,
+                 json.dumps(body.capabilities), body.labels, digest,
+                 admin.id), conn=conn)
+            await audit(admin, "device.create", "device", str(row["id"]),
+                        after={"slug": body.slug,
+                               "class": body.device_class},
+                        ip=auth.client_ip(request), conn=conn)
     # O token em claro existe só aqui — quem cadastra copia para o .env do agente.
     return {**row, "token": tok,
             "aviso": "guarde o token: ele não é mostrado de novo"}
@@ -94,22 +99,25 @@ async def create_device(body: DeviceIn, request: Request,
 
 @router.post("/devices/{slug}/token")
 async def rotate_token(slug: Annotated[str, Path()], request: Request,
-                       admin: Annotated[object, Depends(require_superuser)]):
+                       admin: Annotated[Principal, Depends(require_superuser)]):
     dev = await db.fetch_one("SELECT id FROM device WHERE slug = %s", (slug,))
     if dev is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "device não encontrado")
     tok, digest = _emit_token(slug)
-    await db.execute("UPDATE device SET token_sha256 = %s WHERE id = %s",
-                     (digest, dev["id"]))
-    await audit(admin, "device.token.rotate", "device", str(dev["id"]),
-                ip=auth.client_ip(request))
+    async with db.connection() as conn:
+        async with conn.transaction():
+            await db.execute(
+                "UPDATE device SET token_sha256 = %s WHERE id = %s",
+                (digest, dev["id"]), conn=conn)
+            await audit(admin, "device.token.rotate", "device",
+                        str(dev["id"]), ip=auth.client_ip(request), conn=conn)
     return {"slug": slug, "token": tok,
             "aviso": "o token anterior deixou de valer agora"}
 
 
 @router.delete("/devices/{slug}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_device(slug: Annotated[str, Path()], request: Request,
-                        admin: Annotated[object, Depends(require_superuser)]):
+                        admin: Annotated[Principal, Depends(require_superuser)]):
     """Exclui uma máquina. Recusa se ela tem histórico de jobs.
 
     `job.device_id` guarda quem EXECUTOU cada treino — apagar a máquina apagaria
@@ -126,23 +134,31 @@ async def delete_device(slug: Annotated[str, Path()], request: Request,
             status.HTTP_409_CONFLICT,
             f"máquina tem {n['n']} job(s) no histórico — desative em vez de "
             f"excluir, para preservar quem executou o quê")
-    await db.execute("DELETE FROM device WHERE id = %s", (dev["id"],))
-    await audit(admin, "device.delete", "device", str(dev["id"]),
-                before={"slug": slug}, ip=auth.client_ip(request))
+    async with db.connection() as conn:
+        async with conn.transaction():
+            await db.execute("DELETE FROM device WHERE id = %s",
+                             (dev["id"],), conn=conn)
+            await audit(admin, "device.delete", "device", str(dev["id"]),
+                        before={"slug": slug}, ip=auth.client_ip(request),
+                        conn=conn)
 
 
 @router.post("/devices/{slug}/status")
 async def set_status(slug: Annotated[str, Path()],
                      estado: Literal["idle", "draining", "disabled"],
                      request: Request,
-                     admin: Annotated[object, Depends(require_superuser)]):
+                     admin: Annotated[Principal, Depends(require_superuser)]):
     """`draining` tira do pool sem apagar; `disabled` também invalida o token.
     `busy`/`offline` são do agente (heartbeat), não se define à mão."""
-    row = await db.fetch_one(
-        "UPDATE device SET status = %s WHERE slug = %s RETURNING id, slug, status",
-        (estado, slug))
-    if row is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "device não encontrado")
-    await audit(admin, "device.status", "device", str(row["id"]),
-                after={"status": estado}, ip=auth.client_ip(request))
+    async with db.connection() as conn:
+        async with conn.transaction():
+            row = await db.fetch_one(
+                "UPDATE device SET status = %s WHERE slug = %s"
+                " RETURNING id, slug, status", (estado, slug), conn=conn)
+            if row is None:
+                raise HTTPException(status.HTTP_404_NOT_FOUND,
+                                    "device não encontrado")
+            await audit(admin, "device.status", "device", str(row["id"]),
+                        after={"status": estado},
+                        ip=auth.client_ip(request), conn=conn)
     return row
