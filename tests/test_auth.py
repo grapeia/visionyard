@@ -135,6 +135,42 @@ async def test_xff_forjado_nao_escapa_do_teto_por_ip(client, superuser):
     assert len(ips) == 1, f"header forjado virou IP distinto: {ips}"
 
 
+async def test_xff_que_nao_e_ip_nao_derruba_a_escrita(admin, client):
+    """`audit_log.ip` e `login_attempt.ip` são `inet`: um salto que não é
+    endereço (nginx emite `unknown`) tem de cair no peer, não virar texto.
+
+    Sem isso o INSERT estoura no cast, e como a auditoria agora vive DENTRO da
+    transação de quem escreve, o estouro leva a escrita junto: aceitar convite
+    devolveria 500 e deixaria a conta sem senha para sempre.
+    """
+    from api.config import settings
+
+    novo = await admin.post("/v1/users", json={"email": "xff@teste.com",
+                                               "display_name": "XFF"})
+    uid = novo.json()["id"]
+    token = (await admin.post(f"/v1/users/{uid}/invite")).json()["token"]
+
+    anterior = settings.trusted_proxies
+    settings.trusted_proxies = ["127.0.0.0/8"]   # o peer do ASGITransport
+    try:
+        r = await client.post("/v1/invite/accept",
+                              headers={"X-Forwarded-For": "unknown"},
+                              json={"token": token, "password": "senha-123456"})
+    finally:
+        settings.trusted_proxies = anterior
+
+    assert r.status_code == 200, r.text
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        estado = conn.execute("SELECT status FROM app_user WHERE id = %s",
+                              (uid,)).fetchone()
+        registro = conn.execute(
+            "SELECT ip FROM audit_log WHERE action = 'user.invite.accept'"
+            "   AND entity_id = %s", (uid,)).fetchone()
+    assert estado[0] == "active"
+    # cai no peer da conexão, que é o único fato que não veio do header
+    assert registro is not None and str(registro[0]) == "127.0.0.1"
+
+
 async def test_trocar_senha_derruba_outras_sessoes(admin, client, superuser):
     async with client.__class__(transport=client._transport,
                                 base_url="http://test") as outra:

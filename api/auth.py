@@ -338,6 +338,16 @@ async def principal_from_request(request: Request) -> Principal:
     raise AuthError("não autenticado")
 
 
+def _e_endereco(ip: str | None) -> bool:
+    if ip is None:
+        return False
+    try:
+        ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    return True
+
+
 def _is_trusted_proxy(ip: str) -> bool:
     try:
         addr = ipaddress.ip_address(ip)
@@ -361,10 +371,16 @@ def client_ip(request: Request) -> str | None:
     quando o salto imediato está em `settings.trusted_proxies`.
 
     Com a lista vazia (default), vale sempre o peer real da conexão.
+
+    O retorno é sempre um endereço válido ou None: `audit_log.ip` e
+    `login_attempt.ip` são `inet`, e o header é texto livre — o nginx emite
+    `unknown` quando não conhece o cliente. Devolver esse texto estourava o cast
+    no INSERT, e como a auditoria comita junto com quem escreve, o estouro
+    levava a escrita junto (aceitar convite deixava a conta sem senha).
     """
     peer = request.client.host if request.client else None
     if peer is None or not _is_trusted_proxy(peer):
-        return peer
+        return peer if _e_endereco(peer) else None
 
     fwd = request.headers.get("x-forwarded-for")
     if not fwd:
@@ -374,5 +390,8 @@ def client_ip(request: Request) -> str | None:
     # ser forjado.
     for hop in reversed([h.strip() for h in fwd.split(",") if h.strip()]):
         if not _is_trusted_proxy(hop):
-            return hop
+            # Salto ilegível: não dá para dizer quem é o cliente, e o que vem à
+            # esquerda foi enviado por quem escreveu isto. Fica o peer, que é o
+            # único fato que não veio do header.
+            return hop if _e_endereco(hop) else peer
     return peer
