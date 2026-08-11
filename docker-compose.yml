@@ -1,0 +1,120 @@
+# visionyard em produção. Desenvolvimento local NÃO usa este arquivo: lá é
+# venv + o Postgres que já roda na máquina (ver README, seção "Subir").
+#
+#   cp .env.docker.example .env.docker   # e preencha os segredos
+#   docker compose --env-file .env.docker up -d --build
+#   docker compose --env-file .env.docker run --rm seed \
+#       --email voce@empresa.com --name "Seu Nome"
+#
+# O `--env-file` não é opcional: `env_file:` abaixo só alimenta o processo
+# dentro do container, enquanto os `${...}` deste arquivo são resolvidos pelo
+# compose antes disso — e para esses ele lê o `.env` padrão, que aqui é o do
+# desenvolvimento local. Sem a flag, a senha do banco não chega.
+#
+# A API sobe em 127.0.0.1:8000 — só o loopback. Quem termina TLS é um proxy no
+# host, e o CIDR dele precisa entrar em VISIONYARD_TRUSTED_PROXIES (ver o
+# comentário sobre IP de origem em .env.docker.example).
+
+name: visionyard
+
+services:
+  # Postgres da instalação. Para usar um banco gerenciado, apague este serviço,
+  # tire o `depends_on` de db em migrate, e aponte VISIONYARD_DATABASE_URL para
+  # o DSN externo.
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: visionyard
+      POSTGRES_DB: visionyard
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?defina POSTGRES_PASSWORD em .env.docker}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    # Sem `ports`: o banco só é alcançável de dentro da rede do compose.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U visionyard -d visionyard"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    networks: [interna]
+
+  # Passo bloqueante: aplica as migrations pendentes e sai. A API só sobe se
+  # este terminar com sucesso — schema divergente derruba o deploy em vez de
+  # deixar a API atender contra um banco errado. Reaplicar é inócuo ("nada a
+  # aplicar"), então o serviço roda a cada `up` de propósito.
+  migrate:
+    build: .
+    image: visionyard-api
+    command: ["python", "-m", "db.migrate"]
+    env_file: [.env.docker]
+    environment:
+      VISIONYARD_DATABASE_URL: postgresql://visionyard:${POSTGRES_PASSWORD:?defina POSTGRES_PASSWORD em .env.docker}@db:5432/visionyard
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+    networks: [interna]
+
+  api:
+    build: .
+    image: visionyard-api
+    command: ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000",
+              "--workers", "${UVICORN_WORKERS:-4}"]
+    env_file: [.env.docker]
+    environment:
+      VISIONYARD_DATABASE_URL: postgresql://visionyard:${POSTGRES_PASSWORD:?defina POSTGRES_PASSWORD em .env.docker}@db:5432/visionyard
+      # Caminho dentro do container; o arquivo vem do bind mount abaixo.
+      GOOGLE_APPLICATION_CREDENTIALS: /run/secrets/gcp-sa.json
+    ports:
+      # Só loopback: o proxy que termina TLS é quem publica para fora.
+      - "127.0.0.1:${API_PORT:-8000}:8000"
+    volumes:
+      # Conta de serviço com leitura do bucket de imagens, somente leitura.
+      - ${GCP_CREDENTIALS_FILE:?defina GCP_CREDENTIALS_FILE em .env.docker}:/run/secrets/gcp-sa.json:ro
+      # Manifestos de versão de dataset e dumps de importação. Manifesto de
+      # versão congelada é parte do registro: perder é perder a reprodutibilidade.
+      - vydata:/app/data
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL",
+             "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=4).status == 200 else 1)\""]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    networks: [interna]
+
+  # Primeiro superusuário. Não sobe no `up` — a senha é impressa uma única vez
+  # e o passo é manual, uma vez por instalação:
+  #   docker compose run --rm seed --email voce@empresa.com --name "Seu Nome"
+  seed:
+    build: .
+    image: visionyard-api
+    entrypoint: ["python", "-m", "db.seed"]
+    env_file: [.env.docker]
+    environment:
+      VISIONYARD_DATABASE_URL: postgresql://visionyard:${POSTGRES_PASSWORD:?defina POSTGRES_PASSWORD em .env.docker}@db:5432/visionyard
+    depends_on:
+      db:
+        condition: service_healthy
+    profiles: [manutencao]
+    networks: [interna]
+
+volumes:
+  pgdata:
+  vydata:
+
+networks:
+  interna:
+    # Subnet fixa para que VISIONYARD_TRUSTED_PROXIES possa nomeá-la: atrás de
+    # container o IP de origem que a API enxerga é o gateway desta rede, não o
+    # do cliente.
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16

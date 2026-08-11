@@ -43,7 +43,7 @@ Duas invariantes sustentam o resto:
 A interface tem as abas Projeto, Datasets, Rotulagem, Treinamento, Modelos,
 Pool (máquinas e fila de tarefas) e Usuários.
 
-## Subir
+## Subir (desenvolvimento)
 
 Requisitos: Python ≥ 3.10 e PostgreSQL ≥ 14.
 
@@ -60,6 +60,41 @@ createdb visionyard
 
 A senha do seed é gerada e impressa uma única vez. Não existe auto-cadastro:
 o primeiro usuário sai daí, os demais por convite na aba Usuários.
+
+## Subir (produção)
+
+O `docker-compose.yml` é o artefato de deploy — desenvolvimento não passa por
+ele. Sobe o Postgres da instalação, aplica as migrations e serve a API.
+
+```bash
+cp .env.docker.example .env.docker    # preencha POSTGRES_PASSWORD e a conta de serviço
+docker compose --env-file .env.docker up -d --build
+docker compose --env-file .env.docker run --rm seed \
+    --email voce@empresa.com --name "Seu Nome"
+```
+
+O `--env-file` não é opcional: `env_file:` alimenta o processo dentro do
+container, mas os `${...}` do compose são resolvidos antes disso, e para esses
+o compose lê o `.env` — que aqui é o do desenvolvimento.
+
+Três coisas que o arquivo decide por você:
+
+- **As migrations são um passo bloqueante.** O serviço `migrate` roda a cada
+  `up` e a API só sobe se ele terminar em zero. Schema divergente derruba o
+  deploy em vez de deixar a API atender contra um banco errado; reaplicar é
+  inócuo (`nada a aplicar`).
+- **A API escuta só no loopback** (`127.0.0.1:8000`), e o Postgres não publica
+  porta nenhuma. Quem termina TLS é um proxy no host.
+- **O IP de origem muda atrás de container.** A API só aceita
+  `X-Forwarded-For` quando o salto imediato está em
+  `VISIONYARD_TRUSTED_PROXIES`, e esse salto passa a ser o gateway da rede do
+  compose — daí a subnet fixa `172.28.0.0/16`. Se o valor estiver errado, todo
+  login parece vir do mesmo IP e o teto de tentativas por janela vira coletivo
+  em vez de por pessoa.
+
+O agente de execução não está no compose: ele roda nas máquinas de GPU e de
+borda, onde o torch vem do fornecedor da plataforma. Ver
+[`agent/README.md`](agent/README.md).
 
 ## Configuração
 

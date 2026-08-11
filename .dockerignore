@@ -1,0 +1,28 @@
+.git/
+.gitignore
+
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# Segredo e material local nunca entram na imagem.
+.env
+.env.docker
+tmp/
+data/
+agent-work/
+visionyard-deploy/
+*.pt
+*.onnx
+*.engine
+
+# O agente roda fora do container; a suíte roda contra Postgres real, fora dele.
+agent/
+tests/
+pytest.ini
+
+.vscode/
+.idea/
+.DS_Store
