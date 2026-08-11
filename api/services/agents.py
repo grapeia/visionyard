@@ -484,6 +484,7 @@ async def atualizar_deployment(dep_id: str, device_id: str, *, estado: str,
 
 # job.status terminal → o status correspondente do training_run.
 RUN_STATUS = {"succeeded": "finished", "failed": "failed", "canceled": "stopped"}
+TERMINAIS = tuple(RUN_STATUS)
 
 
 async def finalizar_job(job_id: str, device_id: str, *, status_final: str,
@@ -491,11 +492,17 @@ async def finalizar_job(job_id: str, device_id: str, *, status_final: str,
     run_status = RUN_STATUS[status_final]
     async with db.connection() as conn:
         async with conn.transaction():
+            # O `status <> ALL` é o que impede ressurreição: o reaper e o
+            # cancelamento na fila deixam o job terminal mas mantêm o
+            # `device_id`, então o par (id, device_id) sozinho ainda casa quando
+            # a máquina volta de uma partição de rede. Sem a guarda, o treino
+            # que o usuário cancelou reaparecia como concluído com sucesso.
             cur = await conn.execute(
                 "UPDATE job SET status = %s, error = %s, result = %s::jsonb,"
                 "  finished_at = now() WHERE id = %s AND device_id = %s"
-                " RETURNING id", (status_final, error, json.dumps(result),
-                                  job_id, device_id))
+                "  AND status <> ALL(%s) RETURNING id",
+                (status_final, error, json.dumps(result), job_id, device_id,
+                 list(TERMINAIS)))
             if await cur.fetchone() is None:
                 raise HTTPException(status.HTTP_404_NOT_FOUND,
                                     "job não é desta máquina")

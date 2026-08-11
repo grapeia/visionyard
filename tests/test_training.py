@@ -323,3 +323,44 @@ async def test_reaper_encerra_job_orfao(admin, client, tmp_path):
     with psycopg.connect(TEST_DSN, autocommit=True) as c:
         st = c.execute("SELECT status FROM job WHERE id=%s", (jid,)).fetchone()[0]
     assert st == "failed", f"job órfão não foi encerrado: {st}"
+
+
+async def test_finish_nao_ressuscita_job_ja_encerrado(admin, client, tmp_path):
+    """O agente que volta de uma partição de rede não desfaz um cancelamento.
+
+    O reaper (e o cancelamento na fila) deixam o job terminal mas mantêm o
+    `device_id`: sem guarda de estado, o `finish` atrasado da máquina casaria
+    pelo par (id, device_id) e um treino que o usuário cancelou apareceria como
+    concluído com sucesso.
+    """
+    import psycopg
+
+    from .conftest import TEST_DSN
+    await _versao_congelada(admin, tmp_path)
+    run = await _criar_run(admin)
+    dev = await _device(admin, {"train": True})
+    tok = dev["token"]
+    job = (await client.post("/v1/agent/claim", headers=_h(tok))).json()["job"]
+    await client.post(f"/v1/agent/jobs/{job['id']}/heartbeat",
+                      json={"progress": {}}, headers=_h(tok))
+
+    # a máquina some; o usuário cancela e o reaper encerra o job no limite
+    await admin.post(f"/v1/projects/{PROJ['slug']}/runs/{run['run_id']}/cancel")
+    with psycopg.connect(TEST_DSN, autocommit=True) as c:
+        c.execute("UPDATE job SET heartbeat_at = now() - interval '10 min',"
+                  " attempts = max_attempts WHERE id = %s", (job["id"],))
+    await client.post("/v1/agent/claim", headers=_h(tok))   # dispara o reaper
+
+    # a máquina volta e reporta sucesso do treino que já foi cancelado
+    r = await client.post(f"/v1/agent/jobs/{job['id']}/finish",
+                          json={"status": "succeeded", "result": {}},
+                          headers=_h(tok))
+    assert r.status_code == 404, r.text
+
+    with psycopg.connect(TEST_DSN, autocommit=True) as c:
+        js = c.execute("SELECT status FROM job WHERE id=%s",
+                       (job["id"],)).fetchone()[0]
+        rs = c.execute("SELECT status FROM training_run WHERE id=%s",
+                       (run["run_id"],)).fetchone()[0]
+    assert js == "canceled", f"job cancelado virou {js}"
+    assert rs == "stopped", f"run parado virou {rs}"
