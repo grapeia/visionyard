@@ -193,8 +193,10 @@ simultâneas se atropelam** (`DeadlockDetected` nas migrations, depois
 `AdminShutdown`). Se algum dia rodar suíte em paralelo, o nome do banco tem de
 sair de uma variável por processo.
 
-### 11. Achados do review dos itens 9 e 10 — `pendente`
-Sobrou o que o review de 2026-08-11 confirmou e que não cabia nas correções.
+### 11. Achados do review dos itens 9 e 10 — `em curso`
+Sobrou o que o review de 2026-08-11 confirmou e que não cabia nas correções. Os
+dois bugs pré-existentes estão corrigidos; o primeiro item continua aberto
+porque é decisão de modelo, não conserto.
 
 - **Dataset com imagem sem md5 não tem saída fina.** O congelamento recusa (e
   agora avisa antes, no `preview`), mas a única forma de destravar é tirar do
@@ -206,18 +208,16 @@ Sobrou o que o review de 2026-08-11 confirmou e que não cabia nas correções.
   `sha256` (que essas linhas têm — o placeholder da 006 nasceu dele), ou uma
   rota de manutenção que troque `annotation.sample_id` para a linha reimportada
   e apague a velha. Nenhuma urgente: só afeta instalação que passou pela 006.
-- **O total da grade de imagens ignora o filtro** (`routers/samples.py`). A
-  consulta dos itens aplica `{escopo}` E `{cond}` sobre o LEFT JOIN com
-  `annotation`; o `count(*)` aplica só `{escopo}`, sem join. Com 1000 imagens e
-  10 pendentes, `?filtro=pendentes` devolve 10 itens e `total: 1000`, e a tela
-  escreve "1000 imagens" sobre uma grade de 10. O comentário logo acima da query
-  afirma exatamente o invariante que ela quebra.
-- **`sample_id`/`sample_ids` do prelabel não são validados** (`routers/prelabel.py`).
-  São `str` puro e vão direto para `id = ANY(%s::uuid[])`: id malformado vira
-  `InvalidTextRepresentation` e 500, em vez do 404 que o handler já tem. A forma
-  certa já está em `routers/jobs.py:43`.
+- ~~**O total da grade de imagens ignora o filtro**~~ — `feito` (`da7e21f`). O
+  `count(*)` ganhou o mesmo LEFT JOIN com `annotation` e o mesmo `{cond}` da
+  consulta dos itens; sem o join, `{cond}` não teria de onde falar de `a`.
+- ~~**`sample_id`/`sample_ids` do prelabel não são validados**~~ — `feito`
+  (`3efde0f`). Tipados como `UUID` no modelo pydantic, como já era em
+  `routers/jobs.py:43`. Id malformado é 422 (erro de entrada), não o 404 que o
+  plano supunha: 404 diria "não existe" sobre algo que nunca foi um id. O
+  payload do job segue guardando string, que é o que o agente lê.
 
-Os dois últimos são pré-existentes — nenhum dos commits desta semana os tocou.
+Os dois eram pré-existentes — nenhum dos commits desta semana os tocou.
 
 ## Registro
 
@@ -260,3 +260,9 @@ Os dois últimos são pré-existentes — nenhum dos commits desta semana os toc
   único; `1c03d1e` `db.connection()` anotado, que era o que faltava para o item 9
   valer para as leituras dentro de transação. Item 11 criado com o que sobrou.
   Suíte: **165 testes passando**.
+- **2026-08-11** — os dois bugs pré-existentes do item 11 corrigidos, com teste
+  antes: `da7e21f` o total da grade passou a contar o que a grade mostra, e
+  `3efde0f` os ids do prelabel viraram `UUID` no pydantic. Sobrou do item 11 só
+  o dataset com imagem sem md5, que é escolha de modelo (manifesto v1.1 com
+  identidade no `sha256` ou rota de manutenção que remaneje a anotação) e não
+  conserto. Suíte: **167 testes passando**.
