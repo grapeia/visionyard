@@ -116,6 +116,22 @@ async def test_prelabel_usa_champion(admin, client, tmp_path):
     assert r.json()["model_version"] == 1
 
 
+async def test_prelabel_apelido_inexistente_404(admin, client, tmp_path):
+    """Apelido pedido de propósito é exigência, não sugestão: cair calado para a
+    última versão pré-tagearia com um modelo que ninguém escolheu."""
+    await _produzir_modelo(admin, client, tmp_path)
+    r = await admin.post(f"/v1/projects/{PROJ['slug']}/prelabel", json={
+        "model_slug": "detector", "dataset_slug": DS["slug"],
+        "alias": "challenger"})
+    assert r.status_code == 404, r.text
+    assert "challenger" in r.json()["detail"]
+
+    # sem apelido pedido, o fallback para a última versão continua valendo
+    r = await admin.post(f"/v1/projects/{PROJ['slug']}/prelabel", json={
+        "model_slug": "detector", "dataset_slug": DS["slug"]})
+    assert r.status_code == 201, r.text
+
+
 async def test_prelabel_exige_engineer(admin, client, tmp_path):
     from .test_projects import novo_usuario
     await _produzir_modelo(admin, client, tmp_path)

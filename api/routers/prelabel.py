@@ -57,7 +57,14 @@ async def _resolver_versao(project_id: str, body: PrelabelIn) -> dict:
             "SELECT mv.id, mv.version, mv.weights_uri, mv.schema_id"
             "  FROM model_alias a JOIN model_version mv ON mv.id = a.model_version_id"
             " WHERE a.model_id = %s AND a.alias = %s", (m["id"], alias))
-        if mv is None:      # sem apelido: cai para a última versão
+        # Apelido pedido de propósito é exigência, não sugestão: cair calado
+        # para a última versão pré-tagearia com um modelo que ninguém escolheu
+        # — e o relatório ainda diria que foi o apelido pedido. O fallback vale
+        # só para o 'champion' implícito, que é o padrão, não uma escolha.
+        if mv is None and body.alias:
+            raise HTTPException(status.HTTP_404_NOT_FOUND,
+                                f"apelido '{body.alias}' não existe neste modelo")
+        if mv is None:      # sem champion: cai para a última versão
             mv = await db.fetch_one(
                 "SELECT id, version, weights_uri, schema_id FROM model_version"
                 " WHERE model_id = %s ORDER BY version DESC LIMIT 1", (m["id"],))
