@@ -132,6 +132,12 @@ o causou.
   orquestrador. Separar liveness de readiness.
 - Convenção de idioma PT/EN agora está escrita no `CLAUDE.md`; conferir se o
   código diverge dela em algum ponto e alinhar.
+- `dataset.selection` (jsonb, 002) está morta: a 007 trocou o modelo de "filtro
+  por metadados" por origens explícitas (`dataset_source`), e nenhuma linha de
+  Python ou de JS lê ou escreve a coluna. O comentário dela na migration ainda
+  descreve o modelo antigo em detalhe — era o que o `README.md` repetia até
+  2026-08-11. Derrubar exige `NNN_` novo; enquanto não vier, é a próxima
+  armadilha de quem for ler o schema.
 
 ### 9. Ligar `index` e `dict-item` no `mypy` — `feito` (2026-08-11)
 Os dois códigos estão ligados; os 55 lugares apontados viraram duas coisas

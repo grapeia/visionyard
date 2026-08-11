@@ -14,7 +14,7 @@ e devolvem — com logs, métricas por época e o peso publicado num bucket.
 ```
 imagens (GCS ou importação)
    └─ anotação por autor, com histórico
-        └─ dataset (regra de seleção viva)
+        └─ dataset (lista viva de origens)
              └─ dataset_version (snapshot imutável)
                   └─ job de treino → agente → training_run + métricas
                        └─ model_version → build (ONNX/TensorRT) → avaliação
@@ -23,11 +23,11 @@ imagens (GCS ou importação)
 
 Duas invariantes sustentam o resto:
 
-- **Dataset é regra, versão é snapshot.** O `dataset` guarda um filtro
-  (`{"filter": {"metadata.linha": "A"}, "annotation_status": ["reviewed"]}`);
-  o `dataset_version` congela a lista concreta de imagens e anotações. Só a
-  versão é treinável, e ela nunca muda — é o que torna dois treinos
-  comparáveis.
+- **Dataset é definição, versão é snapshot.** O `dataset` aponta para origens
+  (prefixos de bucket, importações) e muda quando você quiser; o
+  `dataset_version` congela a lista concreta de imagens e anotações e sorteia o
+  split uma única vez. Só a versão é treinável, e ela nunca muda — é o que torna
+  dois treinos comparáveis.
 - **Anotação é por (imagem, autor).** Salvar mexe só na sua; o trabalho de
   outro rotulador não é tocado. É o que permite medir concordância depois.
 
@@ -115,9 +115,12 @@ ao navegador por URL assinada — a API emite a URL e não trafega bytes.
 ## Agentes
 
 Cada máquina de execução roda `python -m agent.main` com um token emitido na
-aba Pool. O agente anuncia capacidades (`train`, `infer`, `prelabel`), faz
-long-poll, reclama o que sabe fazer e devolve progresso por época enquanto
-treina. Ver [`agent/README.md`](agent/README.md).
+aba Pool. Faz long-poll, reclama o que sabe fazer e devolve progresso por época
+enquanto treina. Quem decide o que a máquina sabe fazer (`train`, `infer`,
+`prelabel`) é o admin, no cadastro do device: o agente só acrescenta
+diagnóstico (GPU, CUDA, versão do torch), e a API descarta o resto — senão um
+dispositivo de borda se declararia apto a treinar. Ver
+[`agent/README.md`](agent/README.md).
 
 ## Testes e verificação
 

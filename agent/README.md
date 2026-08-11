@@ -13,7 +13,7 @@ register → claim → (baixa manifesto) → treina → heartbeat/logs/métricas
 
 O *claim* só entrega um job cujas exigências (`requires`) estão contidas nas
 capacidades (`capabilities`) do device. Quem define as flags de roteamento
-(`train`/`infer`) é o admin, ao cadastrar o device em **Devices** na interface.
+(`train`/`infer`) é o admin, ao cadastrar o device na aba **Pool** da interface.
 O agente apenas acrescenta o diagnóstico (GPU, CUDA).
 
 ## Instalação
@@ -30,7 +30,7 @@ pip install -r agent/requirements.txt
 | Variável | Obrigatória | Para quê |
 |---|---|---|
 | `VISIONYARD_API_URL` | sim | `http://api.interna:8000` |
-| `VISIONYARD_AGENT_TOKEN` | sim | token do device (emitido em **Devices → criar**) |
+| `VISIONYARD_AGENT_TOKEN` | sim | token do device (emitido na aba **Pool** → Máquinas → criar) |
 | `GOOGLE_APPLICATION_CREDENTIALS` | sim | conta de serviço com leitura do bucket de imagens |
 | `VISIONYARD_MODELS_BUCKET` | treino | bucket onde o peso treinado é publicado |
 | `VISIONYARD_MODELS_PREFIX` | não | prefixo dos modelos no bucket (default `models`) |
@@ -52,7 +52,7 @@ pm2 start "python -m agent.main" --name visionyard-agent --interpreter bash \
 
 ## Cadastrar o device antes
 
-Na interface, aba **Devices** (superusuário):
+Na interface, aba **Pool** → **Máquinas** (superusuário):
 
 - **Servidor de GPU**: `capabilities = {"train": true}`
 - **Dispositivos de pré-tag**: `capabilities = {"infer": true, "prelabel": true}`
