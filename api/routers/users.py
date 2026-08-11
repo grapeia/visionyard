@@ -7,12 +7,12 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Request, status
 from pydantic import BaseModel, EmailStr, Field
 
 from .. import auth, db
+from ..audit import audit
 from ..auth import Principal
 from ..config import settings
 from ..deps import (
     ROLE_RANK,
     CurrentUser,
-    audit,
     project_role,
     require_role,
     require_superuser,

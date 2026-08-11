@@ -43,19 +43,38 @@ Duas ficaram de fora, de propósito:
 
 - `POST /invite/accept` — a escrita acontece dentro de `auth.accept_invite`, que
   tem transação própria; incluir a auditoria exigiria a função devolver a
-  conexão. Fica com o item 4 (camada de serviço).
+  conexão. Fica com o item 4 (camada de serviço). **Fechado no item 4.**
 - A troca de senha agora é atômica (senha + sessões + tokens + auditoria), que
   era o caso em que a divisão doía de verdade.
 
-### 4. Camada de serviço, escolher um lado — `pendente`
-`api/datasets.py` é um módulo de serviço bem feito, mas é o único — e o nome
-colide com `api/routers/datasets.py`. Enquanto isso `routers/agents.py` (624
-linhas), `models.py` e `training.py` carregam SQL e regra de domínio inline.
-Hoje é preciso adivinhar onde a regra mora.
+### 4. Camada de serviço, escolher um lado — `feito` (2026-08-11)
+O lado escolhido foi `api/services/`: router declara rota, pydantic, RBAC e
+código de status; o serviço decide o que acontece e escreve o SQL. A convenção
+está no `CLAUDE.md`, com as duas decisões que a tornam barata — o serviço
+levanta `HTTPException` (hierarquia paralela de erro seria uma segunda descrição
+do mesmo erro) e não conhece pydantic (recebe escalares e `dict`).
 
-Decisão a tomar antes de mexer: `api/services/` para todos, ou router gordo com
-`datasets.py` absorvido de volta. Preferência atual: `api/services/`, extraindo
-primeiro o protocolo do agente (claim/finish/reaper), que é o mais denso.
+O que mudou:
+
+- `api/datasets.py` → `api/services/datasets.py`, resolvendo a colisão de nome
+  com `routers/datasets.py`.
+- `routers/agents.py`: 625 → 250 linhas, com `services/agents.py` levando o
+  protocolo inteiro (reaper, claim, `job_da_maquina`, prelabel, model, build,
+  evaluation, deployment, finish). De brinde sumiram quatro
+  `SELECT created_by FROM job` redundantes: `job_da_maquina` já traz a coluna.
+- `routers/models.py` (389 → 133) e `routers/training.py` (262 → 82), com
+  `services/models.py` e `services/training.py`.
+- `audit()` saiu de `deps.py` para `api/audit.py` — não é dependência do
+  FastAPI, e de dentro de `deps` o `auth.py` não conseguia importá-la sem ciclo.
+  Com ela fora, `auth.accept_invite` passou a auditar dentro da própria
+  transação, fechando a pendência do item 3. `api/audit.py` importa `Principal`
+  só sob `TYPE_CHECKING`, que é o que mantém o ciclo aberto em tempo de
+  execução.
+
+Os routers menores (`auth`, `buckets`, `devices`, `imports`, `jobs`, `prelabel`,
+`projects`, `samples`, `users`) seguem com SQL inline. Não é mais ambiguidade —
+a regra está escrita; é dívida a pagar quando cada um for mexido a sério.
+`imports.py` é o mais provável de puxar cedo, pelo item 5.
 
 ### 5. Importação sair do processo da API — `pendente`
 `imports.py:175` usa `asyncio.create_task`. Três consequências: deploy no meio
@@ -110,3 +129,9 @@ Enquanto não for feito, os dois códigos ficam em `disable_error_code` no
   `Annotated[object]` → `Principal`, `conn=` opcional em `db.py`/`audit()` com
   as auditorias de escrita dentro da transação. Item 9 criado a partir do que o
   `mypy` encontrou. Suíte: 147 testes passando (eram 144).
+- **2026-08-11** — item 4 feito. `api/services/` com `agents`, `datasets`,
+  `models` e `training`; os três routers correspondentes ficaram só com HTTP.
+  `audit()` virou `api/audit.py`, o que fechou a pendência de auditoria do
+  `/invite/accept` deixada pelo item 3. Suíte: 149 testes passando (eram 147) —
+  os dois novos cobrem que aceitar convite audita na mesma transação e que
+  convite recusado não deixa registro.

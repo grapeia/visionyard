@@ -7,8 +7,9 @@ from fastapi import APIRouter, HTTPException, Request, Response, status
 from pydantic import BaseModel, EmailStr, Field
 
 from .. import auth, db
+from ..audit import audit
 from ..config import settings
-from ..deps import CurrentUser, audit
+from ..deps import CurrentUser
 from ..security import (
     hash_password,
     new_token,
@@ -102,14 +103,13 @@ async def accept_invite(body: InviteAcceptIn, request: Request,
     proteção é o token de uso único com validade.
     """
     try:
-        user = await auth.accept_invite(body.token, body.password)
+        user = await auth.accept_invite(body.token, body.password,
+                                        ip=auth.client_ip(request))
     except ValueError as e:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(e)) from e
     except auth.AuthError as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e)) from e
 
-    await audit(None, "user.invite.accept", "app_user", user["id"],
-                ip=auth.client_ip(request), note="via convite")
     token = await auth.create_session(user["id"], auth.client_ip(request),
                                       request.headers.get("user-agent"))
     _set_cookie(response, token)

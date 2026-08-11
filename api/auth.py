@@ -22,6 +22,7 @@ from fastapi import Request
 from psycopg import AsyncConnection
 
 from . import db
+from .audit import audit
 from .config import settings
 from .security import (
     dummy_verify,
@@ -278,8 +279,14 @@ async def issue_invite(user_id: str, purpose: str,
     return token
 
 
-async def accept_invite(token: str, password: str) -> dict:
-    """Consome o convite e define a senha. Uso único, em transação."""
+async def accept_invite(token: str, password: str, *,
+                        ip: str | None = None) -> dict:
+    """Consome o convite e define a senha. Uso único, em transação.
+
+    A auditoria entra na MESMA transação: aceitar convite é a única escrita que
+    o usuário faz antes de existir uma sessão dele, e um registro que comita à
+    parte poderia sumir (ou sobrar) sem o fato correspondente.
+    """
     if len(password) < settings.password_min_length:
         raise ValueError(
             f"senha precisa de ao menos {settings.password_min_length} "
@@ -312,6 +319,10 @@ async def accept_invite(token: str, password: str) -> dict:
             await conn.execute(
                 "UPDATE user_session SET revoked_at = now()"
                 " WHERE user_id = %s AND revoked_at IS NULL", (row["user_id"],))
+            # actor=None: quem aceita ainda não é um principal autenticado.
+            await audit(None, "user.invite.accept", "app_user",
+                        str(row["user_id"]), ip=ip, note="via convite",
+                        conn=conn)
     return {"id": str(row["user_id"]), "email": row["email"],
             "display_name": row["display_name"]}
 

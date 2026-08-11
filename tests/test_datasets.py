@@ -8,7 +8,7 @@ from pathlib import Path
 import psycopg
 import pytest
 
-from api.datasets import assign_splits, build_manifest
+from api.services.datasets import assign_splits, build_manifest
 
 from .conftest import TEST_DSN
 from .test_imports import _dump

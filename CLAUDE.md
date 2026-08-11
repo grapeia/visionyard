@@ -33,9 +33,10 @@ api/            Control API (FastAPI)
   db.py         pool psycopg3; SQL direto, sem ORM
   security.py   hash de senha e tokens
   auth.py       login, sessão, token de API, token de device
-  deps.py       principal da requisição, RBAC por projeto, audit()
-  datasets.py   regra de congelamento (resolve → split → manifesto)
-  routers/      uma rota por arquivo de aba
+  audit.py      audit(), fora de deps.py para auth.py poder chamá-la
+  deps.py       principal da requisição, RBAC por projeto
+  routers/      uma rota por arquivo de aba — só HTTP
+  services/     a regra de domínio e o SQL que a implementa
   importers/    adaptadores de origem (GCS, Label Studio) sobre base.Importer
   static/       interface web servida direto, sem build
 agent/          worker das máquinas de execução
@@ -44,6 +45,22 @@ tests/          suíte contra Postgres real
 ```
 
 ## Convenções
+
+**Router é HTTP, serviço é regra.** O arquivo em `routers/` declara a rota, o
+modelo pydantic do corpo, o RBAC e o código de status; quem decide *o que
+acontece* — e escreve o SQL que faz acontecer — mora no módulo irmão em
+`services/`. Regra nova vai para o serviço mesmo que só uma rota a use, para não
+voltar a ser preciso adivinhar onde ela está.
+
+Duas escolhas dentro dessa divisão, feitas para não criar cerimônia: o serviço
+**levanta `HTTPException`** (uma hierarquia paralela de erros de domínio seria
+uma segunda descrição do mesmo erro) e o serviço **não conhece pydantic** —
+recebe escalares e `dict`/`list[dict]`, e é o router que valida e converte.
+
+`agents`, `datasets`, `models` e `training` já estão assim. Os routers menores
+(`auth`, `buckets`, `devices`, `imports`, `jobs`, `prelabel`, `projects`,
+`samples`, `users`) ainda carregam o SQL inline; quando um deles for mexido a
+sério, a regra vai junto para `services/`.
 
 **SQL direto, sem ORM.** O schema é escrito à mão em `db/migrations/`; um ORM por
 cima seria uma segunda descrição do mesmo modelo para manter em sincronia. Query
@@ -55,7 +72,7 @@ alterado. Mudança de schema é sempre um `NNN_` novo.
 **Comentário explica o porquê, não o quê.** É o padrão dominante no repositório e
 vale mantê-lo: quando um trecho existe para fechar uma corrida, um vazamento ou
 uma regressão, o comentário diz qual. Ver `routers/datasets.py:299` e
-`api/datasets.py:65` como referência de tom.
+`services/datasets.py:65` como referência de tom.
 
 **Idioma.** Domínio, tabelas, colunas e nomes de rota em inglês
 (`dataset_version`, `manifest_uri`, `samples_created`). Variável local, mensagem
@@ -81,13 +98,15 @@ papel `viewer`.
   revelaria que o projeto existe.
 - **Agente e usuário são portas diferentes.** Device autentica por
   `X-Agent-Token` e nunca por `Authorization`. Rota de agente vive em
-  `routers/agents.py` e valida que o job é daquela máquina (`_own_job`).
-- **O agente não declara capacidade de roteamento.** `register` filtra por
-  `CAPS_DIAGNOSTICO`; deixar `train`/`infer` passar permite que um dispositivo de
-  borda reclame treino.
+  `routers/agents.py`, e toda operação passa por `services/agents.py:
+  job_da_maquina`, que valida que o job é daquela máquina.
+- **O agente não declara capacidade de roteamento.** `registrar_presenca` filtra
+  por `CAPS_DIAGNOSTICO`; deixar `train`/`infer` passar permite que um
+  dispositivo de borda reclame treino.
 - **Escrita vinda do agente é escopada pelo projeto do job.** O `sample_id` vem
   do corpo da requisição — o `SELECT ... WHERE s.project_id = %s` dentro do
-  INSERT é o que impede injetar dado em outro projeto.
+  INSERT (`services/agents.py: gravar_prelabels`) é o que impede injetar dado em
+  outro projeto.
 - **Split é sorteado no congelamento, uma vez.** Sortear no treino torna dois
   runs incomparáveis.
 

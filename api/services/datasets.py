@@ -28,7 +28,7 @@ import random
 from datetime import UTC, datetime
 from pathlib import Path
 
-from . import db
+from .. import db
 
 MANIFEST_VERSION = "1.0"
 

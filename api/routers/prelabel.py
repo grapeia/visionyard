@@ -18,8 +18,9 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Request, status
 from pydantic import BaseModel, Field
 
 from .. import auth, db
+from ..audit import audit
 from ..auth import Principal
-from ..deps import audit, require_role
+from ..deps import require_role
 
 router = APIRouter(tags=["prelabel"])
 

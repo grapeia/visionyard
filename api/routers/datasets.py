@@ -11,16 +11,17 @@ from fastapi import Path as P
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .. import auth, db
+from ..audit import audit
 from ..auth import Principal
 from ..config import settings
-from ..datasets import (
+from ..deps import require_role
+from ..services.datasets import (
     assign_splits,
     build_manifest,
     resolve_items,
     schemas_compativeis,
     write_manifest,
 )
-from ..deps import audit, require_role
 from .projects import SLUG_RE
 
 router = APIRouter(tags=["datasets"])

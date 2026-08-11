@@ -12,8 +12,9 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Path, Request, status
 
 from .. import auth, db
+from ..audit import audit
 from ..auth import Principal
-from ..deps import audit, require_superuser
+from ..deps import require_superuser
 
 router = APIRouter(tags=["jobs"])
 

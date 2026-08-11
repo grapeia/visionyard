@@ -14,8 +14,9 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Request, status
 from pydantic import BaseModel, Field, field_validator
 
 from .. import auth, db
+from ..audit import audit
 from ..auth import Principal
-from ..deps import CurrentUser, audit, project_role, require_role, require_superuser
+from ..deps import CurrentUser, project_role, require_role, require_superuser
 
 router = APIRouter(tags=["projects"])
 

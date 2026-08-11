@@ -21,9 +21,10 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Request, status
 from pydantic import BaseModel, Field
 
 from .. import auth, db
+from ..audit import audit
 from ..auth import Principal
 from ..config import settings
-from ..deps import audit, require_role
+from ..deps import require_role
 from ..importers.base import ImportReport
 from ..importers.gcs_prefix import GCSPrefixImporter
 from ..importers.label_studio import LabelStudioImporter
