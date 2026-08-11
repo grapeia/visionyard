@@ -5,8 +5,13 @@ atualizado à medida que o trabalho anda. O registro do que mudou fica no fim.
 
 **Origem:** revisão de arquitetura em 2026-08-10. O veredito foi que a lógica de
 domínio está sólida (imutabilidade, concorrência, segurança) e que o que falta é
-ferramental e separação de camadas. Nenhum item abaixo muda comportamento do
-produto — são todos sobre não deixar regressão passar despercebida.
+ferramental e separação de camadas.
+
+A intenção era que nenhum item mudasse comportamento do produto. Não se
+sustentou: o review do item 4 desenterrou dois defeitos reais (um introduzido
+pela própria refatoração, outro pré-existente) e corrigi-los mudou
+comportamento. O item 10 tem mais três esperando. Vale como intenção — mexer em
+camada não é desculpa para mexer em regra —, não como promessa.
 
 ## Fila
 
@@ -34,7 +39,8 @@ Duas decisões que ficaram registradas na config:
 `fetch_one/fetch_all/execute` e `audit()` aceitam `conn=` opcional (o helper
 `_usar` cai no pool quando não recebe nada), e `auth.revoke_all_sessions`
 também. As 24 escritas de rota que auditavam por fora passaram a auditar dentro
-da transação; `deps.audit()` não faz mais `import json` no corpo.
+da transação; `audit()` não faz mais `import json` no corpo (morava em
+`deps.py`; o item 4 a moveu para `api/audit.py`).
 `tests/test_auditoria.py` cobre o mecanismo: transação abortada não deixa
 registro, transação comitada deixa, e quem não passa `conn` continua pegando
 conexão do pool.
@@ -127,6 +133,22 @@ o causou.
 - Convenção de idioma PT/EN agora está escrita no `CLAUDE.md`; conferir se o
   código diverge dela em algum ponto e alinhar.
 
+### 9. Ligar `index` e `dict-item` no `mypy` — `pendente`
+Nasceu do item 1: com esses dois códigos ligados, o `mypy` aponta ~60 lugares
+que indexam o retorno de `db.fetch_one` sem checar `None`. São dois casos
+distintos misturados, e é a separação que dá valor:
+
+- query que **sempre** devolve linha (`INSERT ... RETURNING`, `count(*)`) —
+  pede um helper que estoure explicitamente se vier `None`, em vez do
+  `TypeError` obscuro três linhas adiante;
+- **404 que falta** — tipicamente `proj["id"]` logo depois de `require_role`:
+  para superusuário, que passa sem o projeto existir, hoje vira 500. O padrão
+  correto já está em `routers/prelabel.py` e `routers/projects.py`
+  (`if proj is None: raise HTTPException(404, ...)`).
+
+Enquanto não for feito, os dois códigos ficam em `disable_error_code` no
+`pyproject.toml`.
+
 ### 10. Achados do review do item 4, não corrigidos — `pendente`
 Três bugs pré-existentes que o item 4 só mudou de arquivo. Nenhum foi
 introduzido pela refatoração, e por isso nenhum foi corrigido junto — mas todos
@@ -152,22 +174,6 @@ simultâneas se atropelam** (`DeadlockDetected` nas migrations, depois
 `AdminShutdown`). Se algum dia rodar suíte em paralelo, o nome do banco tem de
 sair de uma variável por processo.
 
-### 9. Ligar `index` e `dict-item` no `mypy` — `pendente`
-Nasceu do item 1: com esses dois códigos ligados, o `mypy` aponta ~60 lugares
-que indexam o retorno de `db.fetch_one` sem checar `None`. São dois casos
-distintos misturados, e é a separação que dá valor:
-
-- query que **sempre** devolve linha (`INSERT ... RETURNING`, `count(*)`) —
-  pede um helper que estoure explicitamente se vier `None`, em vez do
-  `TypeError` obscuro três linhas adiante;
-- **404 que falta** — tipicamente `proj["id"]` logo depois de `require_role`:
-  para superusuário, que passa sem o projeto existir, hoje vira 500. O padrão
-  correto já está em `routers/prelabel.py` e `routers/projects.py`
-  (`if proj is None: raise HTTPException(404, ...)`).
-
-Enquanto não for feito, os dois códigos ficam em `disable_error_code` no
-`pyproject.toml`.
-
 ## Registro
 
 - **2026-08-10** — revisão de arquitetura, criação do `CLAUDE.md` e deste plano.
@@ -175,9 +181,21 @@ Enquanto não for feito, os dois códigos ficam em `disable_error_code` no
   `Annotated[object]` → `Principal`, `conn=` opcional em `db.py`/`audit()` com
   as auditorias de escrita dentro da transação. Item 9 criado a partir do que o
   `mypy` encontrou. Suíte: 147 testes passando (eram 144).
-- **2026-08-11** — item 4 feito. `api/services/` com `agents`, `datasets`,
-  `models` e `training`; os três routers correspondentes ficaram só com HTTP.
-  `audit()` virou `api/audit.py`, o que fechou a pendência de auditoria do
-  `/invite/accept` deixada pelo item 3. Suíte: 149 testes passando (eram 147) —
-  os dois novos cobrem que aceitar convite audita na mesma transação e que
-  convite recusado não deixa registro.
+- **2026-08-11** — item 4 feito (`f828a3f`). `api/services/` com `agents`,
+  `models` e `training` convertidos por inteiro e `datasets` pela metade; os
+  três routers correspondentes ficaram só com HTTP. `audit()` virou
+  `api/audit.py`, o que fechou a pendência de auditoria do `/invite/accept`
+  deixada pelo item 3.
+- **2026-08-11** — review do item 4 (alto esforço, 9 achados de 20 candidatos).
+  Quatro commits de correção: `d3df6b8` `client_ip` só devolve endereço — era
+  regressão da própria refatoração, porque a auditoria dentro da transação
+  passou a derrubar o aceite de convite quando o `X-Forwarded-For` não é IP;
+  `a62f0d5` guarda de estado terminal no `finish`, bug pré-existente que fazia
+  treino cancelado reaparecer como concluído; `1350cad` docstrings dos handlers
+  de volta, porque 17 rotas tinham perdido a `description` do OpenAPI; `27e3020`
+  três afirmações do `CLAUDE.md` que a refatoração tornou falsas. Item 10 criado
+  com os três achados pré-existentes que ficaram de fora.
+  Suíte: **151 testes passando** (eram 147 no início do dia). Os quatro novos
+  cobrem a auditoria do convite (na transação, e nenhum registro quando
+  recusado), o `X-Forwarded-For` que não é endereço e o `finish` atrasado que
+  não pode ressuscitar job encerrado.
