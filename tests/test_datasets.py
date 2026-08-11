@@ -72,6 +72,21 @@ def test_manifesto_tem_hash_e_stats():
     assert meta["roi"] is None                       # sem ROI por padrão
 
 
+def test_manifesto_recusa_imagem_sem_md5():
+    """`sample.md5` é anulável desde a 008 (linha pendente de backfill). O md5 é
+    a identidade de conteúdo que o agente usa como chave de cache e nome do
+    arquivo materializado — sem ele o item não pode entrar no manifesto. Antes
+    estourava `TypeError` e o congelamento virava 500."""
+    itens = [{"sample_id": "s1", "uri": "gs://b/1.jpg", "md5": b"\x01" * 16,
+              "width": 100, "height": 80, "split": "train", "boxes": []},
+             {"sample_id": "s2", "uri": "gs://b/2.jpg", "md5": None,
+              "width": 100, "height": 80, "split": "train", "boxes": []}]
+    with pytest.raises(ValueError) as e:
+        build_manifest(itens, ["classe_a"], ["gs://b/"], 1, "x",
+                       {"method": "random"}, "proj", "ds")
+    assert "md5" in str(e.value) and "gs://b/2.jpg" in str(e.value)
+
+
 def test_manifesto_carrega_roi():
     """A ROI do dataset viaja no meta.json para o agente aplicar o recorte. As
     caixas do items.jsonl seguem em coordenadas do quadro cheio (o agente é quem
@@ -229,6 +244,32 @@ async def test_congelar_duas_vezes_sem_mudanca_e_rejeitado(admin, tmp_path):
     r = await admin.post(url, json={"descricao": "de novo"})
     assert r.status_code == 409
     assert "idêntico à v1" in r.json()["detail"]
+
+
+async def test_congelar_com_imagem_sem_md5_recusa(admin, tmp_path):
+    """Base que passou pela 006 e teve o placeholder zerado tem sample com md5
+    NULL. Congelar precisa recusar dizendo qual imagem trava — não estourar 500.
+    """
+    await _projeto_com_dados(admin, tmp_path)
+    await admin.post(f"/v1/projects/{PROJ['slug']}/datasets", json=DS)
+    src = await _source_id(PROJ["slug"])
+    await admin.put(
+        f"/v1/projects/{PROJ['slug']}/datasets/{DS['slug']}/origens/{src}")
+
+    # o backfill pendente da 008: md5 zerado à mão numa imagem ANOTADA (é a que
+    # entra no congelamento). `sample` é imutável por trigger, daí o desligamento.
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        conn.execute("ALTER TABLE sample DISABLE TRIGGER sample_immutable")
+        conn.execute(
+            "UPDATE sample SET md5 = NULL WHERE id ="
+            " (SELECT sample_id FROM annotation LIMIT 1)")
+        conn.execute("ALTER TABLE sample ENABLE TRIGGER sample_immutable")
+
+    r = await admin.post(
+        f"/v1/projects/{PROJ['slug']}/datasets/{DS['slug']}/freeze",
+        json={"descricao": "com md5 pendente"})
+    assert r.status_code == 409, r.text
+    assert "md5" in r.json()["detail"]
 
 
 async def test_dataset_sem_anotacao_nao_congela(admin, tmp_path):

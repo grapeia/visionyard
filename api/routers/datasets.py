@@ -300,9 +300,12 @@ async def freeze(body: FreezeIn, project_slug: Annotated[str, P()],
         " ORDER BY version DESC LIMIT 1", (ds["id"],))
     version = (ultima["version"] + 1) if ultima else 1
 
-    items_jsonl, meta = build_manifest(
-        itens, classes, [o["uri"] for o in origens], version, body.descricao,
-        policy, project_slug, dataset_slug, roi=ds["roi"])
+    try:
+        items_jsonl, meta = build_manifest(
+            itens, classes, [o["uri"] for o in origens], version, body.descricao,
+            policy, project_slug, dataset_slug, roi=ds["roi"])
+    except ValueError as e:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(e)) from e
     items_hash = hashlib.sha256(items_jsonl.encode()).digest()
 
     # Identidade da versão = items + ROI. Com a MESMA lista de imagens, ROIs

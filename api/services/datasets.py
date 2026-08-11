@@ -166,7 +166,23 @@ def build_manifest(items: list, classes: list, origins: list, version: int,
     aplicar o MESMO recorte no treino/avaliação. As caixas do items.jsonl ficam
     em coordenadas do quadro CHEIO — o agente reprojeta ao materializar, para
     que o manifesto siga independente da ROI (mudar a ROI não reescreve caixas).
+
+    Levanta `ValueError` se alguma imagem estiver sem md5 (ver abaixo).
     """
+    # `sample.md5` é anulável desde a 008 — linha pendente de backfill, que só
+    # existe em base que passou pela 006 e teve o placeholder zerado. Sem md5 o
+    # agente não tem chave de cache nem nome de arquivo para materializar, então
+    # o item não pode entrar no manifesto. Recusar aqui é o que transforma o
+    # `TypeError` no meio da geração num 409 que diz qual imagem trava.
+    sem_md5 = [it["uri"] for it in items if it.get("md5") is None]
+    if sem_md5:
+        amostra = ", ".join(sem_md5[:3]) + (" …" if len(sem_md5) > 3 else "")
+        raise ValueError(
+            f"{len(sem_md5)} imagem(ns) sem md5, pendentes do backfill da "
+            f"migration 008: {amostra}. Sem a identidade de conteúdo o agente "
+            f"não consegue materializar o dataset — reimporte a origem dessas "
+            f"imagens ou tire-as das origens deste dataset.")
+
     lines = []
     per_class = dict.fromkeys(classes, 0)
     n_train = n_val = 0
