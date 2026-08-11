@@ -124,10 +124,12 @@ async def listar(project_slug: Annotated[str, Path()], user: CurrentUser,
          ORDER BY s.imported_at, s.id
          LIMIT %(lim)s OFFSET %(off)s"""
     linhas = await db.fetch_all(sql, params)
-    # O total respeita o escopo, senão a contagem no topo não bate com a grade.
+    # O total respeita escopo E filtro, senão a contagem no topo não bate com a
+    # grade — e o filtro precisa do mesmo LEFT JOIN, porque `{cond}` fala de `a`.
     total = await db.fetch_row(
-        f"SELECT count(*) AS n FROM sample s WHERE s.project_id = %(p)s {escopo}",
-        params)
+        f"""SELECT count(*) AS n FROM sample s
+              LEFT JOIN annotation a ON a.sample_id = s.id AND a.author_id = %(u)s
+             WHERE s.project_id = %(p)s {escopo} {cond}""", params)
     assinadas = await run_in_threadpool(_assinar, [r["uri"] for r in linhas])
     return {"pagina": pagina, "por_pagina": POR_PAGINA, "total": total["n"],
             "assina": bool(assinadas),

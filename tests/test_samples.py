@@ -30,6 +30,16 @@ async def test_lista_e_filtra_por_minha_anotacao(admin, tmp_path):
     assert len(anot["itens"]) == 5      # a importação anotou 5
 
 
+async def test_total_conta_o_que_a_grade_mostra(admin, tmp_path):
+    """O total é o rodapé da grade filtrada, não do projeto: contar só pelo
+    escopo escreveria "6 imagens" sobre uma grade de 1."""
+    await _projeto_com_dados(admin, tmp_path)   # 6 imagens, 5 anotadas
+    for filtro, n in (("pendentes", 1), ("anotadas", 5), ("todas", 6)):
+        d = (await admin.get(
+            f"/v1/projects/{PROJ['slug']}/samples?filtro={filtro}")).json()
+        assert d["total"] == n == len(d["itens"]), filtro
+
+
 async def test_salvar_anotacao_e_marcar_correcao(admin, tmp_path):
     """Corrigir o que veio pronto é 'correction', não 'manual'.
 
