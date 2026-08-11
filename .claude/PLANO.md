@@ -133,40 +133,44 @@ o causou.
 - Convenção de idioma PT/EN agora está escrita no `CLAUDE.md`; conferir se o
   código diverge dela em algum ponto e alinhar.
 
-### 9. Ligar `index` e `dict-item` no `mypy` — `pendente`
-Nasceu do item 1: com esses dois códigos ligados, o `mypy` aponta ~60 lugares
-que indexam o retorno de `db.fetch_one` sem checar `None`. São dois casos
-distintos misturados, e é a separação que dá valor:
+### 9. Ligar `index` e `dict-item` no `mypy` — `feito` (2026-08-11)
+Os dois códigos estão ligados; os 55 lugares apontados viraram duas coisas
+distintas, que era o ponto do item:
 
-- query que **sempre** devolve linha (`INSERT ... RETURNING`, `count(*)`) —
-  pede um helper que estoure explicitamente se vier `None`, em vez do
-  `TypeError` obscuro três linhas adiante;
-- **404 que falta** — tipicamente `proj["id"]` logo depois de `require_role`:
-  para superusuário, que passa sem o projeto existir, hoje vira 500. O padrão
-  correto já está em `routers/prelabel.py` e `routers/projects.py`
-  (`if proj is None: raise HTTPException(404, ...)`).
+- **`db.fetch_row`** para query que sempre devolve linha (`INSERT ...
+  RETURNING`, `count(*)`, agregado sem `GROUP BY`) — estoura na query, com o SQL
+  à vista, em vez do `TypeError` obscuro três linhas adiante. 30 chamadas.
+- **`deps.projeto_ou_404`** para o 404 que faltava. `require_role` não garante
+  que o projeto existe: `project_role` devolve `owner` ao superusuário sem
+  consultar nada, então slug inexistente virava 500 no primeiro `proj["id"]`.
+  Passaram a responder 404 o `GET`/`PATCH` de projeto, `GET /samples`,
+  `POST /datasets` e as duas rotas de membro. Os dois handlers que já faziam a
+  checagem à mão (`prelabel`, `append_classes`) usam o mesmo helper.
 
-Enquanto não for feito, os dois códigos ficam em `disable_error_code` no
-`pyproject.toml`.
+Mudou comportamento (500 → 404), e é o que o teste parametrizado em
+`test_projects.py` fixa. `db/migrate.py` passou a medir duração em Python: as
+duas consultas a `clock_timestamp()` existiam só para isso.
 
-### 10. Achados do review do item 4, não corrigidos — `pendente`
-Três bugs pré-existentes que o item 4 só mudou de arquivo. Nenhum foi
-introduzido pela refatoração, e por isso nenhum foi corrigido junto — mas todos
-foram confirmados contra o código.
+### 10. Achados do review do item 4 — `feito` (2026-08-11)
+Três bugs pré-existentes que o item 4 só mudou de arquivo. Todos corrigidos.
 
-- **`build_manifest` não trata `md5` nulo** (`services/datasets.py:190`).
-  `bytes(it["md5"]).hex()` estoura `TypeError` quando a coluna é NULL, e a 008
+- **`build_manifest` não tratava `md5` nulo** (`services/datasets.py`).
+  `bytes(it["md5"]).hex()` estourava `TypeError` quando a coluna é NULL, e a 008
   tornou `sample.md5` anulável (a própria migration manda o operador zerar o
-  placeholder da 006). O `freeze` só captura `ValueError`, então vira 500 e o
-  dataset não congela mais. Numa instalação nova não acontece: depende de a
-  instalação ter passado pela 006.
-- **`atualizar_deployment` não olha o estado atual** (`services/agents.py:467`).
-  Um `state=active` reenviado após timeout supersede a implantação que está
-  valendo e reativa a antiga: a tela passa a mostrar um build que a máquina não
-  está rodando. Pede `AND state = 'pending'` no UPDATE.
+  placeholder da 006). O `freeze` só captura `ValueError`, então virava 500 e o
+  dataset não congelava mais. Agora recusa com 409 dizendo quais imagens travam
+  — incluí-las não é opção, o md5 é a chave de cache e o nome do arquivo que o
+  agente materializa. Instalação nova não passa por isso.
+- **`atualizar_deployment` não olhava o estado atual** (`services/agents.py`).
+  Só transiciona quem está em `pending`; reenviar o estado já registrado é 200
+  (o cliente do agente repete de propósito em erro de rede), qualquer outra
+  transição é 409. Sem isso, o `active` reenviado ressuscitava a implantação
+  superseded E supersedia a que estava valendo, e o `failed` de fallback do
+  `main.py` derrubava a que o servidor já tinha ativado. A leitura virou
+  `SELECT ... FOR UPDATE` na própria transação.
 - **`fetch_one` indexado sem checar `None`** em `reclamar_job`,
-  `registrar_build` e `deployments_pendentes` (device apagado no meio de um
-  `/claim` vira 500 em vez de 401). É um caso concreto do item 9 — resolver lá.
+  `registrar_build` e `deployments_pendentes` — resolvido no item 9 com
+  `_device_do_token`: device apagado no meio de um `/claim` dá 401, não 500.
 
 Uma armadilha de teste, também descoberta no review: `tests/conftest.py` fixa o
 nome `visionyard_test` e derruba/recria o banco por sessão. **Duas suítes
@@ -199,3 +203,9 @@ sair de uma variável por processo.
   cobrem a auditoria do convite (na transação, e nenhum registro quando
   recusado), o `X-Forwarded-For` que não é endereço e o `finish` atrasado que
   não pode ressuscitar job encerrado.
+- **2026-08-11** — itens 10 e 9 feitos. Os dois bugs do item 10 corrigidos com
+  teste antes (`59f140f` relato de deployment só sai de `pending`, `b92b42d`
+  congelar recusa imagem sem md5); o terceiro caiu junto com o item 9
+  (`9e87e26`), que ligou `index`/`dict-item` no `mypy` e separou os 55 sites em
+  `db.fetch_row` (query que sempre devolve linha) e `deps.projeto_ou_404` (404
+  que faltava para superusuário). Suíte: **162 testes passando** (eram 151).

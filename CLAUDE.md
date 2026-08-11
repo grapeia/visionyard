@@ -59,8 +59,8 @@ recebe escalares e `dict`/`list[dict]`, e é o router que valida e converte.
 
 `agents`, `models` e `training` já estão assim: o router não tem uma linha de
 SQL. `datasets` está pela metade — `services/datasets.py` tem os auxiliares do
-congelamento (resolve → split → manifesto), mas a regra de versionamento e as 22
-consultas seguem em `routers/datasets.py:268` (`freeze`). Os demais (`auth`,
+congelamento (resolve → split → manifesto), mas a regra de versionamento e as 21
+consultas seguem no `freeze` de `routers/datasets.py`. Os demais (`auth`,
 `buckets`, `devices`, `imports`, `jobs`, `prelabel`, `projects`, `samples`,
 `users`) carregam o SQL inline por inteiro. Quando um deles for mexido a sério,
 a regra vai junto para `services/`.
@@ -74,8 +74,9 @@ alterado. Mudança de schema é sempre um `NNN_` novo.
 
 **Comentário explica o porquê, não o quê.** É o padrão dominante no repositório e
 vale mantê-lo: quando um trecho existe para fechar uma corrida, um vazamento ou
-uma regressão, o comentário diz qual. Ver `routers/datasets.py:299` e
-`services/datasets.py:65` como referência de tom.
+uma regressão, o comentário diz qual. Ver o bloco sobre o lock consultivo em
+`routers/datasets.py` (`freeze`) e o `assign_splits` de `services/datasets.py`
+como referência de tom.
 
 **Idioma.** Domínio, tabelas, colunas e nomes de rota em inglês
 (`dataset_version`, `manifest_uri`, `samples_created`). Variável local, mensagem
@@ -98,7 +99,14 @@ papel `viewer`.
   `DO UPDATE` é o que garante, não a ordem das operações.
 - **RBAC é por projeto.** Rota com `{project_slug}` usa
   `Depends(require_role("papel"))`. Não-membro recebe 404, não 403: 403
-  revelaria que o projeto existe.
+  revelaria que o projeto existe. A dependência **não** garante que o projeto
+  existe — o superusuário passa por ela sem consulta nenhuma; o handler que
+  precisa da linha usa `deps.projeto_ou_404`.
+- **Relato atrasado do agente não reescreve desfecho.** A rede pisca e o
+  `agent/client.py` repete o POST; `finalizar_job` e `atualizar_deployment` só
+  transicionam a partir de estado não-terminal (`status <> ALL(TERMINAIS)`,
+  `state = 'pending'`). Sem isso um treino cancelado volta como concluído e uma
+  implantação superseded ressuscita por cima da que está valendo.
 - **Agente e usuário são portas diferentes.** Device autentica por
   `X-Agent-Token` e nunca por `Authorization`. Rota de agente vive em
   `routers/agents.py` e a regra em `services/agents.py`. **Toda** operação sobre
@@ -130,7 +138,9 @@ papel `viewer`.
   `heartbeat_at`, que em job de importação é NULL.
 - O front monta HTML por template string. Todo valor vindo do servidor passa por
   `esc()`. Não há build nem lint: o descuido não é detectado.
-- `db.fetch_one` devolve `dict | None` e boa parte do código indexa o resultado
-  direto. O `mypy` roda com `index`/`dict-item` desligados por causa disso (ver
-  PLANO, item 9) — enquanto estiverem desligados, é revisão humana que separa
-  "query que sempre devolve linha" de "falta um 404 aqui".
+- `db.fetch_one` devolve `dict | None`, e o `mypy` não deixa mais indexar isso
+  direto. Query que **sempre** devolve linha (`INSERT ... RETURNING`, `count(*)`)
+  usa `db.fetch_row`, que estoura na própria query se vier vazia. Onde a linha
+  pode faltar, é `fetch_one` + 404 — e num handler de rota com `{project_slug}`
+  o 404 do projeto vem de `deps.projeto_ou_404`: `require_role` deixa o
+  superusuário passar sem conferir se o projeto existe.
