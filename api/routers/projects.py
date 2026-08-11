@@ -117,13 +117,12 @@ async def create_project(body: ProjectCreateIn, user: CurrentUser,
 
     async with db.connection() as conn:
         async with conn.transaction():
-            cur = await conn.execute(
+            proj = await db.fetch_row(
                 "INSERT INTO project (slug, name, task_type, description,"
                 " created_by) VALUES (%s,%s,%s,%s,%s)"
                 " RETURNING id, slug, name, task_type, description, created_at",
                 (body.slug, body.name, body.task_type, body.description,
-                 user.id))
-            proj = await cur.fetchone()
+                 user.id), conn=conn)
             await conn.execute(
                 "INSERT INTO project_member (project_id, user_id, role,"
                 " granted_by) VALUES (%s,%s,'owner',%s)",
@@ -209,10 +208,11 @@ async def append_classes(
             # versão e colidiriam no UNIQUE(project_id, version).
             await conn.execute("SELECT pg_advisory_xact_lock(hashtext(%s))",
                                (f"schema:{proj['id']}",))
-            cur = await conn.execute(
+            # todo projeto nasce com o schema v1 (`create_project`, mesma
+            # transação): existe projeto sem imagem, nunca sem schema
+            atual = await db.fetch_row(
                 "SELECT version, classes FROM label_schema WHERE project_id = %s"
-                " ORDER BY version DESC LIMIT 1", (proj["id"],))
-            atual = await cur.fetchone()
+                " ORDER BY version DESC LIMIT 1", (proj["id"],), conn=conn)
             nomes = [c["name"] for c in atual["classes"]]
 
             ja = [n for n in body.add if n in nomes]
@@ -225,13 +225,12 @@ async def append_classes(
                 {"id": len(nomes) + i, "name": n}
                 for i, n in enumerate(body.add)]
             nota = body.change_note or f"adicionada(s): {', '.join(body.add)}"
-            cur = await conn.execute(
+            nova = await db.fetch_row(
                 "INSERT INTO label_schema (project_id, version, classes,"
                 " back_compatible, change_note, created_by)"
                 " VALUES (%s,%s,%s::jsonb,true,%s,%s) RETURNING id, version",
                 (proj["id"], atual["version"] + 1, json.dumps(novas), nota,
-                 actor.id))
-            nova = await cur.fetchone()
+                 actor.id), conn=conn)
 
             await audit(actor, "schema.append", "label_schema",
                         str(nova["id"]), project_id=str(proj["id"]),

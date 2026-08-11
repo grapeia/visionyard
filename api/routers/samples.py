@@ -195,7 +195,7 @@ async def salvar(body: AnotacaoIn, project_slug: Annotated[str, Path()],
             origem = ("correction"
                       if antes and antes["origin"] in ("prelabel", "import")
                       else "manual")
-            cur = await conn.execute(
+            nova = await db.fetch_row(
                 "INSERT INTO annotation (sample_id, schema_id, boxes, origin,"
                 " status, author_id, updated_by)"
                 " VALUES (%s,%s,%s::jsonb,%s,%s,%s,%s)"
@@ -205,8 +205,7 @@ async def salvar(body: AnotacaoIn, project_slug: Annotated[str, Path()],
                 "        updated_by = EXCLUDED.updated_by"
                 " RETURNING id, status",
                 (sample_id, ctx["schema_id"], json.dumps(caixas), origem,
-                 body.status, user.id, user.id))
-            nova = await cur.fetchone()
+                 body.status, user.id, user.id), conn=conn)
             await conn.execute(
                 "INSERT INTO annotation_history (annotation_id, sample_id,"
                 " actor_id, action, boxes_before, boxes_after)"

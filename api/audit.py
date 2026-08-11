@@ -10,8 +10,6 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING
 
-from psycopg import AsyncConnection
-
 from . import db
 
 if TYPE_CHECKING:
@@ -24,7 +22,7 @@ async def audit(actor: Principal | None, action: str, entity_type: str,
                 entity_id: str | None = None, *, project_id: str | None = None,
                 before: dict | None = None, after: dict | None = None,
                 ip: str | None = None, note: str | None = None,
-                conn: AsyncConnection | None = None) -> None:
+                conn: db.Conn | None = None) -> None:
     """Registra em audit_log. actor=None significa ação do próprio sistema.
 
     Quem escreve dentro de uma transação passa a mesma `conn`: assim o fato e o

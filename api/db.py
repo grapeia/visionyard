@@ -5,7 +5,7 @@ segunda descrição do mesmo modelo pra manter em sincronia.
 """
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -15,7 +15,13 @@ from psycopg_pool import AsyncConnectionPool
 
 from .config import settings
 
-_pool: AsyncConnectionPool | None = None
+# O parâmetro de `AsyncConnection` é o tipo de linha, fixado em `dict_row` na
+# criação do pool. Sem esta anotação o `conn` do `async with connection()` sai
+# como `Any` e o `mypy` deixa passar `(await cur.fetchone())["x"]` — que é
+# exatamente o `TypeError` que o item 9 do PLANO foi fechar.
+Conn = AsyncConnection[dict[str, Any]]
+
+_pool: AsyncConnectionPool[Conn] | None = None
 
 # Parâmetros de query: tupla para `%s` posicional, dict para `%(nome)s` — as
 # duas formas estão em uso (a nomeada onde o mesmo valor repete na query).
@@ -24,8 +30,9 @@ Params = Sequence[Any] | Mapping[str, Any]
 
 async def open_pool() -> None:
     global _pool
-    _pool = AsyncConnectionPool(settings.database_url, min_size=1, max_size=10,
-                               kwargs={"row_factory": dict_row}, open=False)
+    _pool = AsyncConnectionPool[Conn](
+        settings.database_url, min_size=1, max_size=10,
+        kwargs={"row_factory": dict_row}, open=False)
     await _pool.open(wait=True)
 
 
@@ -35,7 +42,7 @@ async def close_pool() -> None:
 
 
 @asynccontextmanager
-async def connection():
+async def connection() -> AsyncIterator[Conn]:
     if _pool is None:
         raise RuntimeError("pool não inicializado")
     async with _pool.connection() as conn:
@@ -43,7 +50,7 @@ async def connection():
 
 
 @asynccontextmanager
-async def _usar(conn: AsyncConnection | None):
+async def _usar(conn: Conn | None) -> AsyncIterator[Conn]:
     """Reaproveita a conexão recebida, ou pega uma do pool quando não há.
 
     É o que permite uma escrita e a sua auditoria caírem na mesma transação:
@@ -58,15 +65,14 @@ async def _usar(conn: AsyncConnection | None):
 
 
 async def fetch_one(sql: str, params: Params = (), *,
-                    conn: AsyncConnection | None = None
-                    ) -> dict[str, Any] | None:
+                    conn: Conn | None = None) -> dict[str, Any] | None:
     async with _usar(conn) as c:
         cur = await c.execute(sql, params)
         return await cur.fetchone()
 
 
 async def fetch_row(sql: str, params: Params = (), *,
-                    conn: AsyncConnection | None = None) -> dict[str, Any]:
+                    conn: Conn | None = None) -> dict[str, Any]:
     """Como `fetch_one`, mas para query que SEMPRE devolve linha: `INSERT ...
     RETURNING`, `count(*)`, agregado sem `GROUP BY`.
 
@@ -85,14 +91,13 @@ async def fetch_row(sql: str, params: Params = (), *,
 
 
 async def fetch_all(sql: str, params: Params = (), *,
-                    conn: AsyncConnection | None = None
-                    ) -> list[dict[str, Any]]:
+                    conn: Conn | None = None) -> list[dict[str, Any]]:
     async with _usar(conn) as c:
         cur = await c.execute(sql, params)
         return await cur.fetchall()
 
 
 async def execute(sql: str, params: Params = (), *,
-                  conn: AsyncConnection | None = None) -> None:
+                  conn: Conn | None = None) -> None:
     async with _usar(conn) as c:
         await c.execute(sql, params)

@@ -175,10 +175,18 @@ async def _import_one(sample: SourceSample, *, project_id: str, schema_id: str,
                 row = await cur.fetchone()
                 if row is None:
                     # corrida com outra importação do mesmo arquivo
-                    cur = await conn.execute(
+                    row = await db.fetch_one(
                         "SELECT id FROM sample WHERE project_id=%s AND md5=%s",
-                        (project_id, digest))
-                    row = await cur.fetchone()
+                        (project_id, digest), conn=conn)
+                    if row is None:
+                        # `DO NOTHING` também desiste diante de linha ainda NÃO
+                        # comitada pela outra importação — que o SELECT não
+                        # enxerga. Pular é o certo: quem está inserindo vai
+                        # gravar a imagem, e forçar um INSERT aqui só bateria no
+                        # índice e derrubaria o lote inteiro.
+                        report.skip(sample.key,
+                                    "outra importação está gravando esta imagem")
+                        return
                     report.samples_existing += 1
                 else:
                     report.samples_created += 1

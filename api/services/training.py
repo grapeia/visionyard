@@ -57,13 +57,12 @@ async def criar_run(project_slug: str, actor: Principal, *, dataset_slug: str,
 
     async with db.connection() as conn:
         async with conn.transaction():
-            cur = await conn.execute(
+            exp = await db.fetch_row(
                 "INSERT INTO experiment (project_id, slug, name, created_by)"
                 " VALUES (%s,%s,%s,%s)"
                 " ON CONFLICT (project_id, slug) DO UPDATE SET slug = EXCLUDED.slug"
                 " RETURNING id", (dv["project_id"], exp_slug, experiment,
-                                  actor.id))
-            exp = await cur.fetchone()
+                                  actor.id), conn=conn)
 
             # payload leva tudo que o agente precisa sem uma segunda ida ao banco;
             # requires é o contrato de roteamento: só device com 'train' pega.
@@ -73,21 +72,20 @@ async def criar_run(project_slug: str, actor: Principal, *, dataset_slug: str,
                        "project_slug": project_slug,
                        "dataset_slug": dv["dataset_slug"],
                        "version": dv["version"]}
-            cur = await conn.execute(
+            job = await db.fetch_row(
                 "INSERT INTO job (project_id, type, payload, requires,"
                 " created_by, target_device_id)"
                 " VALUES (%s,'train',%s::jsonb,%s::jsonb,%s,%s) RETURNING id",
                 (dv["project_id"], json.dumps(payload),
-                 json.dumps({"train": True}), actor.id, target_device_id))
-            job = await cur.fetchone()
+                 json.dumps({"train": True}), actor.id, target_device_id),
+                conn=conn)
 
-            cur = await conn.execute(
+            run = await db.fetch_row(
                 "INSERT INTO training_run (experiment_id, job_id,"
                 " dataset_version_id, schema_id, base_model_name, params,"
                 " created_by) VALUES (%s,%s,%s,%s,%s,%s::jsonb,%s) RETURNING id",
                 (exp["id"], job["id"], dv["id"], dv["schema_id"],
-                 base_model, json.dumps(params), actor.id))
-            run = await cur.fetchone()
+                 base_model, json.dumps(params), actor.id), conn=conn)
 
             # o run precisa estar no payload para o agente mandar métricas por ele
             await conn.execute(
@@ -217,14 +215,14 @@ async def cancelar_run(project_slug: str, run_id: str, actor: Principal, *,
                             f"job já terminou ({run['job_status']})")
     async with db.connection() as conn:
         async with conn.transaction():
-            cur = await conn.execute(
+            # `buscar_run` fez INNER JOIN com job: a linha existe.
+            j = await db.fetch_row(
                 "UPDATE job SET cancel_requested = true,"
                 "  status = CASE WHEN status = 'queued' THEN 'canceled'"
                 "                ELSE status END,"
                 "  finished_at = CASE WHEN status = 'queued' THEN now()"
                 "                     ELSE finished_at END"
-                " WHERE id = %s RETURNING status", (run["job_id"],))
-            j = await cur.fetchone()
+                " WHERE id = %s RETURNING status", (run["job_id"],), conn=conn)
             if j["status"] == "canceled":
                 await conn.execute(
                     "UPDATE training_run SET status = 'stopped',"

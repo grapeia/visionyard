@@ -53,14 +53,13 @@ async def cancelar(job_id: Annotated[UUID, Path()], request: Request,
                             f"job já terminou ({j['status']})")
     async with db.connection() as conn:
         async with conn.transaction():
-            cur = await conn.execute(
+            novo = (await db.fetch_row(
                 "UPDATE job SET cancel_requested = true,"
                 "  status = CASE WHEN status = 'queued' THEN 'canceled'"
                 "                ELSE status END,"
                 "  finished_at = CASE WHEN status = 'queued' THEN now()"
                 "                     ELSE finished_at END"
-                " WHERE id = %s RETURNING status", (job_id,))
-            novo = (await cur.fetchone())["status"]
+                " WHERE id = %s RETURNING status", (job_id,), conn=conn))["status"]
             # treino cancelado na fila: o run espelha o job (como no cancel
             # da aba Treinamento) — senão fica "queued" para sempre na tela
             if novo == "canceled" and j["type"] == "train":

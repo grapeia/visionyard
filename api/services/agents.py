@@ -361,33 +361,29 @@ async def registrar_modelo(job_id: str, device_id: str, *, weights_uri: str,
         async with conn.transaction():
             await conn.execute("SELECT pg_advisory_xact_lock(hashtext(%s))",
                                (f"model:{job['project_id']}:{slug}",))
-            cur = await conn.execute(
+            m = await db.fetch_one(
                 "SELECT id FROM model WHERE project_id = %s AND slug = %s",
-                (job["project_id"], slug))
-            m = await cur.fetchone()
+                (job["project_id"], slug), conn=conn)
             if m is None:
                 # herda o task_type do projeto — um projeto segment/classify não
                 # deve criar modelo 'detect' fixo.
-                cur = await conn.execute(
+                m = await db.fetch_row(
                     "INSERT INTO model (project_id, slug, name, task_type,"
                     " created_by)"
                     " SELECT %s,%s,%s, task_type, %s FROM project WHERE id = %s"
                     " RETURNING id",
                     (job["project_id"], slug, slug, run["created_by"],
-                     job["project_id"]))
-                m = await cur.fetchone()
-            cur = await conn.execute(
+                     job["project_id"]), conn=conn)
+            versao = (await db.fetch_row(
                 "SELECT COALESCE(max(version),0)+1 AS v FROM model_version"
-                " WHERE model_id = %s", (m["id"],))
-            versao = (await cur.fetchone())["v"]
-            cur = await conn.execute(
+                " WHERE model_id = %s", (m["id"],), conn=conn))["v"]
+            mv = await db.fetch_row(
                 "INSERT INTO model_version (model_id, version, run_id, schema_id,"
                 " weights_uri, sha256, bytes, metrics, status)"
                 " VALUES (%s,%s,%s,%s,%s,decode(%s,'hex'),%s,%s::jsonb,'ready')"
                 " RETURNING id",
                 (m["id"], versao, run["id"], run["schema_id"], weights_uri,
-                 sha256, tamanho, json.dumps(metrics)))
-            mv = await cur.fetchone()
+                 sha256, tamanho, json.dumps(metrics)), conn=conn)
     return {"model_slug": slug, "version": versao,
             "model_version_id": str(mv["id"])}
 

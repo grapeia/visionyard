@@ -19,7 +19,6 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 from fastapi import Request
-from psycopg import AsyncConnection
 
 from . import db
 from .audit import audit
@@ -200,7 +199,7 @@ async def revoke_session(session_id: str) -> None:
 
 
 async def revoke_all_sessions(user_id: str, *,
-                              conn: AsyncConnection | None = None) -> None:
+                              conn: db.Conn | None = None) -> None:
     """Usado ao trocar senha ou desativar usuário.
 
     Aceita `conn` porque quem chama costuma estar derrubando vários acessos de
