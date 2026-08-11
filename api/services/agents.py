@@ -456,15 +456,39 @@ async def deployments_pendentes(device_id: str) -> list[dict[str, Any]]:
 async def atualizar_deployment(dep_id: str, device_id: str, *, estado: str,
                                error: str | None) -> None:
     """O agente reporta o resultado. Ativar supersede a implantação ativa
-    anterior no mesmo device — uma máquina roda um modelo por vez."""
-    dep = await db.fetch_one(
-        "SELECT id, device_id FROM deployment WHERE id = %s", (dep_id,))
-    if dep is None or str(dep["device_id"]) != device_id:
-        raise HTTPException(status.HTTP_404_NOT_FOUND,
-                            "deployment não é desta máquina")
+    anterior no mesmo device — uma máquina roda um modelo por vez.
+
+    Só sai de `pending`: o cliente do agente repete o POST em erro de rede, e um
+    relato atrasado que chegasse depois do desfecho reescreveria o estado atual
+    — um `active` reenviado supersedia a implantação que está valendo e
+    ressuscitaria a antiga, deixando a tela mostrando um build que a máquina não
+    roda. Reenviar o estado JÁ registrado é sucesso (o desfecho é o mesmo);
+    qualquer outra transição é 409."""
+    alvo = "active" if estado == "active" else "failed"
     async with db.connection() as conn:
         async with conn.transaction():
+            # `AND device_id` no próprio WHERE é o controle de acesso (não há
+            # `job_da_maquina` aqui); o FOR UPDATE segura a linha até o fim da
+            # transação, para dois relatos simultâneos não passarem os dois pela
+            # checagem de 'pending'.
+            cur = await conn.execute(
+                "SELECT state FROM deployment WHERE id = %s AND device_id = %s"
+                " FOR UPDATE", (dep_id, device_id))
+            dep = await cur.fetchone()
+            if dep is None:
+                raise HTTPException(status.HTTP_404_NOT_FOUND,
+                                    "deployment não é desta máquina")
+            if dep["state"] == alvo:
+                return
+            if dep["state"] != "pending":
+                raise HTTPException(
+                    status.HTTP_409_CONFLICT,
+                    f"implantação já encerrada como '{dep['state']}' — relato "
+                    f"atrasado, ignorado")
+
             if estado == "active":
+                # Supersede ANTES de ativar: `deployment_active_idx` é único por
+                # device sobre state='active', então a ordem inversa colidiria.
                 await conn.execute(
                     "UPDATE deployment SET state = 'superseded', ended_at = now()"
                     " WHERE device_id = %s AND state = 'active' AND id <> %s",

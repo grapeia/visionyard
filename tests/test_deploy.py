@@ -1,8 +1,10 @@
 """Deployment: implantar um build num dispositivo e ativar (device-scoped)."""
 from __future__ import annotations
 
+import psycopg
 import pytest
 
+from .conftest import TEST_DSN
 from .test_datasets import PROJ
 from .test_models import _produzir_modelo
 from .test_training import _device, _h
@@ -58,6 +60,76 @@ async def test_deploy_pendente_ativa_e_supersede(admin, client, tmp_path):
     deps = (await admin.get(f"/v1/projects/{PROJ['slug']}/deployments")).json()
     ativos = [d for d in deps if d["state"] == "active"]
     assert len(ativos) == 1 and ativos[0]["id"] == dep2, "duas ativas no mesmo device"
+
+
+def _estado(dep_id: str) -> str:
+    """Lido do banco: `listar_deployments` esconde 'superseded'."""
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        row = conn.execute("SELECT state FROM deployment WHERE id = %s",
+                           (dep_id,)).fetchone()
+    return row[0]
+
+
+async def _duas_implantacoes(admin, client, tmp_path) -> tuple[str, str, str]:
+    """(token do device, dep1 já superseded, dep2 ativo)."""
+    await _modelo_com_build(admin, client, tmp_path)
+    prod = await _device(admin, {"infer": True}, slug="edge-prod")
+    tok = prod["token"]
+    url = f"/v1/projects/{PROJ['slug']}/models/detector/deploy"
+    corpo = {"version": 1, "format": "onnx", "device_slug": "edge-prod"}
+
+    dep1 = (await admin.post(url, json=corpo)).json()["deployment_id"]
+    await client.post(f"/v1/agent/deployments/{dep1}/state",
+                      json={"state": "active"}, headers=_h(tok))
+    dep2 = (await admin.post(url, json=corpo)).json()["deployment_id"]
+    await client.post(f"/v1/agent/deployments/{dep2}/state",
+                      json={"state": "active"}, headers=_h(tok))
+    return tok, dep1, dep2
+
+
+async def test_relato_atrasado_nao_ressuscita_deployment(admin, client, tmp_path):
+    """`active` reenviado depois de a implantação ter sido superseded não pode
+    reativá-la: a tela passaria a mostrar um build que a máquina não está
+    rodando. O agente reenvia porque o cliente repete em erro de rede."""
+    tok, dep1, dep2 = await _duas_implantacoes(admin, client, tmp_path)
+
+    r = await client.post(f"/v1/agent/deployments/{dep1}/state",
+                          json={"state": "active"}, headers=_h(tok))
+    assert r.status_code == 409, r.text
+
+    deps = (await admin.get(f"/v1/projects/{PROJ['slug']}/deployments")).json()
+    ativos = [d for d in deps if d["state"] == "active"]
+    assert len(ativos) == 1 and ativos[0]["id"] == dep2
+    assert _estado(dep1) == "superseded"
+
+
+async def test_relato_de_falha_atrasado_nao_derruba_o_que_esta_valendo(
+        admin, client, tmp_path):
+    """Depois de o `active` estourar o timeout, o agente relata `failed` — mas o
+    servidor já tinha comitado a ativação. O relato atrasado não pode marcar
+    como falha a implantação que está no ar."""
+    tok, _, dep2 = await _duas_implantacoes(admin, client, tmp_path)
+
+    r = await client.post(f"/v1/agent/deployments/{dep2}/state",
+                          json={"state": "failed", "error": "timeout"},
+                          headers=_h(tok))
+    assert r.status_code == 409, r.text
+    deps = (await admin.get(f"/v1/projects/{PROJ['slug']}/deployments")).json()
+    assert next(d for d in deps if d["id"] == dep2)["state"] == "active"
+
+
+async def test_relato_repetido_do_mesmo_estado_e_idempotente(admin, client,
+                                                             tmp_path):
+    """O cliente do agente repete POST em erro de rede: reenviar o MESMO estado
+    já registrado é sucesso, não conflito."""
+    tok, _, dep2 = await _duas_implantacoes(admin, client, tmp_path)
+
+    r = await client.post(f"/v1/agent/deployments/{dep2}/state",
+                          json={"state": "active"}, headers=_h(tok))
+    assert r.status_code == 200, r.text
+    deps = (await admin.get(f"/v1/projects/{PROJ['slug']}/deployments")).json()
+    ativos = [d for d in deps if d["state"] == "active"]
+    assert len(ativos) == 1 and ativos[0]["id"] == dep2
 
 
 async def test_deploy_sem_build_recusa(admin, client, tmp_path):
