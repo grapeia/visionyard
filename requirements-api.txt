@@ -1,0 +1,28 @@
+argon2-cffi-bindings==25.1.0
+argon2-cffi==25.1.0
+email-validator==2.3.0
+fastapi==0.139.2
+google-api-core==2.32.0
+google-auth==2.56.0
+google-cloud-core==2.6.0
+google-cloud-storage==3.13.0
+google-crc32c==1.8.0
+google-resumable-media==2.10.0
+googleapis-common-protos==1.75.0
+httpx==0.28.1
+pillow==12.3.0
+proto-plus==1.28.1
+psycopg-binary==3.3.4
+psycopg-pool==3.3.1
+psycopg==3.3.4
+pydantic-settings==2.14.2
+pydantic==2.13.4
+pydantic_core==2.46.4
+pytest==9.1.1
+python-multipart==0.0.32
+uvicorn==0.51.0
+
+# Dependências da Control API — Python >= 3.10.
+# As máquinas de execução não usam este arquivo: o agente tem o seu próprio
+# (agent/requirements.txt), porque lá o runtime de inferência costuma vir do
+# fornecedor da plataforma.

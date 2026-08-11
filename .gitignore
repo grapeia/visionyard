@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+
+# Configuração local
+.env
+
+# Dados locais: imagens, dumps de importação, manifests gerados
+data/
+
+# Trabalho do agente e artefatos de treino/export
+agent-work/
+visionyard-deploy/
+*.pt
+*.onnx
+*.engine
+
+# Editor / SO
+.vscode/
+.idea/
+.DS_Store

@@ -1,0 +1,14 @@
+# Dependências do agente de execução (roda em servidores de GPU e dispositivos
+# de borda).
+#
+# O núcleo (loop/claim/report) só precisa de `requests`. Treino puxa
+# `ultralytics` (+ torch, instalado conforme a plataforma: a build de CUDA no
+# servidor de GPU, o wheel do fornecedor para o dispositivo de borda).
+# Materialização puxa GCS.
+#
+# torch NÃO está fixado aqui de propósito: a roda certa depende da GPU/JetPack
+# e deve ser instalada à parte, antes deste arquivo.
+
+requests>=2.31
+google-cloud-storage>=2.10
+ultralytics>=8.3

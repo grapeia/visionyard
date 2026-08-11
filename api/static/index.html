@@ -1,0 +1,563 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>visionyard — dados e modelos</title>
+<link rel="stylesheet" href="/static/app.css?v=20260807e">
+</head>
+<body>
+
+<!-- entrada -->
+<div class="entrada" id="telaEntrada" hidden>
+  <div class="entrada-caixa">
+    <h1 class="marca">vision<b>yard</b></h1>
+    <p class="sub">Dados, versões e modelos.</p>
+    <form id="formEntrada">
+      <label for="email">E-mail</label>
+      <input id="email" type="email" autocomplete="username" required>
+      <label for="senha">Senha</label>
+      <input id="senha" type="password" autocomplete="current-password" required>
+      <button class="primario" type="submit">Entrar</button>
+      <p class="erro" id="erroEntrada" hidden></p>
+    </form>
+    <form id="formConvite" hidden>
+      <p class="sub">Primeiro acesso: use o token do seu convite e escolha uma senha.</p>
+      <label for="convToken">Token do convite</label>
+      <input id="convToken" autocomplete="off" required>
+      <label for="convSenha">Sua senha</label>
+      <input id="convSenha" type="password" autocomplete="new-password" required
+             minlength="12">
+      <button class="primario" type="submit">Definir senha e entrar</button>
+      <p class="erro" id="erroConvite" hidden></p>
+    </form>
+    <button class="discreto trocar-entrada" id="trocaConvite" type="button">
+      Tenho um convite</button>
+  </div>
+</div>
+
+<!-- aplicação -->
+<div id="telaApp" hidden>
+  <header class="topo">
+    <span class="marca">vision<b>yard</b></span>
+    <select id="seletorProjeto" aria-label="Projeto"></select>
+    <span class="espaco"></span>
+    <span class="usuario" id="quemSou"></span>
+    <button class="discreto" id="botaoSair">Sair</button>
+  </header>
+
+  <nav class="abas" id="abas">
+    <button data-aba="projeto" aria-current="true">Projeto</button>
+    <button data-aba="datasets">Datasets</button>
+    <button data-aba="dados">Rotulagem</button>
+    <button data-aba="treino">Treinamento</button>
+    <button data-aba="modelos">Modelos</button>
+    <button data-aba="devices" id="abaBotaoDevices" hidden>Pool</button>
+    <button data-aba="usuarios" id="abaBotaoUsuarios" hidden>Usuários</button>
+    <span class="espaco"></span>
+    <button id="botaoAjuda" title="O que é cada coisa nesta tela"
+      aria-label="Ajuda da tela">Help</button>
+  </nav>
+
+  <!-- aba Projeto (primeira) -->
+  <div id="abaProjeto">
+    <div class="barra-dados">
+      <span class="rotulo">Projeto</span>
+      <span class="espaco"></span>
+      <button class="primario" id="botaoNovoProjeto" hidden>Novo projeto</button>
+    </div>
+    <div id="painelProjetoTab"><p class="carregando">Carregando…</p></div>
+  </div>
+
+  <!-- aba Rotulagem -->
+  <div id="abaDados" hidden>
+    <div class="barra-dados">
+      <label class="escopo-rot">Escopo
+        <select id="escopoDataset"><option value="">Todas as imagens</option></select>
+      </label>
+      <button id="botaoPreTagLote" hidden disabled
+        title="rode um modelo sobre este dataset">Pré-taguear</button>
+      <div class="filtros" id="filtros">
+        <button data-filtro="todas" aria-current="true">Todas</button>
+        <button data-filtro="pendentes">Sem minha anotação</button>
+        <button data-filtro="anotadas">Que eu anotei</button>
+      </div>
+      <span class="espaco"></span>
+      <span class="contagem" id="contagemDados"></span>
+      <button id="paginaAnterior" disabled>Anterior</button>
+      <button id="paginaProxima">Próxima</button>
+    </div>
+    <div class="grade" id="grade"></div>
+  </div>
+
+  <!-- aba Datasets -->
+  <div class="corpo" id="abaDatasets" hidden>
+    <nav class="lateral">
+      <span class="rotulo">Datasets</span>
+      <ul class="lista-ds" id="listaDatasets"></ul>
+      <button id="botaoNovoDataset">Novo dataset</button>
+    </nav>
+
+    <main class="principal" id="painelDataset">
+      <p class="carregando">Carregando…</p>
+    </main>
+  </div>
+
+  <!-- aba Treinamento -->
+  <div class="corpo" id="abaTreino" hidden>
+    <nav class="lateral">
+      <div class="lateral-topo">
+        <span class="rotulo">Treinos</span>
+        <button class="primario" id="botaoNovoRun">Novo treino</button>
+      </div>
+      <ul class="lista-runs" id="listaRuns"></ul>
+    </nav>
+    <main class="principal" id="painelRun">
+      <div class="vazio"><p>Selecione um treino à esquerda.</p>
+        <p class="dica">Um treino roda sobre uma versão congelada, numa máquina
+           com capacidade <code>train</code>. As métricas chegam ao vivo aqui.</p></div>
+    </main>
+  </div>
+
+  <!-- aba Modelos -->
+  <div class="corpo" id="abaModelos" hidden>
+    <nav class="lateral">
+      <span class="rotulo">Modelos</span>
+      <ul class="lista-ds" id="listaModelos"></ul>
+    </nav>
+    <main class="principal" id="painelModelo">
+      <p class="carregando">Carregando…</p>
+    </main>
+  </div>
+
+  <!-- aba Usuários (superusuário) -->
+  <div id="abaUsuarios" hidden>
+    <div class="barra-dados">
+      <span class="rotulo">Usuários</span>
+      <span class="espaco"></span>
+      <button class="primario" id="botaoNovoUsuario">Novo usuário</button>
+    </div>
+    <div id="painelUsuarios"><p class="carregando">Carregando…</p></div>
+  </div>
+
+  <!-- aba Máquinas (superusuário) -->
+  <div id="abaDevices" hidden>
+    <div class="barra-dados">
+      <div class="filtros" id="subPool">
+        <button data-sub="tasks" aria-current="true">Tasks</button>
+        <button data-sub="maquinas" aria-current="false">Máquinas</button>
+      </div>
+      <span class="espaco"></span>
+      <button class="primario" id="botaoNovoDevice" hidden>Cadastrar máquina</button>
+    </div>
+    <div id="painelTasks"><p class="carregando">Carregando…</p></div>
+    <div id="painelDevices" hidden><p class="carregando">Carregando…</p></div>
+  </div>
+</div>
+
+<!-- anotação -->
+<div id="anotador" hidden>
+  <header class="anot-topo">
+    <button id="anotVoltar">← Voltar</button>
+    <span class="anot-dataset" id="anotDataset" hidden></span>
+    <span class="anot-arquivo mono" id="anotArquivo"></span>
+    <span class="espaco"></span>
+    <label class="alternar"><input type="checkbox" id="anotNomes" checked>
+      nomes nas caixas</label>
+    <span class="anot-dica" id="anotDica"></span>
+    <button id="anotAnterior" title="anterior (q)">q ←</button>
+    <button id="anotPretag" title="pré-rotular esta imagem com o modelo (w)">w pré</button>
+    <button id="anotSalvar" class="primario" title="salvar e próxima (e)">
+      Salvar e próxima <span class="tecla-inline">e</span></button>
+  </header>
+  <div class="anot-corpo">
+    <div class="anot-tela" id="anotTela">
+      <div class="anot-zoom" id="anotZoom">
+        <img id="anotImagem" alt="">
+        <canvas id="anotCanvas"></canvas>
+      </div>
+    </div>
+    <aside class="anot-lado">
+      <span class="rotulo">Classes</span>
+      <ul class="classes" id="anotClasses"></ul>
+      <span class="rotulo" style="margin-top:20px;display:block">Caixas</span>
+      <ul class="caixas" id="anotCaixas"></ul>
+      <p class="dica" id="anotOutros"></p>
+    </aside>
+  </div>
+</div>
+
+<div id="aviso" role="status" aria-live="polite"></div>
+
+<!-- novo dataset -->
+<dialog id="dlgDataset">
+  <form method="dialog" id="formDataset">
+    <h2>Novo dataset</h2>
+    <p class="ajuda">Um dataset reúne origens. Congelar produz uma versão imutável.</p>
+    <label for="dsNome">Nome</label>
+    <input id="dsNome" required placeholder="Linha A">
+    <label for="dsSlug">Identificador</label>
+    <input id="dsSlug" required pattern="[a-z0-9]+(-[a-z0-9]+)*" placeholder="linha-a">
+    <p class="dica">Minúsculas e hífens. Aparece nas URLs e não muda depois.</p>
+    <label for="dsTipo">Uso</label>
+    <select id="dsTipo">
+      <option value="train">Treino</option>
+      <option value="benchmark">Benchmark — nunca entra em treino</option>
+      <option value="eval">Avaliação</option>
+    </select>
+    <div class="acoes">
+      <button type="button" class="cancelar">Cancelar</button>
+      <button class="primario" value="ok" id="dsCriar">Criar dataset</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- nova origem -->
+<dialog id="dlgOrigem">
+  <form method="dialog" id="formOrigem">
+    <h2>Adicionar origem</h2>
+    <p class="ajuda">Aponte para um prefixo do bucket. As imagens são catalogadas
+      sem download — só a listagem é lida.</p>
+    <label for="orBucket">Bucket</label>
+    <select id="orBucket" required></select>
+
+    <label for="orPrefixo">Pasta</label>
+    <div class="caminho" id="orCaminho"></div>
+    <div class="navegador" id="orNavegador"></div>
+    <input id="orPrefixo" placeholder="(raiz do bucket)">
+    <p class="dica">Clique numa pasta para entrar. O prefixo pode ser editado à
+      mão — a barra inicial faz parte do nome do objeto neste bucket.</p>
+    <label for="orLimite">Limite de imagens (opcional)</label>
+    <input id="orLimite" type="number" min="1" placeholder="sem limite">
+    <div class="acoes">
+      <button type="button" class="cancelar">Cancelar</button>
+      <button class="primario" value="ok">Catalogar imagens</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- congelar -->
+<dialog id="dlgCongelar">
+  <form method="dialog" id="formCongelar">
+    <h2>Congelar versão</h2>
+    <p class="ajuda" id="congelarResumo"></p>
+    <label for="cgDesc">O que mudou</label>
+    <input id="cgDesc" required maxlength="500" placeholder="adicionado turno da noite">
+    <label for="cgVal">Fatia de validação</label>
+    <select id="cgVal">
+      <option value="0.2" selected>20%</option>
+      <option value="0.1">10%</option>
+      <option value="0.3">30%</option>
+    </select>
+    <label for="cgSplit">Divisão</label>
+    <select id="cgSplit">
+      <option value="random" selected>Aleatória — imagens independentes</option>
+      <option value="by_group">Por grupo — frames de vídeo</option>
+    </select>
+    <p class="dica">Frames seguidos de um vídeo são quase idênticos: divididos ao
+      acaso, o mesmo instante cai nos dois lados e o mAP sobe sem motivo.</p>
+    <div class="acoes">
+      <button type="button" class="cancelar">Cancelar</button>
+      <button class="primario" value="ok">Congelar</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- recorte (ROI) -->
+<dialog id="dlgRoi">
+  <form method="dialog" id="formRoi">
+    <h2>Recorte (ROI)</h2>
+    <p class="ajuda">Recorta cada imagem para uma região fixa — aplicada igual no
+      treino, na avaliação e na inferência. Use quando só um alvo, sempre na mesma
+      faixa do quadro, deve ser detectado: o recorte tira os vizinhos idênticos,
+      que senão viram "fundo" e confundem o modelo.</p>
+    <div class="roi-editor">
+      <div class="roi-controles">
+        <span class="rotulo">Âncora</span>
+        <div class="roi-grade" id="roiGrade">
+          <button type="button" data-anchor="topo-esq" title="topo · esquerda"></button>
+          <button type="button" data-anchor="topo-centro" title="topo · centro"></button>
+          <button type="button" data-anchor="topo-dir" title="topo · direita"></button>
+          <button type="button" data-anchor="meio-esq" title="meio · esquerda"></button>
+          <button type="button" data-anchor="meio-centro" title="meio · centro"></button>
+          <button type="button" data-anchor="meio-dir" title="meio · direita"></button>
+          <button type="button" data-anchor="base-esq" title="base · esquerda"></button>
+          <button type="button" data-anchor="base-centro" title="base · centro"></button>
+          <button type="button" data-anchor="base-dir" title="base · direita"></button>
+        </div>
+        <label for="roiLarg">Largura <span id="roiLargV" class="roi-val"></span></label>
+        <input type="range" id="roiLarg" min="5" max="100" step="1">
+        <label for="roiAlt">Altura <span id="roiAltV" class="roi-val"></span></label>
+        <input type="range" id="roiAlt" min="5" max="100" step="1">
+      </div>
+      <div class="roi-previa-caixa">
+        <span class="rotulo">Prévia</span>
+        <canvas id="roiPreview" width="130" height="220"></canvas>
+        <p class="dica" id="roiCoords"></p>
+      </div>
+    </div>
+    <div class="acoes">
+      <button type="button" class="cancelar">Cancelar</button>
+      <button type="button" class="discreto" id="roiRemover">Sem recorte</button>
+      <button class="primario" value="ok">Salvar recorte</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- novo usuário -->
+<dialog id="dlgUsuario">
+  <form method="dialog" id="formUsuario">
+    <h2>Novo usuário</h2>
+    <p class="ajuda">Sem senha, o usuário nasce "convidado" e você recebe um
+      token para ele definir a senha no primeiro acesso.</p>
+    <label for="usEmail">E-mail</label>
+    <input id="usEmail" type="email" required placeholder="pessoa@empresa.com">
+    <label for="usNome">Nome</label>
+    <input id="usNome" required placeholder="Nome da pessoa">
+    <label for="usSenha">Senha inicial (opcional)</label>
+    <input id="usSenha" type="password" autocomplete="new-password" minlength="12"
+           placeholder="deixe vazio para enviar convite">
+    <label class="alternar"><input type="checkbox" id="usSuper">
+      administrador da instalação (superusuário)</label>
+    <div class="acoes">
+      <button type="button" class="cancelar">Cancelar</button>
+      <button class="primario" value="ok">Criar usuário</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- novo projeto -->
+<dialog id="dlgProjeto">
+  <form method="dialog" id="formProjeto">
+    <h2>Novo projeto</h2>
+    <p class="ajuda">Um projeto tem um vocabulário de classes (o schema). A ordem
+      das classes é o índice do formato YOLO e não muda depois.</p>
+    <label for="pjNome">Nome</label>
+    <input id="pjNome" required placeholder="Linha de inspeção A">
+    <label for="pjSlug">Identificador</label>
+    <input id="pjSlug" required pattern="[a-z0-9]+(-[a-z0-9]+)*"
+           placeholder="linha-de-inspecao">
+    <p class="dica">Minúsculas e hífens. Aparece nas URLs e não muda depois.</p>
+    <label for="pjTipo">Tipo</label>
+    <select id="pjTipo">
+      <option value="detect">Detecção — caixas</option>
+      <option value="segment">Segmentação — máscaras</option>
+      <option value="classify">Classificação — imagem inteira</option>
+    </select>
+    <label>Classes</label>
+    <div class="chips" id="pjChips"></div>
+    <div class="chip-add">
+      <input id="pjClasseInput" placeholder="ex: classe_a">
+      <button type="button" id="pjAddClasse">adicionar</button>
+    </div>
+    <p class="dica">Enter também adiciona. A ordem é o índice (0, 1, 2…).</p>
+    <div class="acoes">
+      <button type="button" class="cancelar">Cancelar</button>
+      <button class="primario" value="ok">Criar projeto</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- avaliar -->
+<dialog id="dlgEvaluate">
+  <form method="dialog" id="formEvaluate">
+    <h2>Avaliar <span id="avModelo"></span></h2>
+    <p class="ajuda">Mede o artefato contra uma versão congelada (o benchmark):
+      mAP e a latência decomposta (pré / inferência / pós). "Todos os formatos"
+      avalia peso e builds de uma vez para comparar.</p>
+    <label for="avArtefato">Artefato</label>
+    <select id="avArtefato"></select>
+    <label for="avDataset">Dataset de benchmark</label>
+    <select id="avDataset" required></select>
+    <label for="avVersao">Versão</label>
+    <select id="avVersao" required></select>
+    <p class="dica" id="avInfo"></p>
+    <div class="acoes">
+      <button type="button" class="cancelar">Cancelar</button>
+      <button class="primario" value="ok">Avaliar</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- implantar (deploy) -->
+<dialog id="dlgDeploy">
+  <form method="dialog" id="formDeploy">
+    <h2>Implantar <span id="dpModelo"></span></h2>
+    <p class="ajuda">Envia o build para uma máquina. O agente dela puxa o
+      artefato e ativa; o coletor lê do caminho conhecido e passa a usar o novo
+      modelo. Uma máquina roda um modelo por vez.</p>
+    <label for="dpFormato">Build</label>
+    <select id="dpFormato"></select>
+    <label for="dpDevice">Máquina</label>
+    <select id="dpDevice" required></select>
+    <div class="acoes">
+      <button type="button" class="cancelar">Cancelar</button>
+      <button class="primario" value="ok">Implantar</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- exportar (compilar) -->
+<dialog id="dlgExport">
+  <form method="dialog" id="formExport">
+    <h2>Compilar <span id="exModelo"></span></h2>
+    <p class="ajuda">Gera o artefato implantável. ONNX é portátil; o engine
+      TensorRT é específico do dispositivo e roda na máquina-alvo — mais rápido,
+      é o que vai para a linha.</p>
+    <label for="exFormato">Formato</label>
+    <select id="exFormato">
+      <option value="engine">Engine TensorRT — para o dispositivo</option>
+      <option value="onnx">ONNX — portátil</option>
+    </select>
+    <div id="exEngineOpts">
+      <div class="linha-campos">
+        <div><label for="exPrec">Precisão</label>
+          <select id="exPrec">
+            <option value="int8">INT8 — mais rápido (calibrado)</option>
+            <option value="fp16" selected>FP16 — seguro</option>
+            <option value="fp32">FP32</option>
+          </select></div>
+        <div><label class="alternar" style="margin-top:26px">
+          <input type="checkbox" id="exDla"> usar DLA</label></div>
+        <div><label class="alternar" style="margin-top:26px">
+          <input type="checkbox" id="exDyn" checked> shapes dinâmicos</label></div>
+      </div>
+      <p class="dica">Jetson/linha: FP16 + shapes dinâmicos — o engine usa o
+        mesmo letterbox do .pt e as detecções saem idênticas. DLA exige shape
+        fixo.</p>
+    </div>
+    <label for="exImg">Tamanho (imgsz)</label>
+    <input id="exImg" type="number" min="64" max="2048" step="32" value="640">
+    <div class="acoes">
+      <button type="button" class="cancelar">Cancelar</button>
+      <button class="primario" value="ok">Compilar</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- ajuda da tela (botão ? na barra de abas) -->
+<dialog id="dlgAjuda">
+  <form method="dialog">
+    <h2 id="ajudaTitulo">Ajuda</h2>
+    <div id="ajudaCorpo" class="ajuda-corpo"></div>
+    <div class="acoes">
+      <button class="primario" value="ok">Fechar</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- pré-taguear -->
+<dialog id="dlgPrelabel">
+  <form method="dialog" id="formPrelabel">
+    <h2>Pré-taguear</h2>
+    <p class="ajuda">Roda o modelo sobre as imagens de <b id="plDatasetNome"></b>
+      e devolve caixas como rascunho, para você corrigir. Nunca sobrescreve o
+      que já foi rotulado.</p>
+    <label for="plEscopo">Escopo</label>
+    <select id="plEscopo">
+      <option value="todo">Todo o dataset</option>
+      <option value="pagina">Só esta página</option>
+    </select>
+    <label for="plModeloSel">Modelo</label>
+    <select id="plModeloSel" required></select>
+    <label for="plVersao">Versão do modelo</label>
+    <select id="plVersao"></select>
+    <div class="linha-campos">
+      <div><label for="plConf">Confiança mínima</label>
+        <input id="plConf" type="number" min="0.05" max="0.95" step="0.05" value="0.25"></div>
+      <div><label class="alternar" style="margin-top:26px">
+        <input type="checkbox" id="plMissing" checked> só imagens sem minha anotação</label></div>
+    </div>
+    <div class="acoes">
+      <button type="button" class="cancelar">Cancelar</button>
+      <button class="primario" value="ok">Pré-taguear</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- novo treino -->
+<dialog id="dlgRun">
+  <form method="dialog" id="formRun">
+    <h2>Novo treino</h2>
+    <p class="ajuda">O treino roda sobre uma versão <b>congelada</b> — imutável,
+      com divisão treino/validação fixa. É o que torna dois treinos comparáveis.</p>
+    <label for="runDataset">Dataset</label>
+    <select id="runDataset" required></select>
+    <label for="runVersao">Versão</label>
+    <select id="runVersao" required></select>
+    <p class="dica" id="runVersaoInfo"></p>
+    <label for="runModeloNome">Modelo</label>
+    <input id="runModeloNome" list="listaModelosTreino" required
+           maxlength="64" placeholder="detector" value="detector">
+    <datalist id="listaModelosTreino"></datalist>
+    <p class="dica">O treino vira uma nova versão deste modelo. Digite um nome
+      novo para criar outro modelo (ex.: "classificador-defeito").</p>
+    <label for="runExp">Experimento</label>
+    <input id="runExp" required maxlength="120" placeholder="baseline"
+           value="baseline">
+    <p class="dica">Agrupa treinos que você compara entre si (ex.: "baseline",
+      "mais-dados", "aug-forte").</p>
+    <div class="linha-campos">
+      <div><label for="runBase">Modelo-base</label>
+        <select id="runBase">
+          <option value="yolo11n.pt" selected>YOLO11n — mais rápido</option>
+          <option value="yolo11s.pt">YOLO11s</option>
+          <option value="yolo11m.pt">YOLO11m — mais preciso</option>
+        </select></div>
+      <div><label for="runEpocas">Épocas</label>
+        <input id="runEpocas" type="number" min="1" max="1000" value="100"></div>
+    </div>
+    <div class="linha-campos">
+      <div><label for="runImg">Tamanho (imgsz)</label>
+        <input id="runImg" type="number" min="64" max="2048" step="32" value="640"></div>
+      <div><label for="runBatch">Batch</label>
+        <input id="runBatch" type="number" min="1" max="256" value="16"></div>
+    </div>
+    <label for="runMaquina">Máquina</label>
+    <select id="runMaquina">
+      <option value="" selected>Próxima livre do pool</option>
+    </select>
+    <p class="dica">Deixe no pool para a primeira máquina livre pegar. Escolha
+      uma máquina para fixar o treino nela — se estiver ocupada, o job espera
+      ela liberar.</p>
+    <div class="acoes">
+      <button type="button" class="cancelar">Cancelar</button>
+      <button class="primario" value="ok">Enfileirar treino</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- nova máquina -->
+<dialog id="dlgDevice">
+  <form method="dialog" id="formDevice">
+    <h2>Cadastrar máquina</h2>
+    <p class="ajuda">Cada máquina que executa jobs — um servidor de GPU, um
+      dispositivo de borda — é cadastrada aqui. O que ela pode fazer decide
+      quais jobs recebe.</p>
+    <label for="devNome">Nome</label>
+    <input id="devNome" required placeholder="Servidor de treino">
+    <label for="devSlug">Identificador</label>
+    <input id="devSlug" required pattern="[a-z0-9]+(-[a-z0-9]+)*" placeholder="servidor-treino">
+    <label for="devClasse">Classe</label>
+    <input id="devClasse" required placeholder="servidor-gpu">
+    <label>Funções</label>
+    <div class="check-grupo" id="devFuncoes">
+      <label class="check"><input type="checkbox" value="train"> Treino
+        <span class="check-dica">máquina com GPU</span></label>
+      <label class="check"><input type="checkbox" value="infer"> Inferência
+        <span class="check-dica">predição interativa</span></label>
+      <label class="check"><input type="checkbox" value="prelabel"> Pré-tagueamento
+        <span class="check-dica">rotular em lote</span></label>
+    </div>
+    <p class="dica">Marque tudo que esta máquina pode fazer — ela recebe jobs de
+      qualquer função marcada. O agente acrescenta o diagnóstico (GPU, CUDA) sozinho.</p>
+    <div class="acoes">
+      <button type="button" class="cancelar">Cancelar</button>
+      <button class="primario" value="ok">Cadastrar e gerar token</button>
+    </div>
+  </form>
+</dialog>
+
+<script src="/static/app.js?v=20260807e"></script>
+</body>
+</html>

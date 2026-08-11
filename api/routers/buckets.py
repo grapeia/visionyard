@@ -1,0 +1,147 @@
+"""Navegação de bucket: pastas, objetos e miniaturas.
+
+Listar um prefixo amplo custa caro (o bucket de produção tem centenas de
+milhares de objetos), então a navegação usa `delimiter="/"`: o GCS devolve
+só o nível atual — as "pastas" logo abaixo e os objetos que estão nelas — em
+vez de percorrer tudo. No bucket deste projeto o topo tem 35 pastas e sai em
+~1,5 s.
+
+As miniaturas vêm de URL assinada, que o navegador busca direto do GCS. Onde a
+credencial não sabe assinar (ADC de usuário, sem chave privada), a lista
+aparece sem imagem em vez de falhar.
+"""
+from __future__ import annotations
+
+from datetime import timedelta
+from pathlib import Path
+from typing import Annotated
+
+import logging
+
+from fastapi import (APIRouter, Depends, HTTPException, Path as P, Query,
+                     status)
+from starlette.concurrency import run_in_threadpool
+
+from ..config import settings
+from ..deps import require_role
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(tags=["buckets"])
+
+IMG_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
+MAX_OBJETOS = 60
+MAX_MINIATURAS = 24
+
+
+def _client():
+    from google.cloud import storage
+    try:
+        return storage.Client()
+    except Exception:  # noqa: BLE001
+        # Chave exportada pelo gcloud não traz project_id — mesmo caso tratado
+        # no importador de prefixo GCS.
+        import json
+        import os
+        projeto = os.environ.get("GOOGLE_CLOUD_PROJECT", "")
+        chave = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "")
+        if not projeto and chave and Path(chave).is_file():
+            dados = json.loads(Path(chave).read_text())
+            email = dados.get("client_email") or ""
+            projeto = dados.get("project_id") or (
+                email.split("@", 1)[1].split(".", 1)[0] if "@" in email else "")
+        if not projeto:
+            raise
+        return storage.Client(project=projeto)
+
+
+def _pode_assinar(cliente) -> bool:
+    return hasattr(getattr(cliente, "_credentials", None), "signer_email")
+
+
+@router.get("/projects/{project_slug}/buckets",
+            dependencies=[Depends(require_role("engineer"))])
+async def listar_buckets(project_slug: Annotated[str, P()]):
+    """Buckets pré-definidos na instalação.
+
+    Vem de configuração e não do banco: é infraestrutura do ambiente, muda
+    junto com o deploy, e digitar o nome à mão toda vez convida a erro de
+    digitação que só aparece como 'nenhuma imagem encontrada'.
+
+    Escopado a projeto e exigindo `engineer`: navegar o bucket é passo de
+    compor dataset, não leitura pública. Sem isso, qualquer usuário
+    autenticado — inclusive um `annotator` terceirizado — enxergaria o
+    conteúdo de todos os buckets da instalação.
+    """
+    return [{"nome": b} for b in settings.buckets]
+
+
+def _navegar(bucket: str, prefixo: str) -> dict:
+    cliente = _client()
+    iterador = cliente.list_blobs(bucket, prefix=prefixo, delimiter="/",
+                                  max_results=MAX_OBJETOS + 1)
+    blobs = list(iterador)
+    pastas = sorted(iterador.prefixes)
+
+    tem_mais = len(blobs) > MAX_OBJETOS
+    blobs = blobs[:MAX_OBJETOS]
+
+    assina = _pode_assinar(cliente)
+    objetos, miniaturas = [], 0
+    for b in blobs:
+        nome = b.name[len(prefixo):] if prefixo else b.name
+        if not nome:
+            # Objeto-placeholder de pasta: o console do GCS cria um objeto de
+            # zero byte com o nome do próprio prefixo. Sem isso ele aparece
+            # como uma linha sem nome.
+            continue
+        eh_imagem = Path(b.name).suffix.lower() in IMG_EXTS
+        url = None
+        if eh_imagem and assina and miniaturas < MAX_MINIATURAS:
+            try:
+                url = b.generate_signed_url(version="v4",
+                                            expiration=timedelta(minutes=30),
+                                            method="GET")
+                miniaturas += 1
+            except Exception:  # noqa: BLE001 — sem assinatura, segue sem imagem
+                url = None
+        objetos.append({"nome": nome, "caminho": b.name, "bytes": b.size,
+                        "imagem": eh_imagem, "url": url})
+
+    # sobe um nível: "A/B/C/" -> "A/B/"
+    pai = None
+    if prefixo:
+        partes = prefixo.rstrip("/").split("/")
+        pai = "/".join(partes[:-1]) + "/" if len(partes) > 1 else ""
+
+    return {"bucket": bucket, "prefixo": prefixo, "pai": pai,
+            "pastas": pastas, "objetos": objetos, "tem_mais": tem_mais,
+            "imagens": sum(1 for o in objetos if o["imagem"]),
+            "assina": assina}
+
+
+@router.get("/projects/{project_slug}/buckets/browse",
+            dependencies=[Depends(require_role("engineer"))])
+async def navegar(project_slug: Annotated[str, P()],
+                  bucket: Annotated[str, Query(min_length=1)],
+                  prefixo: str = ""):
+    bucket = bucket.replace("gs://", "").strip("/")
+
+    # Lista vazia nega tudo, em vez de liberar tudo. A conta de serviço desta
+    # máquina enxerga o projeto inteiro do GCP, então uma allowlist que falha
+    # aberta transformaria a rota num listador de qualquer bucket da empresa.
+    if bucket not in settings.buckets:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "bucket não disponível")
+
+    try:
+        return await run_in_threadpool(_navegar, bucket, prefixo)
+    except HTTPException:
+        raise
+    except Exception as e:  # noqa: BLE001
+        # O detalhe fica no log do servidor: erro do GCS costuma citar
+        # projeto, conta de serviço e caminho interno, que não têm por que
+        # chegar ao navegador.
+        logger.warning("falha ao navegar gs://%s/%s: %s: %s",
+                       bucket, prefixo, type(e).__name__, e)
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY,
+                            "não consegui ler o bucket") from e

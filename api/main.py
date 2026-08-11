@@ -1,0 +1,71 @@
+"""App FastAPI da Control API.
+
+    .venv/bin/uvicorn api.main:app --reload --port 8000
+"""
+from __future__ import annotations
+
+from contextlib import asynccontextmanager
+from pathlib import Path
+
+from fastapi import FastAPI
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+
+from . import db
+from .routers import agents as agents_router
+from .routers import auth as auth_router
+from .routers import buckets as buckets_router
+from .routers import datasets as datasets_router
+from .routers import devices as devices_router
+from .routers import imports as imports_router
+from .routers import jobs as jobs_router
+from .routers import models as models_router
+from .routers import prelabel as prelabel_router
+from .routers import projects as projects_router
+from .routers import samples as samples_router
+from .routers import training as training_router
+from .routers import users as users_router
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await db.open_pool()
+    try:
+        yield
+    finally:
+        await db.close_pool()
+
+
+app = FastAPI(title="visionyard — Control API", version="0.1.0",
+              lifespan=lifespan)
+
+app.include_router(agents_router.router, prefix="/v1")
+app.include_router(auth_router.router, prefix="/v1")
+app.include_router(buckets_router.router, prefix="/v1")
+app.include_router(datasets_router.router, prefix="/v1")
+app.include_router(devices_router.router, prefix="/v1")
+app.include_router(imports_router.router, prefix="/v1")
+app.include_router(jobs_router.router, prefix="/v1")
+app.include_router(models_router.router, prefix="/v1")
+app.include_router(prelabel_router.router, prefix="/v1")
+app.include_router(projects_router.router, prefix="/v1")
+app.include_router(samples_router.router, prefix="/v1")
+app.include_router(training_router.router, prefix="/v1")
+app.include_router(users_router.router, prefix="/v1")
+
+
+@app.get("/healthz", tags=["ops"])
+async def healthz():
+    await db.fetch_one("SELECT 1 AS ok")
+    return {"status": "ok"}
+
+
+STATIC = Path(__file__).resolve().parent / "static"
+
+
+@app.get("/", include_in_schema=False)
+async def index():
+    return FileResponse(STATIC / "index.html")
+
+
+app.mount("/static", StaticFiles(directory=STATIC), name="static")
