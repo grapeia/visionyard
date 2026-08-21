@@ -164,17 +164,25 @@ Ficou de fora: o log de acesso do uvicorn continua saindo em paralelo, sem o
 código. Desligá-lo é opção do comando de subida (`--no-access-log`), não do
 código, e a duplicação incomoda menos que a decisão errada no lugar errado.
 
-### 8. Menores — `pendente`
-- `/healthz` bate no banco: oscilação do Postgres vira loop de restart no
-  orquestrador. Separar liveness de readiness.
-- Convenção de idioma PT/EN agora está escrita no `CLAUDE.md`; conferir se o
-  código diverge dela em algum ponto e alinhar.
-- `dataset.selection` (jsonb, 002) está morta: a 007 trocou o modelo de "filtro
-  por metadados" por origens explícitas (`dataset_source`), e nenhuma linha de
-  Python ou de JS lê ou escreve a coluna. O comentário dela na migration ainda
-  descreve o modelo antigo em detalhe — era o que o `README.md` repetia até
-  2026-08-11. Derrubar exige `NNN_` novo; enquanto não vier, é a próxima
-  armadilha de quem for ler o schema.
+### 8. Menores — `feito` (2026-08-20)
+Os três, em `93d8a9c`.
+
+- **Liveness e readiness separadas.** `/healthz` não consulta mais nada — é a
+  sonda que faz o orquestrador REINICIAR, e apontá-la para o banco fazia de uma
+  oscilação do Postgres um interruptor do processo. `/readyz` responde a
+  pergunta de tráfego, com 503 enquanto o banco não volta. O healthcheck do
+  compose passou para `/readyz`.
+- **Varredura de idioma: uma divergência em 70 rotas.** O segmento `origens` de
+  `datasets/{slug}/origens/{source_id}` virou `sources` (os handlers já eram
+  `add_origin`/`remove_origin`). Colunas e tabelas estão todas em inglês. O que
+  NÃO foi alinhado, e por quê: chave de resposta e parâmetro de query seguem o
+  que o `app.js` consome — a regra já dizia isso para JSON, e agora diz também
+  para query; e os dois arquivos de migration com nome em português ficam,
+  porque o nome é a chave em `schema_migrations` e renomear faria o runner
+  reaplicá-las.
+- **`dataset.selection` derrubada** pela 013. Estava morta desde a 007, e o
+  comentário da 002 — que não se edita — segue descrevendo o modelo antigo em
+  detalhe. Sem coluna não há o que interpretar errado.
 
 ### 9. Ligar `index` e `dict-item` no `mypy` — `feito` (2026-08-11)
 Os dois códigos estão ligados; os 55 lugares apontados viraram duas coisas
@@ -488,3 +496,9 @@ carga de página, dentro do threadpool.
   não previsto não vaza detalhe interno, o erro de usuário continua sendo o
   status que era, e a linha de log do 500 carrega o mesmo código que o usuário
   vê. Suíte: **192 testes passando** (eram 186).
+- **2026-08-20** — item 8 feito (`93d8a9c`). `/healthz` parou de consultar o
+  banco e ganhou o par `/readyz`; o segmento de rota em português virou inglês
+  (era a única divergência da convenção em 70 rotas); a 013 derrubou
+  `dataset.selection`. Os três testes novos fixam o que a separação das sondas
+  significa: viva sem banco, pronta só com ele, e 503 — não 500 — quando ele
+  não responde. Suíte: **195 testes passando** (eram 192).
