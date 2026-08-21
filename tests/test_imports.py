@@ -433,3 +433,48 @@ async def test_listar_jobs_recolhe_o_que_ficou_preso(admin, superuser):
     await _import_preso(admin, superuser, ha_segundos=24 * 3600)
     jobs = (await admin.get(f"/v1/projects/{PROJ['slug']}/jobs")).json()
     assert [j["status"] for j in jobs if j["type"] == "import"] == ["failed"]
+
+
+async def test_import_orfao_nao_e_reclamado_por_maquina(admin, client, superuser):
+    """Job de importação roda DENTRO da API: não há executor do outro lado.
+
+    O claim do agente não filtra por tipo e casa qualquer `requires` vazio, e
+    passou a alcançar a importação no dia em que ela começou a bater ponto. A
+    máquina o encerraria como "tipo não suportado" por cima do dono — e como o
+    prazo do agente (180s) é menor que o da importação (900s), ela ganharia
+    sempre a corrida, inclusive contra uma importação viva que só está lenta.
+    """
+    from .test_training import _device, _h
+
+    await _import_preso(admin, superuser, ha_segundos=24 * 3600)
+    dev = await _device(admin, {"train": True}, slug="maquina-qualquer")
+    r = await client.post("/v1/agent/claim", headers=_h(dev["token"]))
+    assert r.json()["job"] is None, "a máquina reclamou um job de importação"
+
+
+async def test_evento_concorrente_nao_derruba_o_recolhimento(admin, superuser):
+    """`job_event` tem PK (job_id, seq) e o seq sai de `max(seq)+1`.
+
+    Desde que o recolhimento passou a escrever evento, há dois escritores no
+    mesmo job — o reaper e a task que ainda pode estar viva, que é o cenário
+    que a guarda de `concluir_job` prevê. Se os dois calculam o mesmo seq, o
+    perdedor levantava `UniqueViolation`: no reaper isso aborta a transação
+    inteira, então nada é recolhido E a tela de jobs devolve 500.
+    """
+    import asyncio
+
+    from api import db
+    from api.services import imports as svc
+
+    job_id = await _import_preso(admin, superuser, ha_segundos=10)
+    async with db.connection() as dono:
+        async with dono.transaction():
+            # a linha existe, mas nenhuma outra conexão a enxerga ainda
+            await dono.execute(
+                "INSERT INTO job_event (job_id, seq, message)"
+                " VALUES (%s, 1, 'do dono')", (job_id,))
+            tarefa = asyncio.create_task(
+                svc.registrar_evento(job_id, "do recolhimento"))
+            await asyncio.sleep(0.2)   # calcula seq=1 e trava no índice único
+        # o commit solta a outra: ou ela desiste, ou estoura
+    await tarefa

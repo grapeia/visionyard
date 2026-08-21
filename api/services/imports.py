@@ -50,11 +50,22 @@ async def recolher_orfaos() -> int:
 
 async def registrar_evento(job_id: str, mensagem: str, nivel: str = "info",
                            *, conn: db.Conn | None = None) -> None:
-    """Linha no diário do job — é o que a tela de detalhe mostra."""
+    """Linha no diário do job — é o que a tela de detalhe mostra.
+
+    `ON CONFLICT DO NOTHING` porque há dois escritores desde que o
+    recolhimento passou a registrar evento: ele e a task que ainda pode estar
+    viva (o caso que a guarda de `concluir_job` prevê). O seq sai de
+    `max(seq)+1`, e duas conexões podem calcular o mesmo — a chave é
+    (job_id, seq). Perder uma linha do diário é barato; deixar a violação subir
+    abortaria a transação do recolhimento inteiro, e a tela de jobs que o
+    dispara devolveria 500.
+    """
     await db.execute(
         "INSERT INTO job_event (job_id, seq, level, message)"
         " SELECT %s, COALESCE(max(seq), 0) + 1, %s, %s FROM job_event"
-        " WHERE job_id = %s", (job_id, nivel, mensagem, job_id), conn=conn)
+        " WHERE job_id = %s"
+        " ON CONFLICT (job_id, seq) DO NOTHING",
+        (job_id, nivel, mensagem, job_id), conn=conn)
 
 
 async def registrar_progresso(job_id: str, lidos: int) -> None:

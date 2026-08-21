@@ -151,6 +151,14 @@ pede.
   `atualizar_deployment` fazem a conferência no próprio `WHERE`
   (`AND device_id = %s`). Nesses três o `WHERE` **é** o controle de acesso —
   não o simplifique achando que `job_da_maquina` já cobriu.
+- **Job que roda dentro da API não é reclamável por máquina nenhuma.** O
+  claim casa `capabilities @> requires` — e `requires` vazio casa com qualquer
+  device —, não filtra por tipo, e realcança job `running` com ponto velho.
+  Quem não tem executor do outro lado fica de fora por
+  `services/agents.py: TIPOS_LOCAIS`, no claim E no reaper. Sem isso a máquina
+  encerra a importação como "tipo não suportado" por cima de quem a está
+  executando, e ganha sempre: o prazo do agente (180s) é menor que o dela
+  (900s).
 - **O agente não declara capacidade de roteamento.** `registrar_presenca` filtra
   por `CAPS_DIAGNOSTICO`; deixar `train`/`infer` passar permite que um
   dispositivo de borda reclame treino.
@@ -169,9 +177,8 @@ pede.
   recebe `conn=conn` — inclusive o `audit()`, para que o fato e o seu registro
   comitem juntos.
 - Job de importação roda em `asyncio.create_task` dentro do processo da API: a
-  task morre com o processo, e o reaper do agente
-  (`services/agents.py: recolher_orfaos`) não a alcança, porque exige
-  `attempts >= max_attempts`. Quem cuida dela é
+  task morre com o processo, e nenhuma máquina o reclama (ver a invariante
+  acima). Quem cuida dele é
   `services/imports.py: recolher_orfaos`, chamada nas duas telas de jobs — a
   importação bate ponto a cada lote e quem parou de bater há
   `import_job_stale_seconds` é fechada como falha. Toda escrita de desfecho

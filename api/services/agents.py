@@ -74,6 +74,15 @@ async def bater_ponto(device_id: str, status_agente: str) -> None:
 # Claim
 # --------------------------------------------------------------------------- #
 
+# Job que roda DENTRO do processo da API não é reclamável por máquina nenhuma:
+# não há executor do outro lado, e o agente o encerraria como "tipo não
+# suportado" por cima de quem o está executando. O claim casa `requires` vazio
+# com qualquer capacidade e não filtra por tipo, então a exclusão precisa ser
+# explícita — foi o que faltou quando a importação passou a bater ponto e virou
+# alcançável. Quem cuida deles é `services/imports.py`.
+TIPOS_LOCAIS = ["import"]
+
+
 async def recolher_orfaos() -> None:
     """Leva a um estado terminal o job órfão que NÃO pode mais ser reclamado.
 
@@ -88,6 +97,7 @@ async def recolher_orfaos() -> None:
         "    error = COALESCE(error, 'agente parou de responder'),"
         "    finished_at = now()"
         "  WHERE status IN ('claimed','running')"
+        "    AND type <> ALL(%(locais)s::text[])"
         "    AND heartbeat_at < now() - make_interval(secs => %(s)s)"
         "    AND (attempts >= max_attempts OR cancel_requested)"
         "  RETURNING id, status)"
@@ -95,7 +105,7 @@ async def recolher_orfaos() -> None:
         "    SET status = CASE WHEN m.status = 'canceled' THEN 'stopped'"
         "                      ELSE 'failed' END, finished_at = now()"
         "   FROM mortos m WHERE r.job_id = m.id AND r.status = 'running'",
-        {"s": settings.agent_job_stale_seconds})
+        {"s": settings.agent_job_stale_seconds, "locais": TIPOS_LOCAIS})
 
 
 async def reclamar_job(device_id: str) -> dict | None:
@@ -120,6 +130,7 @@ async def reclamar_job(device_id: str) -> dict | None:
                     SELECT j.id FROM job j
                      WHERE (SELECT capabilities FROM device WHERE id = %(dev)s)
                            @> j.requires
+                       AND j.type <> ALL(%(locais)s::text[])
                        AND (j.target_device_id IS NULL
                             OR j.target_device_id = %(dev)s)
                        AND NOT j.cancel_requested
@@ -135,7 +146,7 @@ async def reclamar_job(device_id: str) -> dict | None:
                      LIMIT 1)
                 RETURNING id, type, payload, project_id, attempts
                 """,
-                {"dev": device_id,
+                {"dev": device_id, "locais": TIPOS_LOCAIS,
                  "stale": settings.agent_job_stale_seconds})
             job = await cur.fetchone()
             if job is None:
