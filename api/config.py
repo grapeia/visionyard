@@ -27,6 +27,10 @@ class Settings(BaseSettings):
 
     password_min_length: int = 12
 
+    # Nível do log da aplicação. O acesso sai numa linha por requisição, com o
+    # código de correlação; DEBUG só para investigar.
+    log_level: str = "INFO"
+
     # Throttle de login. O teto duro é por IP — é o que barra força bruta sem
     # permitir que alguém tranque a conta de outro só errando a senha de
     # propósito. Por email há apenas backoff progressivo, com teto baixo:

@@ -32,6 +32,7 @@ api/            Control API (FastAPI)
   config.py     settings por ambiente (prefixo VISIONYARD_)
   db.py         pool psycopg3; SQL direto, sem ORM
   storage.py    porta do GCS: cliente memoizado e URL assinada
+  logs.py       código de correlação por requisição, e a rede do 500
   security.py   hash de senha e tokens
   auth.py       login, sessão, token de API, token de device
   audit.py      audit(), fora de deps.py para auth.py poder chamá-la
@@ -109,6 +110,13 @@ não renomeie sem mexer no `app.js`.
 (GCS, banco) vai para o log e devolve mensagem genérica — o texto do
 fornecedor cita conta de serviço e caminho interno, e `job.error` é lido com
 papel `viewer`.
+
+O que nenhum handler previu cai na rede de `logs.correlacionar`: vira 500 com
+o código da requisição no corpo e o traceback no log, sob o mesmo código. Toda
+linha de log emitida durante uma requisição carrega esse código sem que quem
+chama o logger precise fazer nada — o filtro está no root. Ao investigar, é
+por ele que se procura; ao responder a um usuário que viu um 500, é ele que se
+pede.
 
 ## Invariantes que não podem quebrar
 

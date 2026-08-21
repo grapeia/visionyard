@@ -11,7 +11,7 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import db
+from . import db, logs
 from .routers import agents as agents_router
 from .routers import auth as auth_router
 from .routers import buckets as buckets_router
@@ -29,6 +29,7 @@ from .routers import users as users_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    logs.configurar()
     await db.open_pool()
     try:
         yield
@@ -38,6 +39,10 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="visionyard — Control API", version="0.1.0",
               lifespan=lifespan)
+
+# Fora de qualquer rota e antes dos routers: vale para o estático e para o
+# caminho que nenhum handler previu, que é justamente o que se quer ver.
+app.middleware("http")(logs.correlacionar)
 
 app.include_router(agents_router.router, prefix="/v1")
 app.include_router(auth_router.router, prefix="/v1")
