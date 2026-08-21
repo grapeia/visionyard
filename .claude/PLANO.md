@@ -240,6 +240,67 @@ arquivo for mexido a sério (é candidato a virar `services/samples.py`).
   422 sai da validação do pydantic antes de qualquer linha do handler, e o
   `admin` é superusuário, então nada daquele setup é lido.
 
+### 13. Contrato do payload de job — `pendente`
+O sistema tem duas APIs e só uma é defendida. A borda HTTP tem pydantic; a
+borda que atravessa processo, máquina e cadência de deploy — o controlador
+atualiza, o agente na borda não — é `json.dumps(dict)` de um lado
+(`routers/prelabel.py:109`, `services/training.py`) e `payload["weights_uri"]`
+do outro (`agent/prelabel.py:42`, `agent/train.py:27`, `agent/export.py:56`).
+Sem campo de versão, sem esquema, e sem um teste que afirme que o job
+enfileirado pela API é um job que o agente sabe ler.
+
+Renomear uma chave passa no `ruff`, no `mypy` e nos 169 testes, e falha horas
+depois como `KeyError` num dispositivo — marcando o job como `failed` com uma
+mensagem que não diz que o contrato quebrou. Agrava: `agent/` só é exercitado
+por `test_agent_materialize.py` e `test_export.py`.
+
+Caminho: modelos pydantic por tipo de job num módulo que os dois lados
+importam, com `payload_version`. Se isso for caro pela dependência que
+acrescenta ao agente, o piso é um teste por tipo que pegue o payload que a rota
+grava e o passe pelo leitor correspondente do agente. Encosta no item 5: a
+importação virando job reclamável usa a mesma costura.
+
+### 14. Contrato de resposta — `pendente`
+Três rotas usam `response_model` (as três em `routers/auth.py`); as demais
+devolvem a linha do banco montada à mão — `{**r, "url": ...}` em
+`samples.py:137` é o padrão. A linha **é** o DTO: coluna acrescentada a um
+`SELECT` viaja para o navegador sem ninguém decidir, e o OpenAPI não descreve
+saída nenhuma.
+
+É também a causa raiz da frase do `CLAUDE.md` sobre chave de JSON — "não
+renomeie sem mexer no `app.js`". Não há camada onde renomear: o nome da coluna,
+o nome no contrato e o nome que o front lê são a mesma string. Não precisa ser
+tudo de uma vez; começar pelas rotas que o `app.js` consome com força já cria o
+lugar.
+
+### 15. Conexão como parâmetro do serviço — `pendente`
+O `CLAUDE.md` explica que cada `fetch_*` pega uma conexão própria e que
+sequência atômica pede `db.connection()` + `conn.transaction()`. É convenção
+conferida por quem revisa: nada no tipo impede um serviço de fazer
+leia-decida-escreva com três conexões diferentes. O primeiro item do 12 (a
+contagem e a página em snapshots distintos) é uma instância da classe, não um
+caso isolado.
+
+A resposta estrutural é o serviço **receber** `conn: db.Conn` em vez de alcançar
+o pool: com a conexão como parâmetro, esquecer a transação vira erro de tipo em
+vez de achado de review. Cabe fazer serviço a serviço, junto com a migração de
+cada router para `services/` — não é uma passada só.
+
+### 16. Porta de storage — `pendente`
+O acesso ao GCS está espalhado e sem porta. `routers/samples.py:63` faz
+`from .buckets import _client` — um router entrando no helper privado de outro,
+o único import cruzado entre routers da árvore. Quatro lugares constroem
+`storage.Client()` (`samples.py:61`, `buckets.py:37,54`,
+`importers/gcs_prefix.py:41,57`), e o de `samples` constrói um por requisição,
+dentro do threadpool, a cada carga de página da galeria.
+`importers/base.Importer` é a única porta de verdade que existe hoje.
+
+Um `api/storage.py` com cliente memoizado e `assinar`/`listar`/`baixar` colapsa
+os quatro, mata o import cruzado e cria o lugar onde um dublê de teste caberia
+— hoje URL assinada não tem como ser exercitada sem credencial real: a suíte
+passa por `_assinar` em toda listagem, mas só pelo caminho em que ele desiste e
+devolve vazio, e nenhum teste afirma nada sobre isso.
+
 ## Registro
 
 - **2026-08-10** — revisão de arquitetura, criação do `CLAUDE.md` e deste plano.
@@ -296,3 +357,11 @@ arquivo for mexido a sério (é candidato a virar `services/samples.py`).
   justamente a métrica que o módulo existe para medir; `bc69c18` apelido
   inexistente virou 404 no prelabel, em vez de rodar calado a última versão.
   Item 12 criado com os quatro restantes. Suíte: **169 testes passando**.
+- **2026-08-20** — itens 13 a 16 criados. Não vieram de review de commit: são o
+  que uma leitura do repositório inteiro mostrou e que a revisão de 2026-08-10
+  não nomeou. Dois deles são contratos ausentes (o payload de job entre API e
+  agente, a resposta HTTP), um é disciplina de transação que hoje só existe como
+  convenção escrita, e o último é o acesso ao GCS sem porta. Ordem sugerida: 13
+  primeiro — maior risco pelo menor esforço, e encosta no item 5 —, depois 16,
+  depois 6. O 15 anda junto com a migração de cada router para `services/`, e o
+  12 entra quando `samples.py` virar serviço.
