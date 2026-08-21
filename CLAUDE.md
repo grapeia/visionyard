@@ -160,10 +160,18 @@ pede.
   `X-Agent-Token` e nunca por `Authorization`. Rota de agente vive em
   `routers/agents.py` e a regra em `services/agents.py`. **Toda** operação sobre
   um job confere que ele é daquela máquina, por um de dois caminhos: a maioria
-  chama `job_da_maquina`; `atualizar_progresso`, `finalizar_job` e
-  `atualizar_deployment` fazem a conferência no próprio `WHERE`
-  (`AND device_id = %s`). Nesses três o `WHERE` **é** o controle de acesso —
-  não o simplifique achando que `job_da_maquina` já cobriu.
+  chama `job_da_maquina` (ou `job_com_payload`, que a chama);
+  `atualizar_progresso`, `finalizar_job` e `atualizar_deployment` fazem a
+  conferência no próprio `WHERE` (`AND device_id = %s`). Nesses três o `WHERE`
+  **é** o controle de acesso — não o simplifique achando que `job_da_maquina`
+  já cobriu.
+- **Rota de agente que lê payload confere o tipo do job.** `job_com_payload`
+  recusa com 404 antes de ler, e é ela quem barra um agente chamando `/build`
+  num job de treino. Antes o que barrava era a chave faltando no payload — um
+  404 por acidente, e em `/targets` nem isso: o escopo lido com `.get()` virava
+  `None` e a resposta era 200 com lista vazia. Payload do tipo certo que o
+  parser recusa é bug de quem enfileirou: sobe e vira 500 na rede de
+  `logs.correlacionar`, não 404.
 - **Job que roda dentro da API não é reclamável por máquina nenhuma.** O
   claim casa `capabilities @> requires` — e `requires` vazio casa com qualquer
   device —, não filtra por tipo, e realcança job `running` com ponto velho.

@@ -329,7 +329,7 @@ virou router + `services/samples.py`, e as quatro limpezas foram junto.
   O setup saiu, com o porquê na docstring: o 422 sai do pydantic antes da
   primeira linha do handler, e o `admin` é superusuário.
 
-### 13. Contrato do payload de job — `feito` (2026-08-20)
+### 13. Contrato do payload de job — `feito` (2026-08-21)
 O sistema tem duas APIs e só uma é defendida. A borda HTTP tem pydantic; a
 borda que atravessa processo, máquina e cadência de deploy — o controlador
 atualiza, o agente na borda não — é `json.dumps(dict)` de um lado
@@ -373,16 +373,28 @@ sorteado em Python antes do INSERT do job, o que dispensou o
 o `payload.get("artifact_uri") or payload.get("weights_uri")` do `evaluate`
 era fallback morto — nenhum payload de avaliação carrega `weights_uri`.
 
-Ficou de fora, de propósito:
+**O terceiro leitor foi fechado em 2026-08-21.** `services/agents.py` lia o
+payload cru em seis lugares (`alvos_prelabel`, `gravar_prelabels`,
+`diretorio_manifesto`, `registrar_modelo`, `registrar_build`,
+`registrar_avaliacao`); todos passaram por `job_com_payload`, e o default
+`"detector"` do `model_slug`, que estava duplicado com o do produtor, saiu.
 
-- **O terceiro leitor.** `services/agents.py` lê o payload cru em seis lugares
-  (`alvos_prelabel`, `gravar_prelabels`, `diretorio_manifesto`,
-  `registrar_modelo`, `registrar_build`, `registrar_avaliacao`), e é onde o
-  default `"detector"` do `model_slug` está duplicado com o do produtor.
-  Converter exige decidir o que fazer com os 404 de payload incompleto que
-  existem lá (`job sem model_version`): com o parser eles viram erro de
-  programação, e um agente que chama `/build` num job de treino passaria a
-  receber 500 em vez de 404.
+A decisão que faltava era o que fazer com os 404 de payload incompleto. A
+resposta foi **conferir o tipo do job antes de ler**: o que barrava um agente
+chamando `/build` num job de treino era o payload de treino não ter
+`model_version_id` — um 404 que saía por acidente do `.get()`. Com o tipo
+conferido, o 404 continua, e agora diz o que de fato aconteceu; um
+`PayloadInvalido` no tipo certo é bug de quem enfileirou e vira 500 na rede de
+`logs.correlacionar`, que é o tratamento correto para erro de programação.
+
+O caminho mais barulhento não era esse: **`/targets` num job de treino
+respondia 200 com lista vazia.** O escopo era lido com `.get()`, `None` virava
+uma consulta que não casa com nada, e o agente recebia "nenhuma imagem para
+prever" em vez de "este job não é seu". O teste novo varre as quatro rotas
+alheias a um job de treino.
+
+Ficou de fora, ainda:
+
 - **`params` do treino continua `dict`.** Os defaults de `epochs`/`imgsz`/
   `batch` seguem duplicados entre o `RunIn` da rota e o executor. Não há
   `KeyError` a fechar ali (o executor já lê com `.get(chave, default)`), que é
@@ -620,3 +632,12 @@ carga de página, dentro do threadpool.
   `Cache-Control`, o que na própria migração deixou uma `index.html` em cache
   pedindo o módulo como script comum. Suíte: **205 testes passando** (eram
   204).
+- **2026-08-21** — item 13 fechado por inteiro: o terceiro leitor. Os seis
+  lugares de `services/agents.py` que liam `job["payload"]` cru passaram a ler
+  pelo contrato, através de `job_com_payload`, e o default `"detector"` do
+  `model_slug` — duplicado com o do produtor — saiu junto. A decisão que faltava
+  foi conferir o **tipo do job** antes de ler: o 404 que barrava um agente numa
+  rota alheia saía por acidente da chave faltando, e agora sai de propósito. O
+  achado do caminho foi `/targets` num job de treino, que respondia 200 com
+  lista vazia — o escopo lido com `.get()` virava `None` e a consulta não casava
+  com nada. Suíte: **206 testes passando** (eram 205).
