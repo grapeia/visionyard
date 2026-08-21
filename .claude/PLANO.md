@@ -103,15 +103,32 @@ viraram o item 10:
   a do serviço). Conferido rota a rota — as mesmas 41 rotas sem descrição antes
   e depois.
 
-### 5. Importação sair do processo da API — `pendente`
-`imports.py:175` usa `asyncio.create_task`. Três consequências: deploy no meio
-deixa job em `running` para sempre (o reaper filtra por `heartbeat_at`, NULL
-nesse caso); o hash de arquivo grande disputa o event loop com quem está
-atendendo requisição; e não sobrevive a mais de uma réplica.
+### 5. Importação sair do processo da API — `em curso`
+`imports.py` usa `asyncio.create_task`. Três consequências: deploy no meio
+deixava job em `running` para sempre; o hash de arquivo grande disputa o event
+loop com quem está atendendo requisição; e não sobrevive a mais de uma réplica.
 
-Já existe fila com claim/heartbeat para o agente. Caminho: importação vira job
-reclamável pela mesma infraestrutura. Alternativa barata enquanto isso: reaper
-que fecha job de importação sem heartbeat com idade maior que N.
+**A primeira está fechada** (`dfc39bb`), pela alternativa barata que este item
+já previa. `services/imports.py` leva o ciclo de vida do job: a importação bate
+ponto a cada lote (o progresso já ia ao banco, agora leva `heartbeat_at`
+junto), e `recolher_orfaos` fecha como falha quem parou de bater há
+`import_job_stale_seconds` — 15 minutos, muito acima do prazo do agente, porque
+um dump grande passa minutos numa imagem só. O recolhimento roda nas duas telas
+de jobs, e não num laço periódico: é quando o job preso é visto, e numa
+instalação sem agente nenhum nem o reaper do claim rodaria. As duas escritas de
+desfecho ganharam `AND status = 'running'` — a task pode sobreviver ao
+recolhimento e terminar depois dele.
+
+Sobra a execução sair do processo, e com ela uma decisão de modelo que este
+item supunha resolvida: **o agente não serve de executor de importação**. O
+import do Label Studio lê o dump e as imagens sob `import_root`, no disco da
+API; uma máquina de GPU ou de borda não enxerga esse caminho, e mandá-la
+enxergar seria expor o diretório de importação na rede. O formato que fecha as
+outras duas consequências é um segundo processo do MESMO código
+(`python -m api.worker`) reclamando da mesma fila — mesmo claim, mesmo
+heartbeat, mesmo `job.type`, sem passar por `contracts/jobs.py`, que descreve
+só o que atravessa máquina. O `import` entra em `POR_TIPO` se algum dia a
+origem for exclusivamente remota.
 
 ### 6. Quebrar o `app.js` — `pendente`
 2.771 linhas, sem módulos, estado global mutável (`estado`, `anot`, `treino`,
@@ -417,3 +434,11 @@ devolve vazio, e nenhum teste afirma nada sobre isso.
   chave faltando, versão futura, chave desconhecida e payload sem `v`. Ficaram
   registrados no item os três recortes deixados de fora. Suíte: **177 testes
   passando** (eram 169).
+- **2026-08-20** — metade barata do item 5 feita (`dfc39bb`). Importação passou
+  a bater ponto e ganhou reaper próprio em `services/imports.py`, chamado nas
+  duas telas de jobs; o desfecho ficou guardado por `AND status = 'running'`,
+  pela mesma razão que o `finish` do agente. Ficou registrado no item o que a
+  investigação mostrou e o plano supunha ao contrário: a metade cara não é
+  "importação vira job do agente" — o agente de borda não alcança o
+  `import_root`, que está no disco da API —, e sim um segundo processo do mesmo
+  código reclamando da mesma fila. Suíte: **181 testes passando** (eram 177).
