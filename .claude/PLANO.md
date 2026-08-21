@@ -240,7 +240,7 @@ arquivo for mexido a sério (é candidato a virar `services/samples.py`).
   422 sai da validação do pydantic antes de qualquer linha do handler, e o
   `admin` é superusuário, então nada daquele setup é lido.
 
-### 13. Contrato do payload de job — `pendente`
+### 13. Contrato do payload de job — `feito` (2026-08-20)
 O sistema tem duas APIs e só uma é defendida. A borda HTTP tem pydantic; a
 borda que atravessa processo, máquina e cadência de deploy — o controlador
 atualiza, o agente na borda não — é `json.dumps(dict)` de um lado
@@ -254,11 +254,52 @@ depois como `KeyError` num dispositivo — marcando o job como `failed` com uma
 mensagem que não diz que o contrato quebrou. Agrava: `agent/` só é exercitado
 por `test_agent_materialize.py` e `test_export.py`.
 
-Caminho: modelos pydantic por tipo de job num módulo que os dois lados
-importam, com `payload_version`. Se isso for caro pela dependência que
-acrescenta ao agente, o piso é um teste por tipo que pegue o payload que a rota
-grava e o passe pelo leitor correspondente do agente. Encosta no item 5: a
-importação virando job reclamável usa a mesma costura.
+`contracts/jobs.py` é a descrição única dos quatro tipos que vão para o agente
+(`train`, `prelabel`, `export`, `evaluate`): o produtor constrói a dataclass e
+grava `como_dict()`, o executor lê com `de_payload()` e usa atributo.
+
+**Dataclass e não pydantic**, ao contrário do que este item supunha: o agente
+não tem pydantic hoje, e cada dependência dele é uma roda a achar para a
+arquitetura certa (aarch64 do JetPack). `contracts/` também não importa de
+`api` nem de `agent` — importar `api` levaria fastapi e psycopg para a borda.
+Como o produtor já valida a entrada com pydantic na rota, o que faltava do
+outro lado era parse com erro legível, e isso a stdlib dá.
+
+**A v1 é exatamente o que já estava gravado.** Job enfileirado antes do commit
+é reclamado depois dele, então nenhuma chave foi renomeada para entrar no
+contrato — inclusive `rotulo`, em português no meio de chaves em inglês. O
+parser trata as duas assimetrias do deploy: chave desconhecida é ignorada (o
+controlador sobe antes dos agentes) e `v` maior que o conhecido é recusado
+mandando atualizar o agente.
+
+O `mypy` passou a cobrir `contracts/` e `agent/` — é o que torna o contrato
+exigível, porque só o lado que LÊ reprovando é que impede o `p.weights_url`
+de chegar ao dispositivo. Quatro erros de tipo pré-existentes do agente saíram
+no caminho (os quatro executores importados sob o mesmo nome `executar`,
+`proc.stdout` opcional, o dict-célula `melhor`, o rebind de `im` no recorte).
+
+Dois efeitos colaterais, ambos simplificação: o `run_id` do treino agora é
+sorteado em Python antes do INSERT do job, o que dispensou o
+`UPDATE ... payload || jsonb` que existia só porque o run tem FK para o job; e
+o `payload.get("artifact_uri") or payload.get("weights_uri")` do `evaluate`
+era fallback morto — nenhum payload de avaliação carrega `weights_uri`.
+
+Ficou de fora, de propósito:
+
+- **O terceiro leitor.** `services/agents.py` lê o payload cru em seis lugares
+  (`alvos_prelabel`, `gravar_prelabels`, `diretorio_manifesto`,
+  `registrar_modelo`, `registrar_build`, `registrar_avaliacao`), e é onde o
+  default `"detector"` do `model_slug` está duplicado com o do produtor.
+  Converter exige decidir o que fazer com os 404 de payload incompleto que
+  existem lá (`job sem model_version`): com o parser eles viram erro de
+  programação, e um agente que chama `/build` num job de treino passaria a
+  receber 500 em vez de 404.
+- **`params` do treino continua `dict`.** Os defaults de `epochs`/`imgsz`/
+  `batch` seguem duplicados entre o `RunIn` da rota e o executor. Não há
+  `KeyError` a fechar ali (o executor já lê com `.get(chave, default)`), que é
+  o risco que este item existia para tirar; virar dataclass aninhada é v2.
+- **O job `import`.** Roda dentro do processo da API e não passa pelo agente;
+  entra em `POR_TIPO` quando o item 5 o tornar reclamável.
 
 ### 14. Contrato de resposta — `pendente`
 Três rotas usam `response_model` (as três em `routers/auth.py`); as demais
@@ -365,3 +406,14 @@ devolve vazio, e nenhum teste afirma nada sobre isso.
   primeiro — maior risco pelo menor esforço, e encosta no item 5 —, depois 16,
   depois 6. O 15 anda junto com a migração de cada router para `services/`, e o
   12 entra quando `samples.py` virar serviço.
+- **2026-08-20** — item 13 feito (`06925f5`). `contracts/jobs.py` com os quatro
+  payloads que vão para o agente, produtores e executores ligados nele, e o
+  `mypy` estendido a `contracts/` e `agent/` — que é o que torna o contrato
+  exigível, ao custo de quatro erros de tipo pré-existentes do agente
+  corrigidos no caminho. Os oito testes novos são a resposta à pergunta que o
+  item fazia: quatro enfileiram pela rota de verdade e leem o payload com o
+  parser do executor (renomear uma chave no serviço agora reprova — conferido
+  quebrando de propósito), quatro fixam o comportamento do parser diante de
+  chave faltando, versão futura, chave desconhecida e payload sem `v`. Ficaram
+  registrados no item os três recortes deixados de fora. Suíte: **177 testes
+  passando** (eram 169).
