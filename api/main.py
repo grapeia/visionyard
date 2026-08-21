@@ -99,7 +99,13 @@ STATIC = Path(__file__).resolve().parent / "static"
 
 @app.get("/", include_in_schema=False)
 async def index():
-    return FileResponse(STATIC / "index.html")
+    # A casca revalida sempre. Ela é quem diz qual é o módulo de entrada, e o
+    # `app.js` de hoje é um módulo ES: uma casca velha em cache pedindo-o como
+    # script comum quebra a página inteira com "Cannot use import statement
+    # outside a module", até alguém pensar em dar F5 forçado. Com o etag, o
+    # custo de revalidar é um 304.
+    return FileResponse(STATIC / "index.html",
+                        headers={"Cache-Control": "no-cache"})
 
 
 app.mount("/static", StaticFiles(directory=STATIC), name="static")

@@ -558,6 +558,8 @@
   </form>
 </dialog>
 
-<script src="/static/app.js?v=20260807e"></script>
+<!-- Módulos ES nativos, sem build. O `?v=` continua no ponto de entrada; os
+     módulos que ele importa revalidam pelo etag que o StaticFiles já envia. -->
+<script type="module" src="/static/app.js?v=20260821"></script>
 </body>
 </html>
