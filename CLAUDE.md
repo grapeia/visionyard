@@ -61,9 +61,11 @@ recebe escalares e `dict`/`list[dict]`, e é o router que valida e converte.
 `agents`, `models` e `training` já estão assim: o router não tem uma linha de
 SQL. `datasets` está pela metade — `services/datasets.py` tem os auxiliares do
 congelamento (resolve → split → manifesto), mas a regra de versionamento e as 21
-consultas seguem no `freeze` de `routers/datasets.py`. Os demais (`auth`,
-`buckets`, `devices`, `imports`, `jobs`, `prelabel`, `projects`, `samples`,
-`users`) carregam o SQL inline por inteiro. Quando um deles for mexido a sério,
+consultas seguem no `freeze` de `routers/datasets.py`. `imports` também:
+`services/imports.py` tem o ciclo de vida do job (ponto, progresso, desfecho,
+recolhimento), e o resto da rota — cerca de caminho, upsert de origem, listagem
+— segue inline. Os demais (`auth`, `buckets`, `devices`, `jobs`, `prelabel`,
+`projects`, `samples`, `users`) carregam o SQL inline por inteiro. Quando um deles for mexido a sério,
 a regra vai junto para `services/`.
 
 **SQL direto, sem ORM.** O schema é escrito à mão em `db/migrations/`; um ORM por
@@ -150,10 +152,16 @@ papel `viewer`.
   `async with db.connection()` + `conn.transaction()`, e todo helper de dentro
   recebe `conn=conn` — inclusive o `audit()`, para que o fato e o seu registro
   comitem juntos.
-- Job de importação roda em `asyncio.create_task` dentro do processo da API e
-  fica preso em `running` se o processo reiniciar — o reaper
-  (`services/agents.py: recolher_orfaos`) não o alcança, porque filtra por
-  `heartbeat_at`, que em job de importação é NULL.
+- Job de importação roda em `asyncio.create_task` dentro do processo da API: a
+  task morre com o processo, e o reaper do agente
+  (`services/agents.py: recolher_orfaos`) não a alcança, porque exige
+  `attempts >= max_attempts`. Quem cuida dela é
+  `services/imports.py: recolher_orfaos`, chamada nas duas telas de jobs — a
+  importação bate ponto a cada lote e quem parou de bater há
+  `import_job_stale_seconds` é fechada como falha. Toda escrita de desfecho
+  daquele job (`concluir_job`, `falhar_job`) leva `AND status = 'running'` no
+  `WHERE`: sem isso a task que sobreviveu ao recolhimento reescreveria como
+  `succeeded` um job que a tela já deu por interrompido.
 - O front monta HTML por template string. Todo valor vindo do servidor passa por
   `esc()`. Não há build nem lint: o descuido não é detectado.
 - `db.fetch_one` devolve `dict | None`, e o `mypy` não deixa mais indexar isso

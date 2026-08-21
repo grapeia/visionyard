@@ -357,3 +357,79 @@ async def test_import_sem_image_root_e_recusado(admin, tmp_path):
                                "sqlite_path": str(db_path)})
     assert r.status_code == 400
     assert "image_root" in r.json()["detail"]
+
+
+# --------------------------------------------------------------------------- #
+# Job órfão: a importação roda dentro do processo da API, e um deploy no meio
+# leva a task junto — a linha do job fica em `running` para sempre
+# --------------------------------------------------------------------------- #
+
+async def _import_preso(admin, superuser, *, ha_segundos: int) -> str:
+    """Job de importação em `running` com o último ponto batido há N segundos.
+    É exatamente o que sobra quando o processo morre no meio da importação."""
+    await admin.post("/v1/projects", json=PROJ)
+    import psycopg
+
+    from .conftest import TEST_DSN
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        pid = conn.execute("SELECT id FROM project WHERE slug = %s",
+                           (PROJ["slug"],)).fetchone()[0]
+        row = conn.execute(
+            "INSERT INTO job (project_id, type, payload, status, created_by,"
+            " started_at, heartbeat_at)"
+            " VALUES (%s,'import','{}'::jsonb,'running',%s,"
+            "         now() - make_interval(secs => %s),"
+            "         now() - make_interval(secs => %s)) RETURNING id",
+            (pid, superuser["id"], ha_segundos, ha_segundos)).fetchone()
+    return str(row[0])
+
+
+async def test_importacao_orfa_e_recolhida(admin, superuser):
+    """Sem isto o job fica preso em `running` para sempre: o reaper do agente
+    filtra por `heartbeat_at` e por `attempts >= max_attempts`, e importação
+    não bate ponto nem conta tentativa."""
+    from api.services import imports as svc
+
+    job_id = await _import_preso(admin, superuser, ha_segundos=24 * 3600)
+    assert await svc.recolher_orfaos() == 1
+
+    j = (await admin.get(f"/v1/projects/{PROJ['slug']}/jobs/{job_id}")).json()
+    assert j["status"] == "failed"
+    # a mensagem é lida na tela por quem tem papel `viewer`: precisa dizer o
+    # que fazer, e refazer a importação é seguro (o dedup é por md5)
+    assert "reimportar" in j["error"].lower()
+
+
+async def test_importacao_viva_nao_e_recolhida(admin, superuser):
+    """O ponto recente é a diferença entre 'morreu' e 'está demorando' — um
+    dump grande passa minutos numa imagem só."""
+    from api.services import imports as svc
+
+    job_id = await _import_preso(admin, superuser, ha_segundos=5)
+    assert await svc.recolher_orfaos() == 0
+
+    j = (await admin.get(f"/v1/projects/{PROJ['slug']}/jobs/{job_id}")).json()
+    assert j["status"] == "running"
+
+
+async def test_relato_atrasado_nao_reescreve_import_recolhido(admin, superuser):
+    """Mesma invariante do agente: quem foi dado por morto e volta não
+    ressuscita o desfecho. Aqui o caso é a task que sobreviveu ao reaper e
+    termina depois dele."""
+    from api.services import imports as svc
+
+    job_id = await _import_preso(admin, superuser, ha_segundos=24 * 3600)
+    await svc.recolher_orfaos()
+    await svc.concluir_job(job_id, {"samples_created": 7})
+
+    j = (await admin.get(f"/v1/projects/{PROJ['slug']}/jobs/{job_id}")).json()
+    assert j["status"] == "failed"
+    assert (j["result"] or {}).get("samples_created") != 7
+
+
+async def test_listar_jobs_recolhe_o_que_ficou_preso(admin, superuser):
+    """A tela de jobs é onde o job preso é visto; recolher ali é o que faz o
+    reaper rodar numa instalação sem agente nenhum batendo claim."""
+    await _import_preso(admin, superuser, ha_segundos=24 * 3600)
+    jobs = (await admin.get(f"/v1/projects/{PROJ['slug']}/jobs")).json()
+    assert [j["status"] for j in jobs if j["type"] == "import"] == ["failed"]

@@ -55,6 +55,12 @@ class Settings(BaseSettings):
     # ora; quando houver conta de serviço na nuvem, passa a ser um gs://.
     manifest_root: str = "./data/manifests"
 
+    # Importação que não bate ponto há este tempo é dada por interrompida. É
+    # muito maior que o do agente porque o ponto da importação sai a cada lote
+    # de leitura: um dump grande passa minutos numa imagem só (hash + dimensão
+    # de arquivo enorme), e recolher cedo demais mataria job que está vivo.
+    import_job_stale_seconds: int = 900
+
     # Job cujo agente não bate ponto há este tempo é considerado órfão (reboot,
     # crash) e volta a ser reclamável por outro agente, respeitando max_attempts.
     # Precisa ser bem maior que o intervalo de heartbeat do agente, senão um

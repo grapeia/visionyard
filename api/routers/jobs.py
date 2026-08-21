@@ -15,6 +15,7 @@ from .. import auth, db
 from ..audit import audit
 from ..auth import Principal
 from ..deps import require_superuser
+from ..services import imports as svc_imports
 
 router = APIRouter(tags=["jobs"])
 
@@ -24,7 +25,12 @@ async def fila():
     """Ativos primeiro (queued/claimed/running), depois os últimos terminados.
 
     `device` é quem está executando; `target_device` é a máquina em que o job
-    foi fixado (NULL = qualquer uma do pool que cumpra os requisitos)."""
+    foi fixado (NULL = qualquer uma do pool que cumpra os requisitos).
+
+    Recolhe as importações órfãs antes de listar, como a tela de jobs do
+    projeto: aqui é o plantão geral, e um job preso em `running` para sempre é
+    justamente o que se vem procurar."""
+    await svc_imports.recolher_orfaos()
     return await db.fetch_all(
         "SELECT j.id, j.type, j.status, j.priority, j.attempts, j.max_attempts,"
         "       j.cancel_requested, j.requires, j.created_at, j.started_at,"

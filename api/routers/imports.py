@@ -29,6 +29,7 @@ from ..importers.base import ImportReport
 from ..importers.gcs_prefix import GCSPrefixImporter
 from ..importers.label_studio import LabelStudioImporter
 from ..importers.runner import run_import
+from ..services import imports as svc
 
 router = APIRouter(tags=["imports"])
 
@@ -166,8 +167,8 @@ async def create_import(body: ImportIn, project_slug: Annotated[str, Path()],
         async with conn.transaction():
             job = await db.fetch_row(
                 "INSERT INTO job (project_id, type, payload, status,"
-                " created_by, data_source_id, started_at)"
-                " VALUES (%s,'import',%s::jsonb,'running',%s,%s,now())"
+                " created_by, data_source_id, started_at, heartbeat_at)"
+                " VALUES (%s,'import',%s::jsonb,'running',%s,%s,now(),now())"
                 " RETURNING id",
                 (ctx["project_id"], json.dumps(body.model_dump()), actor.id,
                  source["id"]), conn=conn)
@@ -191,57 +192,47 @@ async def create_import(body: ImportIn, project_slug: Annotated[str, Path()],
             "source_id": source_id, "source": importer.describe()}
 
 
-async def _log(job_id: str, message: str, level: str = "info") -> None:
-    await db.execute(
-        "INSERT INTO job_event (job_id, seq, level, message)"
-        " SELECT %s, COALESCE(max(seq), 0) + 1, %s, %s FROM job_event"
-        " WHERE job_id = %s", (job_id, level, message, job_id))
-
-
 async def _run_job(job_id: str, ctx: dict, importer, actor_id: str,
                    overrides: dict, source_id: str) -> None:
     report = ImportReport()
     try:
-        await _log(job_id, f"Importando de {importer.describe()}")
-
-        async def progress(n: int) -> None:
-            await db.execute(
-                "UPDATE job SET progress = %s::jsonb WHERE id = %s",
-                (json.dumps({"lidos": n}), job_id))
-
+        await svc.registrar_evento(job_id, f"Importando de {importer.describe()}")
         await run_import(project_id=ctx["project_id"],
                          schema_id=ctx["schema_id"],
                          schema_classes=ctx["classes"], importer=importer,
                          actor_id=actor_id, class_overrides=overrides,
                          source_id=source_id, dry_run=False, report=report,
-                         progress_cb=progress)
-        await db.execute(
-            "UPDATE job SET status='succeeded', finished_at=now(),"
-            " result=%s::jsonb WHERE id=%s",
-            (json.dumps(report.as_dict()), job_id))
-        await _log(job_id,
-                   f"Concluído: {report.samples_created} imagens novas, "
-                   f"{report.samples_existing} já existentes, "
-                   f"{report.annotations_created} anotações, "
-                   f"{report.skipped_total} puladas")
+                         progress_cb=lambda n: svc.registrar_progresso(job_id, n))
+        await svc.concluir_job(job_id, report.as_dict())
+        await svc.registrar_evento(
+            job_id,
+            f"Concluído: {report.samples_created} imagens novas, "
+            f"{report.samples_existing} já existentes, "
+            f"{report.annotations_created} anotações, "
+            f"{report.skipped_total} puladas")
     except Exception as e:
         # `job.error` e os eventos são lidos com papel `viewer`. Erro do GCS ou
         # do banco cita conta de serviço, projeto e caminho interno — detalhe
         # fica no log, mesmo tratamento já aplicado na navegação de bucket.
         logger.exception("job de importação %s falhou", job_id)
-        await db.execute(
-            "UPDATE job SET status='failed', finished_at=now(), error=%s,"
-            " result=%s::jsonb WHERE id=%s",
-            (f"falhou: {type(e).__name__}", json.dumps(report.as_dict()),
-             job_id))
-        await _log(job_id, f"Falhou ({type(e).__name__}) — "
-                           f"detalhe no log do servidor", "error")
+        await svc.falhar_job(job_id, f"falhou: {type(e).__name__}",
+                             report.as_dict())
+        await svc.registrar_evento(job_id, f"Falhou ({type(e).__name__}) — "
+                                           f"detalhe no log do servidor", "error")
 
 
 @router.get("/projects/{project_slug}/jobs",
             dependencies=[Depends(require_role("viewer"))])
 async def list_jobs(project_slug: Annotated[str, Path()],
                     type: str | None = None, limit: int = 20):
+    """Jobs do projeto, do mais recente ao mais antigo.
+
+    Recolhe antes de listar: importação que parou de bater ponto ficaria em
+    `running` para sempre, e esta tela é onde ela é vista. É escrita num GET
+    de propósito — não há nada periódico no processo, e numa instalação sem
+    agente nem o reaper do claim roda.
+    """
+    await svc.recolher_orfaos()
     return await db.fetch_all(
         "SELECT j.id, j.type, j.status, j.progress, j.result, j.error,"
         "       j.created_at, j.finished_at, u.email AS created_by"
