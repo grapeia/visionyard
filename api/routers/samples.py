@@ -11,7 +11,6 @@ rotulador não é tocado, e é isso que permite medir concordância depois.
 from __future__ import annotations
 
 import json
-from datetime import timedelta
 from typing import Annotated, Literal
 from uuid import UUID
 
@@ -19,7 +18,7 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, sta
 from pydantic import BaseModel, Field, field_validator
 from starlette.concurrency import run_in_threadpool
 
-from .. import db
+from .. import db, storage
 from ..auth import Principal
 from ..deps import CurrentUser, projeto_ou_404, require_role
 
@@ -51,34 +50,6 @@ class AnotacaoIn(BaseModel):
     # um exemplo negativo, diferente de "ainda não olhei".
     boxes: list[Caixa]
     status: Literal["submitted", "draft"] = "submitted"
-
-
-def _assinar(uris: list) -> dict:
-    """URL assinada para cada gs://. Sem credencial que assine, devolve vazio
-    e a tela mostra o lugar da imagem sem quebrar."""
-    from google.cloud import storage
-    try:
-        cliente = storage.Client()
-    except Exception:
-        from .buckets import _client
-        try:
-            cliente = _client()
-        except Exception:
-            return {}
-    if not hasattr(getattr(cliente, "_credentials", None), "signer_email"):
-        return {}
-    out = {}
-    for uri in uris:
-        if not uri.startswith("gs://"):
-            continue
-        bucket, _, chave = uri[5:].partition("/")
-        try:
-            out[uri] = cliente.bucket(bucket).blob(chave).generate_signed_url(
-                version="v4", expiration=timedelta(minutes=MINIATURA_MIN),
-                method="GET")
-        except Exception:
-            continue
-    return out
 
 
 @router.get("/projects/{project_slug}/samples",
@@ -131,7 +102,8 @@ async def listar(project_slug: Annotated[str, Path()], user: CurrentUser,
         f"""SELECT count(*) AS n FROM sample s
               LEFT JOIN annotation a ON a.sample_id = s.id AND a.author_id = %(u)s
              WHERE s.project_id = %(p)s {escopo} {cond}""", params)
-    assinadas = await run_in_threadpool(_assinar, [r["uri"] for r in linhas])
+    assinadas = await run_in_threadpool(
+        storage.assinar, [r["uri"] for r in linhas], MINIATURA_MIN)
     return {"pagina": pagina, "por_pagina": POR_PAGINA, "total": total["n"],
             "assina": bool(assinadas),
             "itens": [{**r, "url": assinadas.get(r["uri"])} for r in linhas]}
@@ -155,7 +127,8 @@ async def detalhe(project_slug: Annotated[str, Path()],
     outros = await db.fetch_row(
         "SELECT count(*) AS n FROM annotation"
         " WHERE sample_id = %s AND author_id <> %s", (sample_id, user.id))
-    url = (await run_in_threadpool(_assinar, [s["uri"]])).get(s["uri"])
+    url = (await run_in_threadpool(
+        storage.assinar, [s["uri"]], MINIATURA_MIN)).get(s["uri"])
     return {**s, "url": url, "minha_anotacao": minha,
             "outros_anotaram": outros["n"]}
 

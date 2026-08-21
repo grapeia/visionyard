@@ -21,6 +21,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi import Path as P
 from starlette.concurrency import run_in_threadpool
 
+from .. import storage
 from ..config import settings
 from ..deps import require_role
 
@@ -31,31 +32,6 @@ router = APIRouter(tags=["buckets"])
 IMG_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 MAX_OBJETOS = 60
 MAX_MINIATURAS = 24
-
-
-def _client():
-    from google.cloud import storage
-    try:
-        return storage.Client()
-    except Exception:
-        # Chave exportada pelo gcloud não traz project_id — mesmo caso tratado
-        # no importador de prefixo GCS.
-        import json
-        import os
-        projeto = os.environ.get("GOOGLE_CLOUD_PROJECT", "")
-        chave = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "")
-        if not projeto and chave and Path(chave).is_file():
-            dados = json.loads(Path(chave).read_text())
-            email = dados.get("client_email") or ""
-            projeto = dados.get("project_id") or (
-                email.split("@", 1)[1].split(".", 1)[0] if "@" in email else "")
-        if not projeto:
-            raise
-        return storage.Client(project=projeto)
-
-
-def _pode_assinar(cliente) -> bool:
-    return hasattr(getattr(cliente, "_credentials", None), "signer_email")
 
 
 @router.get("/projects/{project_slug}/buckets",
@@ -76,7 +52,7 @@ async def listar_buckets(project_slug: Annotated[str, P()]):
 
 
 def _navegar(bucket: str, prefixo: str) -> dict:
-    cliente = _client()
+    cliente = storage.cliente()
     iterador = cliente.list_blobs(bucket, prefix=prefixo, delimiter="/",
                                   max_results=MAX_OBJETOS + 1)
     blobs = list(iterador)
@@ -85,7 +61,7 @@ def _navegar(bucket: str, prefixo: str) -> dict:
     tem_mais = len(blobs) > MAX_OBJETOS
     blobs = blobs[:MAX_OBJETOS]
 
-    assina = _pode_assinar(cliente)
+    assina = storage.pode_assinar(cliente)
     objetos, miniaturas = [], 0
     for b in blobs:
         nome = b.name[len(prefixo):] if prefixo else b.name

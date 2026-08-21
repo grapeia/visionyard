@@ -16,6 +16,7 @@ import base64
 from collections.abc import Iterator
 from pathlib import Path
 
+from .. import storage
 from .base import ImportReport, SourceSample
 
 IMG_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
@@ -32,30 +33,6 @@ class GCSPrefixImporter:
         # a barra fazia a listagem devolver zero.
         self.prefix = prefix
         self.limit = limit
-        self._client = None
-
-    def _get_client(self):
-        if self._client is None:
-            from google.cloud import storage
-            try:
-                self._client = storage.Client()
-            except Exception:
-                # A chave que o gcloud exporta nem sempre traz project_id;
-                # deduz pelo domínio do client_email da conta de serviço.
-                import json
-                import os
-                project = os.environ.get("GOOGLE_CLOUD_PROJECT", "")
-                key = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "")
-                if not project and key and Path(key).is_file():
-                    data = json.loads(Path(key).read_text())
-                    email = data.get("client_email") or ""
-                    project = data.get("project_id") or (
-                        email.split("@", 1)[1].split(".", 1)[0]
-                        if "@" in email else "")
-                if not project:
-                    raise
-                self._client = storage.Client(project=project)
-        return self._client
 
     def describe(self) -> str:
         return f"gs://{self.bucket}/{self.prefix}"
@@ -65,7 +42,7 @@ class GCSPrefixImporter:
         return []
 
     def read(self, report: ImportReport) -> Iterator[SourceSample]:
-        client = self._get_client()
+        client = storage.cliente()
         n = 0
         for blob in client.list_blobs(self.bucket, prefix=self.prefix):
             if blob.name.endswith("/"):

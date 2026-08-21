@@ -31,6 +31,7 @@ api/            Control API (FastAPI)
   main.py       montagem dos routers e do estático
   config.py     settings por ambiente (prefixo VISIONYARD_)
   db.py         pool psycopg3; SQL direto, sem ORM
+  storage.py    porta do GCS: cliente memoizado e URL assinada
   security.py   hash de senha e tokens
   auth.py       login, sessão, token de API, token de device
   audit.py      audit(), fora de deps.py para auth.py poder chamá-la

@@ -1,0 +1,80 @@
+"""A porta do GCS.
+
+Antes dela, quatro lugares construíam o cliente por conta própria e a
+assinatura de URL não tinha como ser exercitada sem credencial de verdade —
+o que a suíte cobria era só o caminho em que ela desiste. Com a porta, o
+cliente é um parâmetro do teste.
+"""
+from __future__ import annotations
+
+from api import storage
+
+
+class _Assinante:
+    signer_email = "conta@projeto.iam.gserviceaccount.com"
+
+
+class _Blob:
+    def __init__(self, chave: str):
+        self.chave = chave
+
+    def generate_signed_url(self, **kw) -> str:
+        if "quebrada" in self.chave:
+            raise RuntimeError("objeto sem permissão")
+        return f"https://assinada/{self.chave}?v={kw['version']}"
+
+
+class _Bucket:
+    def blob(self, chave: str) -> _Blob:
+        return _Blob(chave)
+
+
+class _Cliente:
+    def __init__(self, assina: bool = True):
+        self._credentials = _Assinante() if assina else object()
+
+    def bucket(self, nome: str) -> _Bucket:
+        return _Bucket()
+
+
+def test_sem_credencial_que_assina_devolve_vazio(monkeypatch):
+    """ADC de usuário não tem chave privada. A galeria mostra o lugar da
+    imagem em vez de quebrar — é a ausência da URL que ela lê."""
+    monkeypatch.setattr(storage, "cliente", lambda: _Cliente(assina=False))
+    assert storage.assinar(["gs://b/a.jpg"], 15) == {}
+
+
+def test_sem_credencial_nenhuma_devolve_vazio(monkeypatch):
+    def explode():
+        raise RuntimeError("sem credencial nesta máquina")
+
+    monkeypatch.setattr(storage, "cliente", explode)
+    assert storage.assinar(["gs://b/a.jpg"], 15) == {}
+
+
+def test_assina_so_o_que_e_gs(monkeypatch):
+    monkeypatch.setattr(storage, "cliente", lambda: _Cliente())
+    out = storage.assinar(["gs://b/a.jpg", "/local/b.jpg", "https://x/c.jpg"], 15)
+    assert list(out) == ["gs://b/a.jpg"]
+
+
+def test_falha_em_uma_nao_leva_as_outras(monkeypatch):
+    """Uma imagem sem permissão não pode apagar a página inteira de miniaturas."""
+    monkeypatch.setattr(storage, "cliente", lambda: _Cliente())
+    out = storage.assinar(["gs://b/quebrada.jpg", "gs://b/boa.jpg"], 15)
+    assert list(out) == ["gs://b/boa.jpg"]
+
+
+def test_cliente_e_construido_uma_vez(monkeypatch):
+    """`samples.py` construía um cliente por requisição, dentro do threadpool,
+    a cada carga da galeria."""
+    chamadas = []
+
+    def construir():
+        chamadas.append(1)
+        return _Cliente()
+
+    monkeypatch.setattr(storage, "_cliente", None)
+    monkeypatch.setattr(storage, "_construir", construir)
+    assert storage.cliente() is storage.cliente()
+    assert len(chamadas) == 1
