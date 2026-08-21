@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 import re
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from fastapi import HTTPException, status
 
@@ -155,7 +155,7 @@ async def listar_runs(project_slug: str, limite: int) -> list[dict[str, Any]]:
         " ORDER BY r.started_at DESC LIMIT %s", (project_slug, limite))
 
 
-async def buscar_run(project_slug: str, run_id: str) -> dict:
+async def buscar_run(project_slug: str, run_id: UUID) -> dict:
     row = await db.fetch_one(
         "SELECT r.id, r.job_id, j.status AS job_status, j.error AS job_error,"
         "       j.progress, r.status AS run_status, r.metrics, r.best_epoch,"
@@ -177,7 +177,7 @@ async def buscar_run(project_slug: str, run_id: str) -> dict:
     return row
 
 
-async def detalhe_run(project_slug: str, run_id: str) -> dict:
+async def detalhe_run(project_slug: str, run_id: UUID) -> dict:
     run = await buscar_run(project_slug, run_id)
     # a versão de modelo que este treino produziu, se já registrada
     mv = await db.fetch_one(
@@ -188,7 +188,7 @@ async def detalhe_run(project_slug: str, run_id: str) -> dict:
     return {**run, "model_version": mv}
 
 
-async def stream_run(project_slug: str, run_id: str, *, desde_seq: int,
+async def stream_run(project_slug: str, run_id: UUID, *, desde_seq: int,
                      desde_epoca: int) -> dict:
     """Leitura incremental para a tela ao vivo: eventos após `desde_seq` e
     métricas após `desde_epoca`. O cliente guarda os dois cursores e só pede o
@@ -208,7 +208,7 @@ async def stream_run(project_slug: str, run_id: str, *, desde_seq: int,
             "eventos": eventos, "metricas": metricas}
 
 
-async def cancelar_run(project_slug: str, run_id: str, actor: Principal, *,
+async def cancelar_run(project_slug: str, run_id: UUID, actor: Principal, *,
                        ip: str | None) -> dict:
     """Pede cancelamento. Se ainda na fila, cancela na hora; se já rodando,
     marca a flag e o agente para no próximo heartbeat."""
@@ -230,6 +230,6 @@ async def cancelar_run(project_slug: str, run_id: str, actor: Principal, *,
                 await conn.execute(
                     "UPDATE training_run SET status = 'stopped',"
                     " finished_at = now() WHERE id = %s", (run_id,))
-            await audit(actor, "run.cancel", "training_run", run_id,
+            await audit(actor, "run.cancel", "training_run", str(run_id),
                         ip=ip, conn=conn)
     return {"run_id": run_id, "status": j["status"]}

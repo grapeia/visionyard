@@ -6,10 +6,12 @@ tentativas — e o cancelar direto da fila, sem caçar a tela que criou o job.
 """
 from __future__ import annotations
 
-from typing import Annotated
+from datetime import datetime
+from typing import Annotated, Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Request, status
+from pydantic import BaseModel
 
 from .. import auth, db
 from ..audit import audit
@@ -20,7 +22,33 @@ from ..services import imports as svc_imports
 router = APIRouter(tags=["jobs"])
 
 
-@router.get("/jobs", dependencies=[Depends(require_superuser)])
+class JobDaFila(BaseModel):
+    """A linha do plantão. `device` é quem executa; `target_device` é a máquina
+    em que o job foi fixado (nulo = qualquer uma do pool)."""
+    id: UUID
+    type: str
+    status: str
+    priority: int
+    attempts: int
+    max_attempts: int
+    cancel_requested: bool
+    requires: dict[str, Any]
+    created_at: datetime
+    started_at: datetime | None
+    finished_at: datetime | None
+    error: str | None
+    project: str
+    device: str | None
+    target_device: str | None
+
+
+class JobCancelado(BaseModel):
+    id: UUID
+    status: str
+
+
+@router.get("/jobs", response_model=list[JobDaFila],
+            dependencies=[Depends(require_superuser)])
 async def fila():
     """Ativos primeiro (queued/claimed/running), depois os últimos terminados.
 
@@ -45,7 +73,7 @@ async def fila():
         " LIMIT 100")
 
 
-@router.post("/jobs/{job_id}/cancel")
+@router.post("/jobs/{job_id}/cancel", response_model=JobCancelado)
 async def cancelar(job_id: Annotated[UUID, Path()], request: Request,
                    admin: Annotated[Principal, Depends(require_superuser)]):
     """Se ainda na fila, cancela na hora; se já rodando, marca a flag e o
@@ -74,4 +102,4 @@ async def cancelar(job_id: Annotated[UUID, Path()], request: Request,
                     " finished_at = now() WHERE job_id = %s", (job_id,))
             await audit(admin, "job.cancel", "job", str(job_id),
                         ip=auth.client_ip(request), conn=conn)
-    return {"id": str(job_id), "status": novo}
+    return {"id": job_id, "status": novo}

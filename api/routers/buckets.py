@@ -19,6 +19,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi import Path as P
+from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
 from .. import storage
@@ -34,7 +35,33 @@ MAX_OBJETOS = 60
 MAX_MINIATURAS = 24
 
 
+class BucketConfigurado(BaseModel):
+    nome: str
+
+
+class ObjetoDoBucket(BaseModel):
+    nome: str
+    caminho: str
+    bytes: int | None
+    imagem: bool
+    # Só as primeiras imagens ganham URL assinada, e só se a credencial assina.
+    url: str | None
+
+
+class Navegacao(BaseModel):
+    bucket: str
+    prefixo: str
+    # Nulo na raiz: não há um nível acima.
+    pai: str | None
+    pastas: list[str]
+    objetos: list[ObjetoDoBucket]
+    tem_mais: bool
+    imagens: int
+    assina: bool
+
+
 @router.get("/projects/{project_slug}/buckets",
+            response_model=list[BucketConfigurado],
             dependencies=[Depends(require_role("engineer"))])
 async def listar_buckets(project_slug: Annotated[str, P()]):
     """Buckets pré-definidos na instalação.
@@ -96,6 +123,7 @@ def _navegar(bucket: str, prefixo: str) -> dict:
 
 
 @router.get("/projects/{project_slug}/buckets/browse",
+            response_model=Navegacao,
             dependencies=[Depends(require_role("engineer"))])
 async def navegar(project_slug: Annotated[str, P()],
                   bucket: Annotated[str, Query(min_length=1)],

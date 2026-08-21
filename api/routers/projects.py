@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime
 from typing import Annotated, Literal
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Request, status
 from pydantic import BaseModel, Field, field_validator
@@ -80,7 +82,83 @@ class SchemaAppendIn(BaseModel):
         return out
 
 
-@router.get("/projects")
+class ProjetoNaLista(BaseModel):
+    """`role` é o MEU papel neste projeto — a lista já vem escopada por ele."""
+    slug: str
+    name: str
+    task_type: str
+    description: str | None
+    created_at: datetime
+    role: str
+
+
+class ProjetoCriado(BaseModel):
+    id: UUID
+    slug: str
+    name: str
+    task_type: str
+    description: str | None
+    created_at: datetime
+    role: str
+    classes: list[str]
+
+
+class ClasseDoSchema(BaseModel):
+    """Ordem importa: `id` é o índice do formato YOLO."""
+    id: int
+    name: str
+
+
+class SchemaAtual(BaseModel):
+    version: int
+    classes: list[ClasseDoSchema]
+
+
+class SchemaNoHistorico(BaseModel):
+    version: int
+    back_compatible: bool
+    change_note: str | None
+    created_at: datetime
+    n_classes: int
+
+
+class ContagensDoProjeto(BaseModel):
+    samples: int
+    annotations: int
+    datasets: int
+    models: int
+
+
+class DetalheDoProjeto(BaseModel):
+    id: UUID
+    slug: str
+    name: str
+    task_type: str
+    description: str | None
+    created_at: datetime
+    archived_at: datetime | None
+    role: str
+    # `schema` colide com um atributo de `BaseModel`; o alias mantém a chave
+    # que o `app.js` já lê.
+    esquema: SchemaAtual | None = Field(alias="schema")
+    schemas: list[SchemaNoHistorico]
+    counts: ContagensDoProjeto
+
+
+class ProjetoAlterado(BaseModel):
+    id: UUID
+    slug: str
+    name: str
+    task_type: str
+    description: str | None
+
+
+class SchemaNovo(BaseModel):
+    version: int
+    classes: list[str]
+
+
+@router.get("/projects", response_model=list[ProjetoNaLista])
 async def list_projects(user: CurrentUser):
     """Projetos que eu enxergo, com meu papel em cada um."""
     if user.is_superuser:
@@ -96,7 +174,8 @@ async def list_projects(user: CurrentUser):
         (user.id,))
 
 
-@router.post("/projects", status_code=status.HTTP_201_CREATED,
+@router.post("/projects", response_model=ProjetoCriado,
+             status_code=status.HTTP_201_CREATED,
              dependencies=[Depends(require_superuser)])
 async def create_project(body: ProjectCreateIn, user: CurrentUser,
                          request: Request):
@@ -138,7 +217,7 @@ async def create_project(body: ProjectCreateIn, user: CurrentUser,
     return {**proj, "role": "owner", "classes": body.classes}
 
 
-@router.get("/projects/{project_slug}",
+@router.get("/projects/{project_slug}", response_model=DetalheDoProjeto,
             dependencies=[Depends(require_role("viewer"))])
 async def get_project(project_slug: Annotated[str, Path()], user: CurrentUser):
     proj = await projeto_ou_404(
@@ -164,7 +243,7 @@ async def get_project(project_slug: Annotated[str, Path()], user: CurrentUser):
             "schema": schema, "schemas": schemas, "counts": counts}
 
 
-@router.patch("/projects/{project_slug}")
+@router.patch("/projects/{project_slug}", response_model=ProjetoAlterado)
 async def patch_project(body: ProjectPatchIn,
                         project_slug: Annotated[str, Path()], request: Request,
                         actor: Annotated[Principal, Depends(require_role("admin"))]):
@@ -186,7 +265,7 @@ async def patch_project(body: ProjectPatchIn,
     return row
 
 
-@router.post("/projects/{project_slug}/schema",
+@router.post("/projects/{project_slug}/schema", response_model=SchemaNovo,
              status_code=status.HTTP_201_CREATED)
 async def append_classes(
         body: SchemaAppendIn, project_slug: Annotated[str, Path()],

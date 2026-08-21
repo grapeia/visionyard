@@ -11,7 +11,9 @@ do pool sem apagá-lo — ele continua servindo a linha, mas não pega pré-tag.
 from __future__ import annotations
 
 import json
-from typing import Annotated, Literal
+from datetime import datetime
+from typing import Annotated, Any, Literal
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Request, status
 from pydantic import BaseModel, Field, field_validator
@@ -44,12 +46,63 @@ class DeviceIn(BaseModel):
         return v
 
 
+class Maquina(BaseModel):
+    """`capabilities` é o que decide o roteamento: o claim só entrega o job a
+    quem contém o que ele exige."""
+    id: UUID
+    slug: str
+    name: str
+    device_class: str
+    capabilities: dict[str, Any]
+    labels: list[str]
+    status: str
+    last_heartbeat: datetime | None
+    registered_at: datetime
+    rodando: int
+
+
+class MaquinaDeImplantacao(BaseModel):
+    """Sem capabilities nem token: esta lista é visível a qualquer usuário
+    autenticado, porque o engenheiro escolhe o alvo ao implantar."""
+    slug: str
+    name: str
+    device_class: str
+    status: str
+
+
+class MaquinaCadastrada(BaseModel):
+    id: UUID
+    slug: str
+    name: str
+    device_class: str
+    capabilities: dict[str, Any]
+    labels: list[str]
+    status: str
+    # O token em claro existe só aqui — quem cadastra copia para o .env do
+    # agente e não o vê de novo.
+    token: str
+    aviso: str
+
+
+class TokenRotacionado(BaseModel):
+    slug: str
+    token: str
+    aviso: str
+
+
+class EstadoDaMaquina(BaseModel):
+    id: UUID
+    slug: str
+    status: str
+
+
 def _emit_token(device_id: str) -> tuple[str, bytes]:
     tok = new_token()
     return tok, token_digest(tok)
 
 
-@router.get("/devices", dependencies=[Depends(require_superuser)])
+@router.get("/devices", response_model=list[Maquina],
+            dependencies=[Depends(require_superuser)])
 async def list_devices():
     return await db.fetch_all(
         "SELECT id, slug, name, device_class, capabilities, labels, status,"
@@ -59,7 +112,7 @@ async def list_devices():
         "  FROM device ORDER BY slug")
 
 
-@router.get("/deploy-devices")
+@router.get("/deploy-devices", response_model=list[MaquinaDeImplantacao])
 async def deploy_devices(user: CurrentUser):
     """Máquinas que podem receber uma implantação. Visível a qualquer usuário
     autenticado (o engenheiro precisa escolher o alvo ao implantar), mas só
@@ -69,7 +122,8 @@ async def deploy_devices(user: CurrentUser):
         " WHERE status <> 'disabled' ORDER BY slug")
 
 
-@router.post("/devices", status_code=status.HTTP_201_CREATED)
+@router.post("/devices", response_model=MaquinaCadastrada,
+             status_code=status.HTTP_201_CREATED)
 async def create_device(body: DeviceIn, request: Request,
                         admin: Annotated[Principal, Depends(require_superuser)]):
     dup = await db.fetch_one("SELECT id FROM device WHERE slug = %s",
@@ -98,7 +152,7 @@ async def create_device(body: DeviceIn, request: Request,
             "aviso": "guarde o token: ele não é mostrado de novo"}
 
 
-@router.post("/devices/{slug}/token")
+@router.post("/devices/{slug}/token", response_model=TokenRotacionado)
 async def rotate_token(slug: Annotated[str, Path()], request: Request,
                        admin: Annotated[Principal, Depends(require_superuser)]):
     dev = await db.fetch_one("SELECT id FROM device WHERE slug = %s", (slug,))
@@ -144,7 +198,7 @@ async def delete_device(slug: Annotated[str, Path()], request: Request,
                         conn=conn)
 
 
-@router.post("/devices/{slug}/status")
+@router.post("/devices/{slug}/status", response_model=EstadoDaMaquina)
 async def set_status(slug: Annotated[str, Path()],
                      estado: Literal["idle", "draining", "disabled"],
                      request: Request,

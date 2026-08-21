@@ -76,7 +76,18 @@ async def _resolver_versao(project_id: str, body: PrelabelIn) -> dict:
     return mv
 
 
+class PrelabelEnfileirado(BaseModel):
+    job_id: UUID
+    model_version: int
+    status: str
+
+
+class PrelabelsDescartados(BaseModel):
+    removidos: int
+
+
 @router.post("/projects/{project_slug}/prelabel",
+             response_model=PrelabelEnfileirado,
              status_code=status.HTTP_201_CREATED)
 async def enfileirar_prelabel(
         body: PrelabelIn, project_slug: Annotated[str, Path()],
@@ -136,7 +147,8 @@ async def enfileirar_prelabel(
             "status": "queued"}
 
 
-@router.post("/projects/{project_slug}/datasets/{dataset_slug}/prelabel/discard")
+@router.post("/projects/{project_slug}/datasets/{dataset_slug}/prelabel/discard",
+             response_model=PrelabelsDescartados)
 async def descartar_prelabels(
         project_slug: Annotated[str, Path()],
         dataset_slug: Annotated[str, Path()], request: Request,

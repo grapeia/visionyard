@@ -14,8 +14,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from datetime import datetime
 from pathlib import Path as FsPath
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Request, status
 from pydantic import BaseModel, Field
@@ -55,6 +57,71 @@ class ImportIn(BaseModel):
     ls_project_id: int | None = None
     # {"origem_a": "classe_a"} — resolve nome divergente entre origem e schema.
     class_overrides: dict[str, str] = Field(default_factory=dict)
+
+
+class RelatorioDeImport(BaseModel):
+    """O que a importação fez (ou faria). As listas são truncadas para não
+    estourar o jsonb; `*_total` guarda o número real."""
+    samples_created: int
+    samples_existing: int
+    annotations_created: int
+    annotations_updated: int
+    skipped_total: int
+    skipped: list[dict[str, Any]]
+    unmapped_classes: dict[str, int]
+    warnings: list[str]
+    skipped_truncado: str | None = None
+
+
+class Simulacao(BaseModel):
+    """`dry_run=true`: o relatório do que aconteceria, sem gravar nada."""
+    dry_run: Literal[True]
+    source: str
+    source_classes: list[str]
+    schema_classes: list[str]
+    report: RelatorioDeImport
+
+
+class ImportacaoEnfileirada(BaseModel):
+    """`dry_run=false`. `source_id` vem junto porque quem chamou precisa
+    vincular a origem a um dataset — adivinhar "a mais recente" seria corrida."""
+    dry_run: Literal[False]
+    job_id: UUID
+    status: str
+    source_id: UUID
+    source: str
+
+
+class JobDoProjeto(BaseModel):
+    id: UUID
+    type: str
+    status: str
+    progress: dict[str, Any]
+    result: dict[str, Any] | None
+    error: str | None
+    created_at: datetime
+    finished_at: datetime | None
+    created_by: str | None
+
+
+class EventoDeJob(BaseModel):
+    seq: int
+    at: datetime
+    level: str
+    message: str
+
+
+class DetalheDeJob(BaseModel):
+    id: UUID
+    type: str
+    status: str
+    progress: dict[str, Any]
+    result: dict[str, Any] | None
+    error: str | None
+    created_at: datetime
+    started_at: datetime | None
+    finished_at: datetime | None
+    events: list[EventoDeJob]
 
 
 def _dentro_da_raiz(caminho: str) -> FsPath:
@@ -130,7 +197,8 @@ async def _project_context(slug: str) -> dict:
             "classes": [c["name"] for c in schema["classes"]]}
 
 
-@router.post("/projects/{project_slug}/imports")
+@router.post("/projects/{project_slug}/imports",
+             response_model=Simulacao | ImportacaoEnfileirada)
 async def create_import(body: ImportIn, project_slug: Annotated[str, Path()],
                         request: Request,
                         actor: Annotated[Principal, Depends(require_role("engineer"))],
@@ -222,6 +290,7 @@ async def _run_job(job_id: str, ctx: dict, importer, actor_id: str,
 
 
 @router.get("/projects/{project_slug}/jobs",
+            response_model=list[JobDoProjeto],
             dependencies=[Depends(require_role("viewer"))])
 async def list_jobs(project_slug: Annotated[str, Path()],
                     type: str | None = None, limit: int = 20):
@@ -244,8 +313,10 @@ async def list_jobs(project_slug: Annotated[str, Path()],
 
 
 @router.get("/projects/{project_slug}/jobs/{job_id}",
+            response_model=DetalheDeJob,
             dependencies=[Depends(require_role("viewer"))])
-async def get_project_job(project_slug: Annotated[str, Path()], job_id: str):
+async def get_project_job(project_slug: Annotated[str, Path()],
+                          job_id: Annotated[UUID, Path()]):
     job = await db.fetch_one(
         "SELECT j.id, j.type, j.status, j.progress, j.result, j.error,"
         "       j.created_at, j.started_at, j.finished_at"

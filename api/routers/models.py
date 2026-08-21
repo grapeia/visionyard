@@ -7,7 +7,9 @@ validado e o RBAC.
 """
 from __future__ import annotations
 
-from typing import Annotated, Literal
+from datetime import datetime
+from typing import Annotated, Any, Literal
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, Path, Request, status
 from pydantic import BaseModel, Field, model_validator
@@ -24,13 +26,124 @@ class AliasIn(BaseModel):
     version: int = Field(ge=1)
 
 
+class ModeloNaLista(BaseModel):
+    slug: str
+    name: str
+    task_type: str
+    created_at: datetime
+    versoes: int
+    ultima: int | None
+    # {"champion": 3, "challenger": 4} — o apelido e a versão que ele aponta.
+    aliases: dict[str, int] | None
+
+
+class Build(BaseModel):
+    """O artefato implantável de uma versão: onnx ou engine compilado.
+
+    `target` é a variante compilada (`{"imgsz": 640, "precision": "fp16",
+    "dla": true}`), e é ela que distingue dois builds do mesmo formato.
+    """
+    version: int
+    format: str
+    target: dict[str, Any]
+    uri: str
+    bytes: int | None
+    bench: dict[str, Any] | None
+    created_at: datetime
+    built_on: str | None
+
+
+class Avaliacao(BaseModel):
+    """A mais recente por (versão, benchmark, artefato) — é o que permite
+    comparar pt × onnx × engine × DLA lado a lado."""
+    version: int
+    benchmark: str
+    benchmark_version: int
+    format: str
+    target: dict[str, Any] | None
+    metrics: dict[str, Any] | None
+    created_at: datetime
+
+
+class VersaoDoModelo(BaseModel):
+    id: UUID
+    version: int
+    metrics: dict[str, Any] | None
+    weights_uri: str | None
+    bytes: int | None
+    status: str
+    created_at: datetime
+    run_id: UUID | None
+    experimento: str | None
+    dataset: str | None
+    dataset_version: int | None
+    builds: list[Build]
+    avaliacoes: list[Avaliacao]
+
+
+class ApelidoDoModelo(BaseModel):
+    alias: str
+    version: int
+    moved_at: datetime
+    por: str | None
+
+
+class DetalheDoModelo(BaseModel):
+    """`project_id` fica de fora: a linha do banco o traz para o serviço
+    auditar, e antes deste modelo ele viajava para o navegador junto."""
+    id: UUID
+    slug: str
+    name: str
+    task_type: str
+    created_at: datetime
+    versoes: list[VersaoDoModelo]
+    aliases: list[ApelidoDoModelo]
+
+
+class JobEnfileirado(BaseModel):
+    job_id: UUID
+    version: int
+    status: str
+
+
+class AvaliacaoEnfileirada(JobEnfileirado):
+    # Qual artefato será medido: 'pt', 'onnx', ou o engine com sua variante.
+    artefato: str
+
+
+class ImplantacaoPedida(BaseModel):
+    deployment_id: UUID
+    device: str
+    state: str
+
+
+class Implantacao(BaseModel):
+    id: UUID
+    device: str
+    state: str
+    requested_at: datetime
+    activated_at: datetime | None
+    error: str | None
+    model_slug: str
+    version: int
+    format: str
+    target: dict[str, Any]
+
+
+class ApelidoDefinido(BaseModel):
+    alias: str
+    version: int
+
+
 @router.get("/projects/{project_slug}/models",
+            response_model=list[ModeloNaLista],
             dependencies=[Depends(require_role("viewer"))])
 async def list_models(project_slug: Annotated[str, Path()]):
     return await svc.listar(project_slug)
 
 
 @router.get("/projects/{project_slug}/models/{model_slug}",
+            response_model=DetalheDoModelo,
             dependencies=[Depends(require_role("viewer"))])
 async def get_model(project_slug: Annotated[str, Path()],
                     model_slug: Annotated[str, Path()]):
@@ -56,6 +169,7 @@ class ExportIn(BaseModel):
 
 
 @router.post("/projects/{project_slug}/models/{model_slug}/versions/{version}/export",
+             response_model=JobEnfileirado,
              status_code=status.HTTP_201_CREATED)
 async def exportar(body: ExportIn, project_slug: Annotated[str, Path()],
                    model_slug: Annotated[str, Path()], version: int,
@@ -80,6 +194,7 @@ class EvaluateIn(BaseModel):
 
 
 @router.post("/projects/{project_slug}/models/{model_slug}/versions/{version}/evaluate",
+             response_model=AvaliacaoEnfileirada,
              status_code=status.HTTP_201_CREATED)
 async def avaliar(body: EvaluateIn, project_slug: Annotated[str, Path()],
                   model_slug: Annotated[str, Path()], version: int,
@@ -100,6 +215,7 @@ class DeployIn(BaseModel):
 
 
 @router.post("/projects/{project_slug}/models/{model_slug}/deploy",
+             response_model=ImplantacaoPedida,
              status_code=status.HTTP_201_CREATED)
 async def implantar(body: DeployIn, project_slug: Annotated[str, Path()],
                     model_slug: Annotated[str, Path()], request: Request,
@@ -112,13 +228,15 @@ async def implantar(body: DeployIn, project_slug: Annotated[str, Path()],
 
 
 @router.get("/projects/{project_slug}/deployments",
+            response_model=list[Implantacao],
             dependencies=[Depends(require_role("viewer"))])
 async def list_deployments(project_slug: Annotated[str, Path()]):
     """Implantações do projeto, com device, build e estado."""
     return await svc.listar_deployments(project_slug)
 
 
-@router.put("/projects/{project_slug}/models/{model_slug}/aliases/{alias}")
+@router.put("/projects/{project_slug}/models/{model_slug}/aliases/{alias}",
+            response_model=ApelidoDefinido)
 async def set_alias(project_slug: Annotated[str, Path()],
                     model_slug: Annotated[str, Path()],
                     alias: Annotated[str, Path()], body: AliasIn,

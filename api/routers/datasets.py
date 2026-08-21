@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Any, Literal
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi import Path as P
@@ -80,6 +82,98 @@ class FreezeIn(BaseModel):
     only_annotated: bool = True
 
 
+class DatasetNaLista(BaseModel):
+    slug: str
+    name: str
+    kind: str
+    roi: Roi | None
+    created_at: datetime
+    origens: int
+    versoes: int
+    ultima_versao: int | None
+
+
+class DatasetCriado(BaseModel):
+    id: UUID
+    slug: str
+    name: str
+    kind: str
+    roi: Roi | None
+    created_at: datetime
+
+
+class RoiDefinida(BaseModel):
+    slug: str
+    roi: Roi | None
+
+
+class OrigemDoDataset(BaseModel):
+    id: UUID
+    kind: str
+    name: str | None
+    uri: str | None
+    added_at: datetime
+    imagens: int
+
+
+class VersaoCongelada(BaseModel):
+    version: int
+    descricao: str | None
+    stats: dict[str, Any]
+    split_policy: dict[str, Any]
+    roi: Roi | None
+    manifest_uri: str
+    frozen_at: datetime
+    criado_por: str | None
+
+
+class DetalheDoDataset(BaseModel):
+    """A definição do dataset, as origens e as versões já seladas.
+
+    `project_id` e `proj` ficam de fora de propósito: a linha do banco carrega
+    os dois para o handler resolver o RBAC, e antes deste modelo os dois
+    viajavam para o navegador só porque estavam no `SELECT`.
+    """
+    id: UUID
+    slug: str
+    name: str
+    kind: str
+    roi: Roi | None
+    origens: list[OrigemDoDataset]
+    versoes: list[VersaoCongelada]
+    # Pré-tags rascunho por revisar: é o que o botão "Descartar" remove.
+    pretags_rascunho: int
+
+
+class PreviaDoDataset(BaseModel):
+    """O que entraria numa versão congelada agora. `sem_md5` sai daqui para a
+    tela não oferecer um botão que sempre daria 409."""
+    imagens_nas_origens: int
+    anotadas: int
+    pendentes: int
+    entrariam: int
+    sem_dimensao: int
+    sem_md5: int
+    proxima_versao: int
+
+
+class Congelamento(BaseModel):
+    version: int
+    manifest_uri: str
+    items_sha256: str
+    stats: dict[str, Any]
+    split_policy: dict[str, Any]
+
+
+class DiffDeVersoes(BaseModel):
+    de: int | None
+    para: int
+    entraram: list[str]
+    sairam: list[str]
+    # Só na primeira versão, onde não há contra o que comparar.
+    nota: str | None = None
+
+
 async def _dataset(project_slug: str, dataset_slug: str) -> dict:
     row = await db.fetch_one(
         "SELECT d.id, d.slug, d.name, d.kind, d.roi, p.id AS project_id,"
@@ -93,6 +187,7 @@ async def _dataset(project_slug: str, dataset_slug: str) -> dict:
 
 
 @router.get("/projects/{project_slug}/datasets",
+            response_model=list[DatasetNaLista],
             dependencies=[Depends(require_role("viewer"))])
 async def list_datasets(project_slug: Annotated[str, P()]):
     return await db.fetch_all(
@@ -109,6 +204,7 @@ async def list_datasets(project_slug: Annotated[str, P()]):
 
 
 @router.post("/projects/{project_slug}/datasets",
+             response_model=DatasetCriado,
              status_code=status.HTTP_201_CREATED)
 async def create_dataset(
         body: DatasetIn, project_slug: Annotated[str, P()], request: Request,
@@ -135,7 +231,8 @@ async def create_dataset(
     return row
 
 
-@router.patch("/projects/{project_slug}/datasets/{dataset_slug}")
+@router.patch("/projects/{project_slug}/datasets/{dataset_slug}",
+              response_model=RoiDefinida)
 async def update_roi(body: RoiIn, project_slug: Annotated[str, P()],
                      dataset_slug: Annotated[str, P()], request: Request,
                      actor: Annotated[Principal, Depends(require_role("engineer"))]):
@@ -162,6 +259,7 @@ async def update_roi(body: RoiIn, project_slug: Annotated[str, P()],
 
 
 @router.get("/projects/{project_slug}/datasets/{dataset_slug}",
+            response_model=DetalheDoDataset,
             dependencies=[Depends(require_role("viewer"))])
 async def get_dataset(project_slug: Annotated[str, P()],
                       dataset_slug: Annotated[str, P()]):
@@ -239,6 +337,7 @@ async def remove_origin(project_slug: Annotated[str, P()],
 
 
 @router.get("/projects/{project_slug}/datasets/{dataset_slug}/preview",
+            response_model=PreviaDoDataset,
             dependencies=[Depends(require_role("viewer"))])
 async def preview(project_slug: Annotated[str, P()],
                   dataset_slug: Annotated[str, P()],
@@ -266,6 +365,7 @@ async def preview(project_slug: Annotated[str, P()],
 
 
 @router.post("/projects/{project_slug}/datasets/{dataset_slug}/freeze",
+             response_model=Congelamento,
              status_code=status.HTTP_201_CREATED)
 async def freeze(body: FreezeIn, project_slug: Annotated[str, P()],
                  dataset_slug: Annotated[str, P()], request: Request,
@@ -391,6 +491,7 @@ async def freeze(body: FreezeIn, project_slug: Annotated[str, P()],
 
 
 @router.get("/projects/{project_slug}/datasets/{dataset_slug}/versions/{version}/diff",
+            response_model=DiffDeVersoes,
             dependencies=[Depends(require_role("viewer"))])
 async def diff(project_slug: Annotated[str, P()],
                dataset_slug: Annotated[str, P()], version: int,

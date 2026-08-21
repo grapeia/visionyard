@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from typing import Annotated
+from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Request, Response, status
+from fastapi import APIRouter, HTTPException, Path, Request, Response, status
 from pydantic import BaseModel, EmailStr, Field
 
 from .. import auth, db
@@ -51,6 +53,37 @@ class InviteAcceptIn(BaseModel):
 class TokenCreateIn(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     expires_in_days: int | None = Field(default=None, ge=1, le=365)
+
+
+class TokenDeApi(BaseModel):
+    """`prefix` é o começo do valor: serve para reconhecer o token na lista sem
+    guardá-lo — o banco só tem o sha256."""
+    id: UUID
+    name: str
+    prefix: str
+    created_at: datetime
+    expires_at: datetime | None
+    last_used_at: datetime | None
+
+
+class TokenCriado(BaseModel):
+    id: UUID
+    name: str
+    created_at: datetime
+    # Devolvido uma única vez: o banco guarda só o sha256.
+    token: str
+    aviso: str
+
+
+class SessaoAberta(BaseModel):
+    id: UUID
+    issued_at: datetime
+    last_seen_at: datetime
+    expires_at: datetime
+    ip: str | None
+    user_agent: str | None
+    # A sessão desta requisição — a tela não oferece "encerrar" para ela.
+    current: bool
 
 
 def _set_cookie(response: Response, token: str) -> None:
@@ -118,7 +151,7 @@ async def accept_invite(body: InviteAcceptIn, request: Request,
                  via="session")
 
 
-@router.get("/me/tokens")
+@router.get("/me/tokens", response_model=list[TokenDeApi])
 async def list_my_tokens(user: CurrentUser):
     return await db.fetch_all(
         "SELECT id, name, prefix, created_at, expires_at, last_used_at"
@@ -126,7 +159,8 @@ async def list_my_tokens(user: CurrentUser):
         " ORDER BY created_at DESC", (user.id,))
 
 
-@router.post("/me/tokens", status_code=status.HTTP_201_CREATED)
+@router.post("/me/tokens", response_model=TokenCriado,
+             status_code=status.HTTP_201_CREATED)
 async def create_my_token(body: TokenCreateIn, user: CurrentUser,
                           request: Request):
     """Cria token de API que age COMO este usuário (herda seus papéis).
@@ -159,7 +193,8 @@ async def create_my_token(body: TokenCreateIn, user: CurrentUser,
 
 @router.delete("/me/tokens/{token_id}",
                status_code=status.HTTP_204_NO_CONTENT)
-async def revoke_my_token(token_id: str, user: CurrentUser, request: Request):
+async def revoke_my_token(token_id: Annotated[UUID, Path()],
+                          user: CurrentUser, request: Request):
     async with db.connection() as conn:
         async with conn.transaction():
             row = await db.fetch_one(
@@ -169,7 +204,7 @@ async def revoke_my_token(token_id: str, user: CurrentUser, request: Request):
             if row is None:
                 raise HTTPException(status.HTTP_404_NOT_FOUND,
                                     "token não encontrado")
-            await audit(user, "token.revoke", "api_token", token_id,
+            await audit(user, "token.revoke", "api_token", str(token_id),
                         ip=auth.client_ip(request), conn=conn)
 
 
@@ -205,7 +240,7 @@ async def change_password(body: PasswordChangeIn, user: CurrentUser,
     _set_cookie(response, token)
 
 
-@router.get("/me/sessions")
+@router.get("/me/sessions", response_model=list[SessaoAberta])
 async def my_sessions(user: CurrentUser):
     return await db.fetch_all(
         "SELECT id, issued_at, last_seen_at, expires_at, ip, user_agent,"
@@ -216,10 +251,11 @@ async def my_sessions(user: CurrentUser):
 
 @router.delete("/me/sessions/{session_id}",
                status_code=status.HTTP_204_NO_CONTENT)
-async def revoke_my_session(session_id: str, user: CurrentUser):
+async def revoke_my_session(session_id: Annotated[UUID, Path()],
+                            user: CurrentUser):
     row = await db.fetch_one(
         "SELECT id FROM user_session WHERE id = %s AND user_id = %s",
         (session_id, user.id))
     if row is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "sessão não encontrada")
-    await auth.revoke_session(session_id)
+    await auth.revoke_session(str(session_id))

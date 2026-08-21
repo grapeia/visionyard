@@ -11,6 +11,7 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 
 from . import db, logs
 from .routers import agents as agents_router
@@ -60,7 +61,11 @@ app.include_router(training_router.router, prefix="/v1")
 app.include_router(users_router.router, prefix="/v1")
 
 
-@app.get("/healthz", tags=["ops"])
+class Sonda(BaseModel):
+    status: str
+
+
+@app.get("/healthz", tags=["ops"], response_model=Sonda)
 async def healthz():
     """Vivo: o processo responde. NÃO toca no banco, de propósito.
 
@@ -72,7 +77,7 @@ async def healthz():
     return {"status": "ok"}
 
 
-@app.get("/readyz", tags=["ops"])
+@app.get("/readyz", tags=["ops"], response_model=Sonda)
 async def readyz():
     """Pronto: dá para servir requisição que precisa do banco.
 

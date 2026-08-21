@@ -5,7 +5,9 @@ A regra (base aceita, máquina-alvo válida, o que vai no payload do job) mora e
 """
 from __future__ import annotations
 
-from typing import Annotated
+from datetime import datetime
+from typing import Annotated, Any
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query, Request, status
 from fastapi import Path as P
@@ -33,7 +35,106 @@ class RunIn(BaseModel):
     device_slug: str | None = Field(default=None, max_length=64)
 
 
+class RunCriado(BaseModel):
+    run_id: UUID
+    job_id: UUID
+    experimento: str
+    status: str
+
+
+class MaquinaDeTreino(BaseModel):
+    """Só nome e estado: capabilities e token ficam com o superusuário, na aba
+    Máquinas."""
+    slug: str
+    name: str
+    status: str
+
+
+class RunNaLista(BaseModel):
+    id: UUID
+    experimento: str
+    base_model_name: str | None
+    # O job e o run têm estados próprios: o job pode ter falhado sem que o run
+    # tenha chegado a rodar, e a tela mostra os dois.
+    job_status: str
+    run_status: str
+    metrics: dict[str, Any] | None
+    best_epoch: int | None
+    started_at: datetime | None
+    finished_at: datetime | None
+    duration_s: int | None
+    dataset: str
+    dataset_version: int
+    device: str | None
+    criado_por: str | None
+
+
+class VersaoProduzida(BaseModel):
+    id: UUID
+    model_slug: str
+    version: int
+    metrics: dict[str, Any] | None
+    weights_uri: str | None
+    bytes: int | None
+    created_at: datetime
+
+
+class DetalheDoRun(BaseModel):
+    id: UUID
+    job_id: UUID
+    job_status: str
+    job_error: str | None
+    progress: dict[str, Any]
+    run_status: str
+    metrics: dict[str, Any] | None
+    best_epoch: int | None
+    params: dict[str, Any]
+    base_model_name: str | None
+    started_at: datetime | None
+    finished_at: datetime | None
+    duration_s: int | None
+    experimento: str
+    dataset: str
+    dataset_version: int
+    device: str | None
+    target_device: str | None
+    # A versão de modelo que este treino produziu, se já registrada.
+    model_version: VersaoProduzida | None
+
+
+class EventoDoRun(BaseModel):
+    seq: int
+    at: datetime
+    level: str
+    message: str
+
+
+class MetricaDoRun(BaseModel):
+    epoch: int
+    key: str
+    value: float
+
+
+class TrechoDoRun(BaseModel):
+    """A leitura incremental da tela ao vivo: o cliente guarda os dois cursores
+    (`seq` e `epoch`) e só pede o que falta."""
+    job_status: str
+    run_status: str
+    progress: dict[str, Any]
+    error: str | None
+    metrics_finais: dict[str, Any] | None
+    best_epoch: int | None
+    eventos: list[EventoDoRun]
+    metricas: list[MetricaDoRun]
+
+
+class RunCancelado(BaseModel):
+    run_id: UUID
+    status: str
+
+
 @router.post("/projects/{project_slug}/runs",
+             response_model=RunCriado,
              status_code=status.HTTP_201_CREATED)
 async def criar_run(body: RunIn, project_slug: Annotated[str, P()],
                     request: Request,
@@ -46,14 +147,14 @@ async def criar_run(body: RunIn, project_slug: Annotated[str, P()],
         device_slug=body.device_slug, ip=auth.client_ip(request))
 
 
-@router.get("/train-devices",
+@router.get("/train-devices", response_model=list[MaquinaDeTreino],
             dependencies=[Depends(require_role("engineer"))])
 async def train_devices():
     """Máquinas que podem ser alvo de um treino: capazes de treinar e ativas."""
     return await svc.maquinas_de_treino()
 
 
-@router.get("/projects/{project_slug}/runs",
+@router.get("/projects/{project_slug}/runs", response_model=list[RunNaLista],
             dependencies=[Depends(require_role("viewer"))])
 async def listar_runs(project_slug: Annotated[str, P()],
                       limite: int = Query(50, ge=1, le=200)):
@@ -61,14 +162,18 @@ async def listar_runs(project_slug: Annotated[str, P()],
 
 
 @router.get("/projects/{project_slug}/runs/{run_id}",
+            response_model=DetalheDoRun,
             dependencies=[Depends(require_role("viewer"))])
-async def detalhe_run(project_slug: Annotated[str, P()], run_id: str):
+async def detalhe_run(project_slug: Annotated[str, P()],
+                      run_id: Annotated[UUID, P()]):
     return await svc.detalhe_run(project_slug, run_id)
 
 
 @router.get("/projects/{project_slug}/runs/{run_id}/stream",
+            response_model=TrechoDoRun,
             dependencies=[Depends(require_role("viewer"))])
-async def stream_run(project_slug: Annotated[str, P()], run_id: str,
+async def stream_run(project_slug: Annotated[str, P()],
+                     run_id: Annotated[UUID, P()],
                      desde_seq: int = Query(0, ge=0),
                      desde_epoca: int = Query(-1, ge=-1)):
     """Leitura incremental para a tela ao vivo: eventos e métricas após o cursor."""
@@ -76,8 +181,10 @@ async def stream_run(project_slug: Annotated[str, P()], run_id: str,
                                 desde_epoca=desde_epoca)
 
 
-@router.post("/projects/{project_slug}/runs/{run_id}/cancel")
-async def cancelar_run(project_slug: Annotated[str, P()], run_id: str,
+@router.post("/projects/{project_slug}/runs/{run_id}/cancel",
+             response_model=RunCancelado)
+async def cancelar_run(project_slug: Annotated[str, P()],
+                       run_id: Annotated[UUID, P()],
                        request: Request,
                        actor: Annotated[Principal, Depends(require_role("engineer"))]):
     """Pede cancelamento. Na fila cancela na hora; rodando, o agente para no

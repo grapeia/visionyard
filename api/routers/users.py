@@ -1,7 +1,9 @@
 """Gestão de usuários e de papéis por projeto."""
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Annotated, Literal
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Request, status
 from pydantic import BaseModel, EmailStr, Field
@@ -39,14 +41,63 @@ class MemberIn(BaseModel):
     role: Role
 
 
-@router.get("/users", dependencies=[Depends(require_superuser)])
+class Usuario(BaseModel):
+    id: UUID
+    email: EmailStr
+    display_name: str
+    status: str
+    is_superuser: bool
+    created_at: datetime
+    last_login_at: datetime | None
+
+
+class UsuarioCriado(BaseModel):
+    id: UUID
+    email: EmailStr
+    display_name: str
+    status: str
+    is_superuser: bool
+
+
+class Convite(BaseModel):
+    """O token sai na resposta porque ainda não há serviço de email: quem
+    administra repassa o link pelo canal que usar. É de uso único."""
+    email: EmailStr
+    purpose: str
+    token: str
+    expires_in_hours: int
+    aviso: str
+
+
+class EstadoDoUsuario(BaseModel):
+    id: UUID
+    email: EmailStr
+    status: str
+
+
+class MembroDoProjeto(BaseModel):
+    id: UUID
+    email: EmailStr
+    display_name: str
+    role: str
+    granted_at: datetime
+
+
+class MembroDefinido(BaseModel):
+    email: EmailStr
+    role: str
+
+
+@router.get("/users", response_model=list[Usuario],
+            dependencies=[Depends(require_superuser)])
 async def list_users():
     return await db.fetch_all(
         "SELECT id, email, display_name, status, is_superuser, created_at,"
         "       last_login_at FROM app_user ORDER BY display_name")
 
 
-@router.post("/users", status_code=status.HTTP_201_CREATED)
+@router.post("/users", response_model=UsuarioCriado,
+             status_code=status.HTTP_201_CREATED)
 async def create_user(body: UserCreateIn, request: Request,
                       admin: Annotated[Principal, Depends(require_superuser)]):
     exists = await db.fetch_one("SELECT id FROM app_user WHERE lower(email)=%s",
@@ -71,8 +122,9 @@ async def create_user(body: UserCreateIn, request: Request,
     return row
 
 
-@router.post("/users/{user_id}/invite", status_code=status.HTTP_201_CREATED)
-async def invite_user(user_id: str, request: Request,
+@router.post("/users/{user_id}/invite", response_model=Convite,
+             status_code=status.HTTP_201_CREATED)
+async def invite_user(user_id: Annotated[UUID, Path()], request: Request,
                       admin: Annotated[Principal, Depends(require_superuser)],
                       purpose: Literal["invite", "password_reset"] = "invite"):
     """Emite um convite de uso único e devolve o token.
@@ -89,19 +141,20 @@ async def invite_user(user_id: str, request: Request,
         raise HTTPException(status.HTTP_409_CONFLICT,
                             "usuário desativado — reative antes de convidar")
 
-    token = await auth.issue_invite(user_id, purpose, admin.id)
-    await audit(admin, f"user.{purpose}.issue", "app_user", user_id,
+    token = await auth.issue_invite(str(user_id), purpose, admin.id)
+    await audit(admin, f"user.{purpose}.issue", "app_user", str(user_id),
                 ip=auth.client_ip(request))
     return {"email": target["email"], "purpose": purpose, "token": token,
             "expires_in_hours": settings.invite_ttl_hours,
             "aviso": "repasse por canal seguro — é de uso único"}
 
 
-@router.post("/users/{user_id}/status",
+@router.post("/users/{user_id}/status", response_model=EstadoDoUsuario,
              dependencies=[Depends(require_superuser)])
-async def set_user_status(user_id: str, status_: Literal["active", "disabled"],
+async def set_user_status(user_id: Annotated[UUID, Path()],
+                          status_: Literal["active", "disabled"],
                           user: CurrentUser, request: Request):
-    if user_id == user.id and status_ == "disabled":
+    if str(user_id) == user.id and status_ == "disabled":
         raise HTTPException(status.HTTP_400_BAD_REQUEST,
                             "não dá pra desativar a si mesmo")
     async with db.connection() as conn:
@@ -118,8 +171,8 @@ async def set_user_status(user_id: str, status_: Literal["active", "disabled"],
             # Desativar precisa cortar o acesso agora, não quando a sessão
             # expirar.
             if status_ == "disabled":
-                await auth.revoke_all_sessions(user_id, conn=conn)
-            await audit(user, "user.status", "app_user", user_id,
+                await auth.revoke_all_sessions(str(user_id), conn=conn)
+            await audit(user, "user.status", "app_user", str(user_id),
                         after={"status": status_},
                         ip=auth.client_ip(request), conn=conn)
     return row
@@ -130,6 +183,7 @@ async def set_user_status(user_id: str, status_: Literal["active", "disabled"],
 # --------------------------------------------------------------------------- #
 
 @router.get("/projects/{project_slug}/members",
+            response_model=list[MembroDoProjeto],
             dependencies=[Depends(require_role("viewer"))])
 async def list_members(project_slug: Annotated[str, Path()]):
     return await db.fetch_all(
@@ -140,7 +194,8 @@ async def list_members(project_slug: Annotated[str, Path()]):
         " WHERE p.slug = %s ORDER BY u.display_name", (project_slug,))
 
 
-@router.put("/projects/{project_slug}/members")
+@router.put("/projects/{project_slug}/members",
+            response_model=MembroDefinido)
 async def upsert_member(body: MemberIn, project_slug: Annotated[str, Path()],
                         request: Request,
                         actor: Annotated[Principal, Depends(require_role("admin"))]):
@@ -194,7 +249,8 @@ async def upsert_member(body: MemberIn, project_slug: Annotated[str, Path()],
 
 @router.delete("/projects/{project_slug}/members/{user_id}",
                status_code=status.HTTP_204_NO_CONTENT)
-async def remove_member(project_slug: Annotated[str, Path()], user_id: str,
+async def remove_member(project_slug: Annotated[str, Path()],
+                        user_id: Annotated[UUID, Path()],
                         request: Request,
                         actor: Annotated[Principal, Depends(require_role("admin"))]):
     proj = await projeto_ou_404(project_slug)
@@ -216,6 +272,6 @@ async def remove_member(project_slug: Annotated[str, Path()], user_id: str,
             await db.execute(
                 "DELETE FROM project_member WHERE project_id=%s AND user_id=%s",
                 (proj["id"], user_id), conn=conn)
-            await audit(actor, "member.revoke", "project_member", user_id,
+            await audit(actor, "member.revoke", "project_member", str(user_id),
                         project_id=str(proj["id"]), before=dict(row),
                         ip=auth.client_ip(request), conn=conn)

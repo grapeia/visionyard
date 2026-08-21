@@ -66,3 +66,12 @@ async def test_fila_exige_superusuario(admin, client, tmp_path):
     async with novo_usuario(admin, client, "fila@teste.com") as (comum, _):
         r = await comum.get("/v1/jobs")
         assert r.status_code == 403
+
+
+async def test_job_id_malformado_nao_e_500(admin, tmp_path):
+    """Id que não é uuid é erro de entrada: recusa na rota, não estoura no cast
+    do Postgres antes do 404 que o handler já tem."""
+    from .test_datasets import PROJ, _projeto_com_dados
+    await _projeto_com_dados(admin, tmp_path)
+    r = await admin.get(f"/v1/projects/{PROJ['slug']}/jobs/nao-e-uuid")
+    assert r.status_code == 422, r.text
