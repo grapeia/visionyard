@@ -228,10 +228,15 @@ async def test_descartar_prelabels_remove_so_rascunho(admin, client, tmp_path):
     assert (await admin.get(f"{base}/{humano}")).json()["minha_anotacao"] is not None
 
 
-async def test_prelabel_id_malformado_nao_e_500(admin, client, tmp_path):
+async def test_prelabel_id_malformado_nao_e_500(admin):
     """Id que não é uuid é erro de entrada: recusa na validação, não estoura no
-    cast do Postgres três camadas adiante."""
-    await _produzir_modelo(admin, client, tmp_path)
+    cast do Postgres três camadas adiante.
+
+    Sem projeto montado de propósito: o 422 sai do pydantic antes da primeira
+    linha do handler, e `admin` é superusuário — `require_role` o deixa passar
+    sem consultar nada. Montar modelo aqui era um minuto de setup que nenhuma
+    asserção lia.
+    """
     base = f"/v1/projects/{PROJ['slug']}/prelabel"
     r = await admin.post(base, json={"model_slug": "detector",
                                      "sample_id": "nao-e-uuid"})

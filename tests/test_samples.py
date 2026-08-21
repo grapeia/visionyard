@@ -168,3 +168,36 @@ async def test_escopo_por_dataset(admin, tmp_path):
     # sem escopo, todas
     r = await admin.get(f"/v1/projects/{PROJ['slug']}/samples")
     assert r.json()["total"] == 6
+
+
+async def test_pagina_alem_do_fim_ainda_conta_o_total(admin, tmp_path):
+    """A grade vazia não zera o rodapé: quem paginou longe demais precisa ver
+    que ainda há 6 imagens para saber que é só voltar."""
+    await _projeto_com_dados(admin, tmp_path)
+    d = (await admin.get(f"/v1/projects/{PROJ['slug']}/samples?pagina=5")).json()
+    assert d["itens"] == [] and d["total"] == 6
+
+
+async def test_resposta_e_contrato_e_nao_a_linha_do_banco(admin, tmp_path,
+                                                          monkeypatch):
+    """Coluna acrescentada a um SELECT não viaja para o navegador.
+
+    O que a rota devolve é o `response_model`, não o `dict` que o serviço
+    montou — é o que impede o schema do banco de virar API sem ninguém decidir.
+    """
+    await _projeto_com_dados(admin, tmp_path)
+    from api.services import samples as svc
+
+    original = svc.listar
+
+    async def com_coluna_nova(*a, **kw):
+        pagina = await original(*a, **kw)
+        pagina["segredo_do_banco"] = "x"
+        pagina["itens"][0]["coluna_nova"] = "y"
+        return pagina
+
+    monkeypatch.setattr(svc, "listar", com_coluna_nova)
+    d = (await admin.get(f"/v1/projects/{PROJ['slug']}/samples")).json()
+    assert "segredo_do_banco" not in d
+    assert "coluna_nova" not in d["itens"][0]
+    assert d["total"] == 6          # e o que é contrato continua lá
