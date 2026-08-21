@@ -130,13 +130,55 @@ heartbeat, mesmo `job.type`, sem passar por `contracts/jobs.py`, que descreve
 só o que atravessa máquina. O `import` entra em `POR_TIPO` se algum dia a
 origem for exclusivamente remota.
 
-### 6. Quebrar o `app.js` — `pendente`
-2.771 linhas, sem módulos, estado global mutável (`estado`, `anot`, `treino`,
-`dados`, `roiEdit`) e zero teste. O anotador (canvas, alças, teclado) é a parte
-mais propensa a bug do sistema e a menos protegida.
+### 6. Quebrar o `app.js` — `feito` (2026-08-21)
+2.771 linhas, sem módulos, estado global mutável e zero teste. Era o item de
+maior risco absoluto e o único adiado de propósito, porque mover JS sem teste
+pede a aplicação no ar para conferir a olho.
 
-ES modules nativos resolvem sem build (`<script type="module">`). Ordem sugerida:
-`rede.js` / `anotador.js` / `datasets.js` / `treino.js`, começando pelo anotador.
+Virou 16 módulos ES nativos, sem build (`<script type="module">`), o maior com
+497 linhas: `nucleo` (o `$`, o `estado`, a porta HTTP, os escapes), `entrada`,
+`dialogos`, `abas`, `datasets`, `roi`, `bucket`, `rotulagem`, `anotador`,
+`treino`, `pool`, `projeto`, `modelos`, `prelabel`, `usuarios`, e `app` como
+entrada. O corpo das funções não foi tocado: o corte foi por fatia de linha, e
+os `import`/`export` saíram de uma varredura de identificadores sobre o código
+sem comentário e sem literal de texto.
+
+**`nucleo.js` não importa de ninguém, de propósito.** Todo módulo liga os seus
+listeners no topo, chamando `$(...)`; se a raiz do grafo dependesse de alguém,
+haveria uma ordem de avaliação em que o `$` ainda está na zona morta. Foi por
+isso que `mostrarEntrada` — a resposta do `api()` ao 401 — mudou de módulo.
+
+Duas coisas que a linguagem obrigou a mudar, ambas no `CLAUDE.md`:
+
+- **Não se atribui à variável importada de outro módulo.** O fechamento
+  genérico de diálogo fazia `pjClasses = []`; virou `esquecerClasses()`.
+- **O parâmetro do `post` chamava-se `dados`,** o mesmo nome do estado da
+  grade. Sem escopo de módulo ninguém notava; com ele, viraria import.
+
+**A conferência foi com a aplicação no ar**, sobre uma instalação semeada com
+14 imagens, um dataset selado, um treino de 12 épocas, um build de engine, uma
+implantação e um pré-tag na fila. As sete abas foram capturadas antes e depois
+e o texto renderizado bate; o anotador foi exercitado por evento sintético
+(desenhar, trocar classe pelo teclado, mover, dar zoom, salvar, avançar) e
+gravou de verdade. Os únicos diffs contra o baseline são a caixa que o próprio
+teste gravou.
+
+Dois defeitos vieram do fato de a aplicação ter subido — nenhum deles do
+refactor:
+
+- **`GET /v1/train-devices` respondia 422 para todo mundo.** A rota não tem
+  `{project_slug}`, e `require_role` declara esse caminho: o FastAPI o pedia
+  como parâmetro ausente. O diálogo de novo treino ficava sem máquina para
+  fixar, e o `.catch(() => {})` do front engolia. Passou a exigir só
+  autenticação, como `/deploy-devices` e pelo mesmo motivo — o que protege o
+  dado é o `SELECT`, que devolve nome e estado.
+- **A casca ia sem `Cache-Control`.** Uma `index.html` velha em cache pedindo o
+  `app.js` novo como script comum derruba a página inteira com "Cannot use
+  import statement outside a module". Aconteceu na própria migração, no
+  navegador de conferência. Agora vai `no-cache`, e o etag faz disso um 304.
+
+Ficou de fora: os módulos não têm teste. A garantia continua sendo a leitura e
+a conferência a olho — o que mudou é que agora ela cabe num arquivo por vez.
 
 ### 7. Observabilidade — `feito` (2026-08-20)
 Era: sem handler global de exceção, sem log configurado, sem request-id. Um 500
@@ -568,3 +610,13 @@ carga de página, dentro do threadpool.
   `target` do build era declarado texto quando é `jsonb` — a variante compilada
   que distingue dois builds do mesmo formato. Suíte: **204 testes passando**
   (eram 200).
+- **2026-08-21** — item 6 feito. O `app.js` de 2.771 linhas virou 16 módulos ES
+  nativos, sem build, o maior com 497 linhas; o corpo das funções não foi
+  tocado. A conferência foi com a aplicação de fato no ar, sobre uma instalação
+  semeada, comparando o texto das sete abas antes e depois e exercitando o
+  anotador por evento sintético até o save. Dois defeitos apareceram por causa
+  disso, nenhum do refactor: `/train-devices` respondia 422 para todo mundo
+  (papel por projeto numa rota sem projeto no caminho), e a casca ia sem
+  `Cache-Control`, o que na própria migração deixou uma `index.html` em cache
+  pedindo o módulo como script comum. Suíte: **205 testes passando** (eram
+  204).

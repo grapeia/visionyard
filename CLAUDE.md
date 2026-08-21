@@ -40,7 +40,7 @@ api/            Control API (FastAPI)
   routers/      uma rota por arquivo de aba — só HTTP
   services/     a regra de domínio e o SQL que a implementa
   importers/    adaptadores de origem (GCS, Label Studio) sobre base.Importer
-  static/       interface web servida direto, sem build
+  static/       módulos ES servidos direto, sem build (app.js é a entrada)
 agent/          worker das máquinas de execução
 contracts/      o que API e agente combinam (payload de job); só stdlib
 db/migrations/  SQL versionado, NNN_nome.sql
@@ -200,6 +200,21 @@ pede.
   `succeeded` um job que a tela já deu por interrompido.
 - O front monta HTML por template string. Todo valor vindo do servidor passa por
   `esc()`. Não há build nem lint: o descuido não é detectado.
+- **O front é módulo ES nativo, sem build nem bundler.** `app.js` é a entrada
+  (`<script type="module">`) e importa os demais; `nucleo.js` é a raiz do grafo
+  e não importa de ninguém — é o que garante que o `$` exista quando cada
+  módulo liga os seus listeners ao ser avaliado. Há ciclos entre os módulos de
+  tela (o anotador chama `mostrarAba`, as abas chamam o anotador) e eles são
+  inofensivos porque nenhuma chamada cruzada acontece no topo do módulo; pôr
+  uma ali quebra o carregamento com um `ReferenceError` de TDZ.
+- **Módulo ES não deixa um módulo atribuir à variável importada de outro.** Ler
+  é permitido, escrever não. Estado compartilhado que precisa mudar é objeto
+  (`estado`, `dados`, `anot`) e muda por propriedade; onde havia um `let`
+  (`pjClasses`), quem o zera é uma função exportada (`esquecerClasses`).
+- **A casca (`GET /`) vai com `Cache-Control: no-cache`.** Ela diz qual é o
+  módulo de entrada: uma casca velha em cache pedindo `app.js` como script
+  comum quebra a página inteira com "Cannot use import statement outside a
+  module" — aconteceu na própria migração para módulos.
 - `db.fetch_one` devolve `dict | None`, e o `mypy` não deixa mais indexar isso
   direto. Query que **sempre** devolve linha (`INSERT ... RETURNING`, `count(*)`)
   usa `db.fetch_row`, que estoura na própria query se vier vazia. Onde a linha
