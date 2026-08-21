@@ -23,6 +23,8 @@ from typing import Any
 
 from fastapi import HTTPException, status
 
+from contracts import jobs
+
 from .. import db
 from ..config import settings
 
@@ -167,15 +169,38 @@ async def job_da_maquina(job_id: str, device_id: str) -> dict:
     return row
 
 
+async def job_com_payload[P: jobs.Payload](
+        job_id: str, device_id: str, contrato: type[P]) -> tuple[dict, P]:
+    """O job desta máquina, com o payload já lido pelo contrato.
+
+    Confere o TIPO antes de ler, e é essa conferência que faltava: até aqui,
+    quem barrava um agente chamando `/build` num job de treino era o payload de
+    treino não ter `model_version_id` — um 404 que saía por acidente do `.get()`
+    e que sumiria ao ler pelo contrato. Em `/targets` nem 404 saía: o escopo
+    lido com `.get()` virava `None`, a consulta não casava com nada e a resposta
+    era 200 com lista vazia.
+
+    Payload do tipo certo que o parser recusa é bug de quem enfileirou, não
+    entrada do agente — sobe e cai na rede de `logs.correlacionar`, como 500 com
+    o código da requisição no corpo e o traceback no log.
+    """
+    job = await job_da_maquina(job_id, device_id)
+    if job["type"] != contrato.TIPO:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND,
+            f"job é de {job['type']}, e esta rota é de {contrato.TIPO}")
+    return job, contrato.de_payload(job["payload"])
+
+
 # --------------------------------------------------------------------------- #
 # Manifesto (só quem é dono do job de treino lê)
 # --------------------------------------------------------------------------- #
 
 async def diretorio_manifesto(job_id: str, device_id: str) -> FsPath:
-    job = await job_da_maquina(job_id, device_id)
-    dvid = job["payload"].get("dataset_version_id")
+    _, p = await job_com_payload(job_id, device_id, jobs.Train)
     row = await db.fetch_one(
-        "SELECT manifest_uri FROM dataset_version WHERE id = %s", (dvid,))
+        "SELECT manifest_uri FROM dataset_version WHERE id = %s",
+        (p.dataset_version_id,))
     if row is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "versão sem manifesto")
     return FsPath(row["manifest_uri"])
@@ -267,15 +292,14 @@ async def gravar_metricas(job_id: str, device_id: str,
 async def alvos_prelabel(job_id: str, device_id: str) -> dict:
     """Imagens que este job de pré-tag deve prever: as do dataset do escopo, e
     (se only_missing) só as que ainda não têm anotação de quem disparou."""
-    job = await job_da_maquina(job_id, device_id)
-    p = job["payload"]
+    job, p = await job_com_payload(job_id, device_id, jobs.Prelabel)
     autor = job["created_by"]
-    if p.get("sample_id"):
+    if p.sample_id:
         # escopo de uma imagem só (tecla w): sem filtro de only_missing.
         rows = await db.fetch_all(
             "SELECT id, uri FROM sample WHERE id = %s AND project_id = %s",
-            (p["sample_id"], job["project_id"]))
-    elif p.get("sample_ids"):
+            (p.sample_id, job["project_id"]))
+    elif p.sample_ids:
         # lote específico (ex.: só a página aberta): respeita only_missing.
         rows = await db.fetch_all(
             "SELECT s.id, s.uri FROM sample s"
@@ -284,8 +308,8 @@ async def alvos_prelabel(job_id: str, device_id: str) -> dict:
             "        SELECT 1 FROM annotation a"
             "         WHERE a.sample_id = s.id AND a.author_id = %(au)s))"
             " ORDER BY s.id",
-            {"p": job["project_id"], "ids": p["sample_ids"],
-             "mo": bool(p.get("only_missing", True)), "au": autor})
+            {"p": job["project_id"], "ids": p.sample_ids,
+             "mo": p.only_missing, "au": autor})
     else:
         rows = await db.fetch_all(
             """
@@ -298,9 +322,9 @@ async def alvos_prelabel(job_id: str, device_id: str) -> dict:
                     SELECT 1 FROM annotation a
                      WHERE a.sample_id = s.id AND a.author_id = %(au)s))
              ORDER BY s.id
-            """, {"ds": p.get("dataset_slug"), "p": job["project_id"],
-                  "mo": bool(p.get("only_missing", True)), "au": autor})
-    return {"conf": p.get("conf", 0.25),
+            """, {"ds": p.dataset_slug, "p": job["project_id"],
+                  "mo": p.only_missing, "au": autor})
+    return {"conf": p.conf,
             "alvos": [{"sample_id": str(r["id"]), "uri": r["uri"]}
                       for r in rows]}
 
@@ -312,9 +336,9 @@ async def gravar_prelabels(job_id: str, device_id: str,
     Nunca toca em trabalho humano: o UPDATE só acontece se a anotação existente
     também for um prelabel (re-rodar atualiza a sugestão). Predição vazia é
     ignorada — a imagem segue pendente para um humano."""
-    job = await job_da_maquina(job_id, device_id)
+    job, p = await job_com_payload(job_id, device_id, jobs.Prelabel)
     autor = job["created_by"]
-    schema_id = job["payload"].get("schema_id")
+    schema_id = p.schema_id
     gravadas = 0
     async with db.connection() as conn:
         async with conn.transaction():
@@ -361,13 +385,13 @@ async def registrar_modelo(job_id: str, device_id: str, *, weights_uri: str,
                            metrics: dict) -> dict:
     """Cria uma versão imutável do modelo a partir do peso que o agente já subiu
     ao bucket. É INSERT único: model_version não aceita UPDATE (008)."""
-    job = await job_da_maquina(job_id, device_id)
+    job, p = await job_com_payload(job_id, device_id, jobs.Train)
     run = await db.fetch_one(
         "SELECT id, schema_id, created_by FROM training_run WHERE job_id = %s",
         (job_id,))
     if run is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "run não encontrado")
-    slug = job["payload"].get("model_slug", "detector")
+    slug = p.model_slug
     async with db.connection() as conn:
         async with conn.transaction():
             await conn.execute("SELECT pg_advisory_xact_lock(hashtext(%s))",
@@ -408,10 +432,7 @@ async def registrar_build(job_id: str, device_id: str, *, formato: str, uri: str
                           bench: dict) -> dict:
     """Registra o artefato compilado. O device_class entra no alvo aqui — é a
     máquina que compilou que define para qual classe o engine vale."""
-    job = await job_da_maquina(job_id, device_id)
-    mvid = job["payload"].get("model_version_id")
-    if mvid is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "job sem model_version")
+    job, p = await job_com_payload(job_id, device_id, jobs.Export)
     d = await _device_do_token(device_id)
     alvo = {**target, "device_class": d["device_class"]}
     row = await db.fetch_one(
@@ -420,7 +441,7 @@ async def registrar_build(job_id: str, device_id: str, *, formato: str, uri: str
         " VALUES (%s,%s,%s::jsonb,%s,decode(%s,'hex'),%s,%s::jsonb,%s,%s,%s)"
         " ON CONFLICT (model_version_id, format, target) DO NOTHING"
         " RETURNING id",
-        (mvid, formato, json.dumps(alvo), uri, sha256, tamanho,
+        (p.model_version_id, formato, json.dumps(alvo), uri, sha256, tamanho,
          json.dumps(bench), job_id, device_id, job["created_by"]))
     if row is None:
         return {"ok": True, "ja_existia": True}
@@ -435,20 +456,15 @@ async def registrar_avaliacao(job_id: str, device_id: str, *, metrics: dict,
                               artifacts_uri: str | None) -> dict:
     """Registra a métrica do modelo naquele benchmark. Imutável — reavaliar cria
     outra linha; a linhagem (qual versão, qual benchmark) fica gravada."""
-    job = await job_da_maquina(job_id, device_id)
-    p = job["payload"]
-    mvid, dvid = p.get("model_version_id"), p.get("dataset_version_id")
-    if not (mvid and dvid):
-        raise HTTPException(status.HTTP_404_NOT_FOUND,
-                            "job de avaliação sem model_version/dataset_version")
+    job, p = await job_com_payload(job_id, device_id, jobs.Evaluate)
     # model_build_id distingue os artefatos (pt vs engine vs DLA) na mesma
     # versão+benchmark — é o que a comparação usa.
     row = await db.fetch_row(
         "INSERT INTO evaluation (model_version_id, model_build_id,"
         " dataset_version_id, job_id, metrics, artifacts_uri, created_by)"
         " VALUES (%s,%s,%s,%s,%s::jsonb,%s,%s) RETURNING id",
-        (mvid, p.get("model_build_id"), dvid, job_id, json.dumps(metrics),
-         artifacts_uri, job["created_by"]))
+        (p.model_version_id, p.model_build_id, p.dataset_version_id, job_id,
+         json.dumps(metrics), artifacts_uri, job["created_by"]))
     return {"evaluation_id": str(row["id"]), "metrics": metrics}
 
 

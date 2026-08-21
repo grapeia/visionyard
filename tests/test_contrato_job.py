@@ -139,3 +139,38 @@ def test_todo_tipo_com_contrato_tem_executor_ligado_nele():
         fonte = (raiz / f"{tipo}.py").read_text()
         assert f"{contrato.__name__}.de_payload(" in fonte, tipo
         assert 'payload["' not in fonte, f"{tipo} ainda lê o payload cru"
+
+
+async def test_rota_de_agente_so_serve_job_do_seu_tipo(admin, client, tmp_path):
+    """Cada rota do agente pertence a um tipo de job, e é ela quem confere.
+
+    Antes, o que barrava um agente chamando `/build` num job de treino era a
+    ausência de `model_version_id` no payload — um 404 que saía por acidente, e
+    que sumiria ao ler o payload pelo contrato. Pior, `/targets` num job de
+    treino respondia 200 com lista vazia: o escopo do pré-tag era lido com
+    `.get()`, e `None` virava uma consulta que não casa com nada.
+    """
+    await _versao_congelada(admin, tmp_path)
+    await _criar_run(admin)
+    dev = await _device(admin, {"train": True, "prelabel": True,
+                                "export": True, "evaluate": True}, slug="tudo")
+    tok = dev["token"]
+    job = (await client.post("/v1/agent/claim", headers=_h(tok))).json()["job"]
+    assert job["type"] == "train"
+    jid = job["id"]
+
+    alheias = [
+        ("get", f"/v1/agent/jobs/{jid}/targets", None),
+        ("post", f"/v1/agent/jobs/{jid}/prelabel", {"predicoes": []}),
+        ("post", f"/v1/agent/jobs/{jid}/build",
+         {"format": "engine", "uri": "gs://b/x.engine", "sha256": "ab" * 32}),
+        ("post", f"/v1/agent/jobs/{jid}/evaluation", {"metrics": {}}),
+    ]
+    for metodo, url, corpo in alheias:
+        r = (await client.get(url, headers=_h(tok)) if metodo == "get"
+             else await client.post(url, json=corpo, headers=_h(tok)))
+        assert r.status_code == 404, f"{metodo} {url} devolveu {r.status_code}"
+
+    # e o que é do tipo certo continua passando
+    assert (await client.get(f"/v1/agent/jobs/{jid}/manifest",
+                             headers=_h(tok))).status_code == 200
