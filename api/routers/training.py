@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field
 
 from .. import auth
 from ..auth import Principal
-from ..deps import require_role
+from ..deps import CurrentUser, require_role
 from ..services import training as svc
 
 router = APIRouter(tags=["training"])
@@ -147,10 +147,16 @@ async def criar_run(body: RunIn, project_slug: Annotated[str, P()],
         device_slug=body.device_slug, ip=auth.client_ip(request))
 
 
-@router.get("/train-devices", response_model=list[MaquinaDeTreino],
-            dependencies=[Depends(require_role("engineer"))])
-async def train_devices():
-    """Máquinas que podem ser alvo de um treino: capazes de treinar e ativas."""
+@router.get("/train-devices", response_model=list[MaquinaDeTreino])
+async def train_devices(user: CurrentUser):
+    """Máquinas que podem ser alvo de um treino: capazes de treinar e ativas.
+
+    Basta estar autenticado, como em `/deploy-devices` e pelo mesmo motivo: a
+    rota não tem projeto no caminho, e papel é por projeto — `require_role`
+    aqui pedia um `{project_slug}` que não existe e devolvia 422 para todo
+    mundo, deixando o diálogo de novo treino sem máquina para fixar. O que
+    protege o dado é o próprio SELECT, que devolve só nome e estado.
+    """
     return await svc.maquinas_de_treino()
 
 

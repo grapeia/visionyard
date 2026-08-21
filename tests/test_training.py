@@ -364,3 +364,26 @@ async def test_finish_nao_ressuscita_job_ja_encerrado(admin, client, tmp_path):
                        (run["run_id"],)).fetchone()[0]
     assert js == "canceled", f"job cancelado virou {js}"
     assert rs == "stopped", f"run parado virou {rs}"
+
+
+async def test_train_devices_lista_para_quem_vai_escolher(admin, client, tmp_path):
+    """A lista de máquinas-alvo tem de responder a quem dispara o treino.
+
+    A rota não tem `{project_slug}`, então a dependência de papel por projeto
+    pedia um caminho que não existe e devolvia 422 para todo mundo — o diálogo
+    de novo treino ficava sem máquina para fixar, e o `.catch` do front engolia.
+    """
+    from .test_projects import novo_usuario
+    await _projeto_com_dados(admin, tmp_path)
+    await _device(admin, {"train": True}, slug="gpu-1")
+    await _device(admin, {"infer": True}, slug="borda-1")
+
+    r = await admin.get("/v1/train-devices")
+    assert r.status_code == 200, r.text
+    assert [d["slug"] for d in r.json()] == ["gpu-1"], "só quem sabe treinar"
+    assert set(r.json()[0]) == {"slug", "name", "status"}, "sem token nem caps"
+
+    async with novo_usuario(admin, client, "eng@teste.com") as (eng, _):
+        await admin.put(f"/v1/projects/{PROJ['slug']}/members",
+                        json={"email": "eng@teste.com", "role": "engineer"})
+        assert (await eng.get("/v1/train-devices")).status_code == 200
