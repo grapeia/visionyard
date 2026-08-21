@@ -124,3 +124,18 @@ def test_job_sem_versao_e_v1():
     p = jobs.Export.de_payload({"model_version_id": "x", "weights_uri": "gs://b/w.pt",
                                 "model_slug": "d", "project_slug": "p", "version": 1})
     assert p.format == "engine"     # o default de hoje, preservado
+
+
+def test_todo_tipo_com_contrato_tem_executor_ligado_nele():
+    """Guarda contra a regressão que este teste nasceu para pegar: a ligação de
+    um executor ao contrato foi revertida por um `git checkout` de conferência,
+    e nada acusou — o `mypy` não vê tipo em `job["payload"]`, que é `Any`, e
+    nenhum teste roda os executores (dependem de GPU e de ultralytics).
+    """
+    from pathlib import Path
+
+    raiz = Path(__file__).resolve().parents[1] / "agent"
+    for tipo, contrato in jobs.POR_TIPO.items():
+        fonte = (raiz / f"{tipo}.py").read_text()
+        assert f"{contrato.__name__}.de_payload(" in fonte, tipo
+        assert 'payload["' not in fonte, f"{tipo} ainda lê o payload cru"

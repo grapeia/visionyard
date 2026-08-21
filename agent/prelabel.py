@@ -10,6 +10,8 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
+from contracts import jobs
+
 from . import gcs
 from .client import Client
 
@@ -20,7 +22,7 @@ def executar(cli: Client, job: dict, work_dir: Path) -> None:
     from ultralytics import YOLO
 
     job_id = job["id"]
-    payload = job["payload"]
+    p = jobs.Prelabel.de_payload(job["payload"])
     seq = {"n": 0}
 
     def log(msg: str, level: str = "info") -> None:
@@ -39,7 +41,7 @@ def executar(cli: Client, job: dict, work_dir: Path) -> None:
     raiz = work_dir / job_id
     raiz.mkdir(parents=True, exist_ok=True)
     peso = raiz / "model.pt"
-    gcs.baixar(payload["weights_uri"], peso)
+    gcs.baixar(p.weights_uri, peso)
     modelo = YOLO(str(peso))
     log("modelo carregado")
 
