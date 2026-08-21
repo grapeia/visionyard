@@ -264,26 +264,28 @@ porque é decisão de modelo, não conserto.
 
 Os dois eram pré-existentes — nenhum dos commits desta semana os tocou.
 
-### 12. Achados do review do item 11 — `pendente`
+### 12. Achados do review do item 11 — `feito` (2026-08-21)
 O que o review de 2026-08-11 confirmou e ficou de fora da leva de correções.
-Tudo em `routers/samples.py`, fora o último — cabe numa passada só, quando o
-arquivo for mexido a sério (é candidato a virar `services/samples.py`).
+O gatilho era "quando o arquivo for mexido a sério": foi agora — `samples.py`
+virou router + `services/samples.py`, e as quatro limpezas foram junto.
 
-- **A contagem e a página leem snapshots diferentes.** `fetch_all` e
-  `fetch_row` pegam uma conexão cada, então uma anotação gravada entre as duas
-  idas ao banco reabre o descompasso que o `da7e21f` fechou. Cuidado: passar
-  `conn=conn` às duas **não** resolve — sob READ COMMITTED cada comando ainda
-  tira o próprio snapshot. Fechar de verdade pede transação REPEATABLE READ,
-  cara para uma contagem de tela; a alternativa é a tela assumir a folga.
-- **O `count` junta `annotation` mesmo com `filtro=todas`**, que é o padrão da
-  aba: o join só existe para o `{cond}` ter de onde falar de `a`, e com `cond`
-  vazio é trabalho jogado fora em toda carga de página.
-- **O esqueleto `FROM ... WHERE` está escrito duas vezes** (itens e contagem) —
-  é a duplicação que produziu o bug original. Montar o rabo comum uma vez e
-  interpolar nas duas torna a divergência impossível em vez de remendada.
-- **`test_prelabel_id_malformado_nao_e_500` roda `_produzir_modelo` à toa**: o
-  422 sai da validação do pydantic antes de qualquer linha do handler, e o
-  `admin` é superusuário, então nada daquele setup é lido.
+- **A contagem e a página liam snapshots diferentes.** O item previa dois
+  caminhos, e nenhum dos dois foi o escolhido: em vez de REPEATABLE READ (cara
+  para uma contagem de tela) ou de a tela assumir a folga, o total passou a sair
+  da **mesma consulta** da grade, por `count(*) OVER ()`. Um comando, um
+  snapshot. Custa ordenar o conjunto filtrado inteiro em vez de parar nos 60 da
+  página — trabalho que a contagem à parte já fazia de qualquer forma.
+- **O `count` juntava `annotation` mesmo com `filtro=todas`.** A junção agora
+  só entra se o filtro falar de `a`. Sobrou um caso: a página vazia, que não
+  tem janela de onde tirar o total e cai numa contagem à parte — é lá que a
+  condição vive.
+- **O esqueleto `FROM ... WHERE` estava escrito duas vezes.** Virou
+  `_de_onde(juncao, escopo, cond)`: a cláusula é escrita uma vez e as duas
+  consultas a interpolam. A divergência que produziu o bug original ficou
+  impossível em vez de remendada.
+- **`test_prelabel_id_malformado_nao_e_500` rodava `_produzir_modelo` à toa.**
+  O setup saiu, com o porquê na docstring: o 422 sai do pydantic antes da
+  primeira linha do handler, e o `admin` é superusuário.
 
 ### 13. Contrato do payload de job — `feito` (2026-08-20)
 O sistema tem duas APIs e só uma é defendida. A borda HTTP tem pydantic; a
@@ -346,18 +348,45 @@ Ficou de fora, de propósito:
 - **O job `import`.** Roda dentro do processo da API e não passa pelo agente;
   entra em `POR_TIPO` quando o item 5 o tornar reclamável.
 
-### 14. Contrato de resposta — `pendente`
-Três rotas usam `response_model` (as três em `routers/auth.py`); as demais
-devolvem a linha do banco montada à mão — `{**r, "url": ...}` em
-`samples.py:137` é o padrão. A linha **é** o DTO: coluna acrescentada a um
-`SELECT` viaja para o navegador sem ninguém decidir, e o OpenAPI não descreve
-saída nenhuma.
+### 14. Contrato de resposta — `feito` (2026-08-21)
+Três rotas usavam `response_model` (as três de `routers/auth.py`); as demais
+devolviam a linha do banco montada à mão. A linha **era** o DTO: coluna
+acrescentada a um `SELECT` viajava para o navegador sem ninguém decidir, e o
+OpenAPI não descrevia saída nenhuma.
 
-É também a causa raiz da frase do `CLAUDE.md` sobre chave de JSON — "não
-renomeie sem mexer no `app.js`". Não há camada onde renomear: o nome da coluna,
-o nome no contrato e o nome que o front lê são a mesma string. Não precisa ser
-tudo de uma vez; começar pelas rotas que o `app.js` consome com força já cria o
-lugar.
+Agora toda rota de usuário declara o que devolve, e
+`tests/test_contrato_resposta.py` varre o OpenAPI atrás de quem não declarou —
+rota nova sem contrato reprova ali, e não meses depois.
+
+**A porta do agente fica de fora, de propósito.** O que `/v1/agent/*` devolve é
+o payload do job, cuja descrição única é `contracts/jobs.py`; uma segunda em
+pydantic seria a duplicação que aquele módulo existe para evitar — e
+`contracts/` não pode importar pydantic, porque o dispositivo de borda o carrega
+sem fastapi junto.
+
+Os modelos foram escritos coluna a coluna a partir do `SELECT` de cada rota,
+para que nada sumisse do que o `app.js` já lê (não há build nem lint no front:
+chave que some não é detectada). Três chaves saíram de propósito, todas
+internas e nenhuma lida pelo front: `project_id` e `proj` no detalhe do
+dataset, `project_id` no detalhe do modelo — a linha as carregava só para o
+handler resolver o RBAC.
+
+Dois efeitos colaterais:
+
+- **Cinco rotas tomavam id malformado como 500.** `GET .../jobs/{job_id}`,
+  as três de `runs/{run_id}`, as de `users/{user_id}`, `me/tokens/{token_id}` e
+  `me/sessions/{session_id}` recebiam `str` e deixavam o cast do Postgres
+  estourar. Tipar como `UUID` na rota devolve 422, como já faziam
+  `samples/{sample_id}` e o corpo do prelabel. O do job de projeto entrou com
+  teste antes.
+- **`target` do build não é texto, é `jsonb`.** Só apareceu porque o
+  `response_model` reprovou: é a variante compilada
+  (`{"imgsz": 640, "precision": "fp16"}`), e era ela que distinguia dois builds
+  do mesmo formato sem que nada dissesse isso.
+
+Fica em aberto: o `CLAUDE.md` dizia que não havia camada onde renomear chave de
+JSON. Agora há — o modelo de saída. Renomear segue custando mexer no `app.js`,
+mas o lugar existe.
 
 ### 15. Conexão como parâmetro do serviço — `pendente`
 O `CLAUDE.md` explica que cada `fetch_*` pega uma conexão própria e que
@@ -366,6 +395,10 @@ conferida por quem revisa: nada no tipo impede um serviço de fazer
 leia-decida-escreva com três conexões diferentes. O primeiro item do 12 (a
 contagem e a página em snapshots distintos) é uma instância da classe, não um
 caso isolado.
+
+O primeiro item do 12 acabou fechado por outro caminho (uma consulta só, com
+`count(*) OVER ()`), mas a classe continua: `services/samples.py: detalhe` faz
+três leituras e só não diverge porque nada escreve entre elas.
 
 A resposta estrutural é o serviço **receber** `conn: db.Conn` em vez de alcançar
 o pool: com a conexão como parâmetro, esquecer a transação vira erro de tipo em
@@ -522,3 +555,16 @@ carga de página, dentro do threadpool.
   final, então o código forjado com quebra no fim passava pela validação de
   injeção de log; e `VISIONYARD_LOG_LEVEL=debug` derrubava a subida, porque o
   `logging` só aceita maiúsculas. Suíte: **200 testes passando** (eram 195).
+- **2026-08-21** — itens 12 e 14 feitos. `samples.py` virou router +
+  `services/samples.py` (o gatilho que o item 12 esperava), e as quatro
+  limpezas foram junto: o total agora sai da mesma consulta da grade por
+  `count(*) OVER ()` — um comando, um snapshot —, a junção com `annotation` só
+  entra quando o filtro fala dela, o `FROM ... WHERE` é escrito uma vez, e o
+  teste de id malformado do prelabel perdeu o setup que nenhuma asserção lia.
+  O item 14 alcançou **todas** as rotas de usuário, com
+  `tests/test_contrato_resposta.py` varrendo o OpenAPI para que rota nova sem
+  contrato reprove. Dois defeitos vieram junto, achados pelo próprio modelo:
+  cinco rotas tomavam id malformado como 500 (agora 422, como as demais), e o
+  `target` do build era declarado texto quando é `jsonb` — a variante compilada
+  que distingue dois builds do mesmo formato. Suíte: **204 testes passando**
+  (eram 200).

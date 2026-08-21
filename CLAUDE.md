@@ -60,15 +60,27 @@ Duas escolhas dentro dessa divisão, feitas para não criar cerimônia: o servi�
 uma segunda descrição do mesmo erro) e o serviço **não conhece pydantic** —
 recebe escalares e `dict`/`list[dict]`, e é o router que valida e converte.
 
-`agents`, `models` e `training` já estão assim: o router não tem uma linha de
-SQL. `datasets` está pela metade — `services/datasets.py` tem os auxiliares do
-congelamento (resolve → split → manifesto), mas a regra de versionamento e as 21
-consultas seguem no `freeze` de `routers/datasets.py`. `imports` também:
-`services/imports.py` tem o ciclo de vida do job (ponto, progresso, desfecho,
-recolhimento), e o resto da rota — cerca de caminho, upsert de origem, listagem
-— segue inline. Os demais (`auth`, `buckets`, `devices`, `jobs`, `prelabel`,
-`projects`, `samples`, `users`) carregam o SQL inline por inteiro. Quando um deles for mexido a sério,
-a regra vai junto para `services/`.
+`agents`, `models`, `samples` e `training` já estão assim: o router não tem uma
+linha de SQL. `datasets` está pela metade — `services/datasets.py` tem os
+auxiliares do congelamento (resolve → split → manifesto), mas a regra de
+versionamento e as 21 consultas seguem no `freeze` de `routers/datasets.py`.
+`imports` também: `services/imports.py` tem o ciclo de vida do job (ponto,
+progresso, desfecho, recolhimento), e o resto da rota — cerca de caminho,
+upsert de origem, listagem — segue inline. Os demais (`auth`, `buckets`,
+`devices`, `jobs`, `prelabel`, `projects`, `users`) carregam o SQL inline por
+inteiro. Quando um deles for mexido a sério, a regra vai junto para
+`services/`.
+
+**Toda rota declara o que devolve.** O `response_model` do router é o contrato
+de saída; sem ele a linha do banco *é* o DTO, e coluna acrescentada a um
+`SELECT` viaja para o navegador sem ninguém decidir.
+`tests/test_contrato_resposta.py` varre o OpenAPI e reprova rota que não
+declarou. A única exceção é a porta do agente (`/v1/agent/*`): o que ela
+devolve é o payload do job, cuja descrição única é `contracts/jobs.py`.
+
+Modelo novo se escreve **coluna a coluna a partir do `SELECT`** — não há build
+nem lint no front, então chave que some da resposta só aparece quando alguém
+abre a tela.
 
 **SQL direto, sem ORM.** O schema é escrito à mão em `db/migrations/`; um ORM por
 cima seria uma segunda descrição do mesmo modelo para manter em sincronia. Query
@@ -104,9 +116,10 @@ como referência de tom.
 (`dataset_version`, `manifest_uri`, `samples_created`). Variável local, mensagem
 de erro, docstring e comentário em português. Chave de resposta JSON segue o que
 a interface já consome — há mistura consolidada (`gravadas`, `alvos`, `stats`);
-não renomeie sem mexer no `app.js`. Parâmetro de query segue a regra da chave
-de resposta, e não a do nome de rota: `pagina`, `filtro` e `limite` convivem com
-`limit` e `type` porque são superfície que o `app.js` consome.
+o nome mora no `response_model` do router, e renomeá-lo lá é mexer no `app.js`
+junto. Parâmetro de query segue a regra da chave de resposta, e não a do nome
+de rota: `pagina`, `filtro` e `limite` convivem com `limit` e `type` porque são
+superfície que o `app.js` consome.
 
 Duas exceções que ficam: `008_indices_e_imutabilidade.sql` e
 `009_sample_source_e_cascade.sql` têm nome em português. Renomear arquivo de
