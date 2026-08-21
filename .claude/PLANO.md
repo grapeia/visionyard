@@ -138,11 +138,31 @@ mais propensa a bug do sistema e a menos protegida.
 ES modules nativos resolvem sem build (`<script type="module">`). Ordem sugerida:
 `rede.js` / `anotador.js` / `datasets.js` / `treino.js`, começando pelo anotador.
 
-### 7. Observabilidade — `pendente`
-Sem handler global de exceção, sem log estruturado, sem request-id. Só
-`imports.py` e `buckets.py` usam `logging`, e não há configuração — a saída
-depende do default do uvicorn. Um 500 hoje não se correlaciona com o request que
-o causou.
+### 7. Observabilidade — `feito` (2026-08-20)
+Era: sem handler global de exceção, sem log configurado, sem request-id. Um 500
+não se correlacionava com o request que o causou.
+
+`api/logs.py` resolve os três com um mecanismo só (`b904904`). Cada requisição
+ganha um código numa `ContextVar`; ele entra em toda linha de log emitida
+durante ela **por um filtro no root**, e não por quem chama o logger — senão
+cada `logger.info` do repositório teria de lembrar de passá-lo, e o
+`%(request_id)s` do formato estouraria em log emitido fora de requisição
+(`db.migrate`, script solto). O código volta no `X-Request-Id` e, no 500, no
+corpo; o front já o mostra sem mudança nenhuma, porque lê `detail`.
+
+Três decisões que ficaram no código:
+
+- **O código do proxy é preservado, mas validado.** É o que correlaciona os
+  dois lados; aceitar texto livre deixaria qualquer cliente escrever uma linha
+  inteira de log, inclusive uma que parecesse legítima.
+- **`/healthz` e o estático não geram linha de acesso.** O orquestrador bate no
+  healthz a cada poucos segundos e afogaria o resto.
+- **Formato é texto com o código no meio, não JSON.** Não há coletor nesta
+  instalação; quando houver, o que muda é o formatter, e só ele.
+
+Ficou de fora: o log de acesso do uvicorn continua saindo em paralelo, sem o
+código. Desligá-lo é opção do comando de subida (`--no-access-log`), não do
+código, e a duplicação incomoda menos que a decisão errada no lugar errado.
 
 ### 8. Menores — `pendente`
 - `/healthz` bate no banco: oscilação do Postgres vira loop de restart no
@@ -459,3 +479,12 @@ carga de página, dentro do threadpool.
   mostra quando a credencial não assina, quando não há credencial, e quando um
   objeto do meio da página não pode ser assinado. Suíte: **186 testes
   passando** (eram 181).
+- **2026-08-20** — item 7 feito (`b904904`). Código de correlação por
+  requisição, filtro no root para que ele entre em toda linha de log sem quem
+  chama precisar saber, rede para o erro não previsto (500 com o código no
+  corpo, traceback no log sob o mesmo código) e linha de acesso por requisição.
+  Os seis testes novos fixam o que dá para diagnosticar depois: o código volta
+  no cabeçalho, o do proxy atravessa, o forjado com quebra de linha não, o erro
+  não previsto não vaza detalhe interno, o erro de usuário continua sendo o
+  status que era, e a linha de log do 500 carrega o mesmo código que o usuário
+  vê. Suíte: **192 testes passando** (eram 186).
