@@ -37,6 +37,7 @@ Duas invariantes sustentam o resto:
 |---|---|
 | `api/` | Control API (FastAPI) + interface web servida estática, sem build |
 | `agent/` | worker que roda nas máquinas de execução e reclama jobs |
+| `contracts/` | o que os dois combinam: o payload de cada tipo de job. Só stdlib |
 | `db/` | migrations SQL versionadas, runner e seed do primeiro usuário |
 | `tests/` | suíte da API contra Postgres real |
 
@@ -77,7 +78,7 @@ O `--env-file` não é opcional: `env_file:` alimenta o processo dentro do
 container, mas os `${...}` do compose são resolvidos antes disso, e para esses
 o compose lê o `.env` — que aqui é o do desenvolvimento.
 
-Três coisas que o arquivo decide por você:
+Quatro coisas que o arquivo decide por você:
 
 - **As migrations são um passo bloqueante.** O serviço `migrate` roda a cada
   `up` e a API só sobe se ele terminar em zero. Schema divergente derruba o
@@ -85,6 +86,12 @@ Três coisas que o arquivo decide por você:
   inócuo (`nada a aplicar`).
 - **A API escuta só no loopback** (`127.0.0.1:8000`), e o Postgres não publica
   porta nenhuma. Quem termina TLS é um proxy no host.
+- **Vida e prontidão são sondas diferentes.** `/healthz` responde que o
+  processo está de pé e não consulta nada; `/readyz` responde que dá para
+  servir, e é ele que o healthcheck do compose usa. Quem levar isto para um
+  orquestrador que reinicia por liveness precisa manter essa separação: apontar
+  a sonda de reinício para o banco faz de uma oscilação do Postgres um
+  interruptor do processo.
 - **O IP de origem muda atrás de container.** A API só aceita
   `X-Forwarded-For` quando o salto imediato está em
   `VISIONYARD_TRUSTED_PROXIES`, e esse salto passa a ser o gateway da rede do

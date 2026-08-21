@@ -502,3 +502,23 @@ carga de página, dentro do threadpool.
   `dataset.selection`. Os três testes novos fixam o que a separação das sondas
   significa: viva sem banco, pronta só com ele, e 503 — não 500 — quando ele
   não responde. Suíte: **195 testes passando** (eram 192).
+- **2026-08-20** — review dos 11 commits da sessão (alto esforço sobre
+  `f0897ff..HEAD`). Cinco achados, os cinco procedentes, os cinco corrigidos
+  com teste antes. Um é grave e nasceu do próprio item 5: ao ganhar
+  `heartbeat_at`, a importação virou reclamável por qualquer máquina — o claim
+  casa `requires` vazio com todo device e não filtra por tipo —, e o agente a
+  encerraria como "tipo não suportado" por cima de quem a executa, ganhando
+  sempre por ter prazo menor (`a89582a`, com a invariante escrita no
+  `CLAUDE.md`). Junto foi o evento do recolhimento, que podia colidir no
+  `max(seq)+1` com a task viva e abortar o recolhimento inteiro, devolvendo 500
+  na tela de jobs.
+  O segundo dói mais: o executor de prelabel tinha **voltado** a ler o payload
+  cru (`a0e0087`). Um `git checkout` de conferência — usado para desfazer a
+  mutação com que testei o `mypy` — reverteu o arquivo para antes do commit do
+  contrato, e nada acusou, porque `job["payload"]` é `Any` e nenhum teste roda
+  os executores. O item 13 entregou três dos quatro que prometeu. A guarda nova
+  varre os quatro executores por `POR_TIPO`, que até então não tinha leitor.
+  Os outros dois eram arestas do item 7 (`49e4e5e`): `$` casa antes de `\n`
+  final, então o código forjado com quebra no fim passava pela validação de
+  injeção de log; e `VISIONYARD_LOG_LEVEL=debug` derrubava a subida, porque o
+  `logging` só aceita maiúsculas. Suíte: **200 testes passando** (eram 195).
