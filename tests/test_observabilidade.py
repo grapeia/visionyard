@@ -108,3 +108,26 @@ async def test_log_do_erro_carrega_o_codigo(caplog):
         await _sem_relancar(caso)
     finally:
         remover()
+
+
+async def test_codigo_com_quebra_no_fim_e_descartado(client):
+    """`$` casa antes de um `\\n` final: `abc\\n` passava pela validação e ia
+    inteiro para a linha de log e para o cabeçalho da resposta."""
+    r = await client.get("/healthz", headers={"X-Request-Id": "abc\n"})
+    assert r.headers["x-request-id"] != "abc\n"
+
+
+def test_nivel_de_log_em_minusculas_nao_derruba_a_subida(monkeypatch):
+    """`logging` só aceita o nome em maiúsculas, e as outras variáveis de
+    ambiente da instalação são minúsculas — `VISIONYARD_LOG_LEVEL=debug` é o
+    que um operador escreve, e derrubava a API no `lifespan`."""
+    from api import logs
+    from api.config import settings
+
+    monkeypatch.setattr(settings, "log_level", "debug")
+    try:
+        logs.configurar()
+        assert logging.getLogger().level == logging.DEBUG
+    finally:
+        monkeypatch.setattr(settings, "log_level", "INFO")
+        logs.configurar()

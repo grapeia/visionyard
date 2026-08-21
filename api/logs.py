@@ -34,7 +34,9 @@ _request_id: ContextVar[str] = ContextVar("request_id", default="-")
 # Código vindo do proxy só é aceito se for código: ele entra em linha de log, e
 # texto livre com quebra de linha deixaria qualquer cliente escrever uma linha
 # inteira de log — inclusive uma que parecesse legítima.
-_CODIGO_VALIDO = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+# `\Z` e não `$`: `$` casa ANTES de uma quebra de linha final, então "abc\n"
+# passava inteiro para a linha de log e para o cabeçalho da resposta.
+_CODIGO_VALIDO = re.compile(r"^[A-Za-z0-9_-]{1,64}\Z")
 
 # Rotas que não geram linha de acesso: o healthz é batido pelo orquestrador a
 # cada poucos segundos e afogaria o resto.
@@ -60,13 +62,17 @@ class _InjetarCodigo(logging.Filter):
 
 def configurar() -> None:
     """Configura o root uma vez. Idempotente: o `lifespan` roda a cada teste."""
+    # `.upper()`: o `logging` só aceita o nome em maiúsculas, e as outras
+    # variáveis da instalação são minúsculas — `VISIONYARD_LOG_LEVEL=debug` é o
+    # que um operador escreve, e derrubava a subida inteira no `lifespan`.
+    nivel = settings.log_level.upper()
     raiz = logging.getLogger()
     if not raiz.handlers:
-        logging.basicConfig(level=settings.log_level, format=FORMATO)
+        logging.basicConfig(level=nivel, format=FORMATO)
     for h in raiz.handlers:
         if not any(isinstance(f, _InjetarCodigo) for f in h.filters):
             h.addFilter(_InjetarCodigo())
-    raiz.setLevel(settings.log_level)
+    raiz.setLevel(nivel)
 
 
 def codigo_atual() -> str:
