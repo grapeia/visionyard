@@ -344,7 +344,7 @@ o pool: com a conexão como parâmetro, esquecer a transação vira erro de tipo
 vez de achado de review. Cabe fazer serviço a serviço, junto com a migração de
 cada router para `services/` — não é uma passada só.
 
-### 16. Porta de storage — `pendente`
+### 16. Porta de storage — `feito` (2026-08-20)
 O acesso ao GCS está espalhado e sem porta. `routers/samples.py:63` faz
 `from .buckets import _client` — um router entrando no helper privado de outro,
 o único import cruzado entre routers da árvore. Quatro lugares constroem
@@ -353,11 +353,20 @@ o único import cruzado entre routers da árvore. Quatro lugares constroem
 dentro do threadpool, a cada carga de página da galeria.
 `importers/base.Importer` é a única porta de verdade que existe hoje.
 
-Um `api/storage.py` com cliente memoizado e `assinar`/`listar`/`baixar` colapsa
-os quatro, mata o import cruzado e cria o lugar onde um dublê de teste caberia
-— hoje URL assinada não tem como ser exercitada sem credencial real: a suíte
-passa por `_assinar` em toda listagem, mas só pelo caminho em que ele desiste e
-devolve vazio, e nenhum teste afirma nada sobre isso.
+`api/storage.py` (`cliente`, `pode_assinar`, `assinar`) colapsou os quatro e
+matou o import cruzado. Ficou de fora `listar`/`baixar`: a navegação de bucket
+assina pelo próprio blob que a listagem já devolveu, e passar por `assinar()`
+custaria uma segunda ida ao GCS por miniatura — abstrair aquilo pioraria o que
+o módulo existe para fazer.
+
+O ganho que não estava previsto foi o teste: com o cliente atrás de uma função,
+o dublê entra por `monkeypatch` e dá para afirmar o que a tela vê quando dá
+errado — sem credencial, com credencial que não assina, com URI que não é
+`gs://`, e com um objeto inalcançável no meio da página, que antes poderia
+levar junto todas as miniaturas. Eram cinco caminhos sem nenhuma afirmação.
+
+O cliente também passou a ser construído uma vez: a galeria construía um por
+carga de página, dentro do threadpool.
 
 ## Registro
 
@@ -442,3 +451,11 @@ devolve vazio, e nenhum teste afirma nada sobre isso.
   "importação vira job do agente" — o agente de borda não alcança o
   `import_root`, que está no disco da API —, e sim um segundo processo do mesmo
   código reclamando da mesma fila. Suíte: **181 testes passando** (eram 177).
+- **2026-08-20** — item 16 feito (`0ee0a99`). `api/storage.py` com o cliente
+  memoizado e a assinatura de URL; `buckets`, `samples` e o importador de
+  prefixo passaram a usá-lo, e o único import cruzado entre routers
+  (`samples.py` puxando o `_client` privado de `buckets.py`) morreu junto. Os
+  cinco testes novos são de comportamento que nunca teve rede: o que a galeria
+  mostra quando a credencial não assina, quando não há credencial, e quando um
+  objeto do meio da página não pode ser assinado. Suíte: **186 testes
+  passando** (eram 181).
