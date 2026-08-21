@@ -10,6 +10,8 @@ from __future__ import annotations
 import math
 from pathlib import Path
 
+from contracts import jobs
+
 from .client import Client
 from .materialize import materializar, roi_tupla
 
@@ -28,8 +30,8 @@ def executar(cli: Client, job: dict, work_dir: Path) -> None:
     from . import gcs
 
     job_id = job["id"]
-    payload = job["payload"]
-    imgsz = payload.get("imgsz", 640)
+    p = jobs.Evaluate.de_payload(job["payload"])
+    imgsz = p.imgsz
     seq = {"n": 0}
 
     def log(msg: str, level: str = "info") -> None:
@@ -51,11 +53,10 @@ def executar(cli: Client, job: dict, work_dir: Path) -> None:
 
     # o artefato pode ser o peso (.pt) ou um build (.onnx/.engine): o formato
     # muda a latência, que é justamente o que se quer comparar.
-    uri = payload.get("artifact_uri") or payload.get("weights_uri")
     from pathlib import Path as _P
-    artefato = raiz / ("model" + (_P(uri).suffix or ".pt"))
-    gcs.baixar(uri, artefato)
-    log(f"artefato {payload.get('rotulo', 'pt')} carregado — avaliando")
+    artefato = raiz / ("model" + (_P(p.artifact_uri).suffix or ".pt"))
+    gcs.baixar(p.artifact_uri, artefato)
+    log(f"artefato {p.rotulo} carregado — avaliando")
     cli.job_heartbeat(job_id, {"etapa": "val"})
 
     modelo = YOLO(str(artefato))

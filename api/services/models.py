@@ -16,6 +16,8 @@ from typing import Any
 
 from fastapi import HTTPException, status
 
+from contracts import jobs
+
 from .. import db
 from ..audit import audit
 from ..auth import Principal
@@ -123,18 +125,18 @@ async def enfileirar_export(project_slug: str, model_slug: str, version: int,
     m = await buscar_modelo(project_slug, model_slug)
     mv = await _versao(m["id"], version)
 
-    payload = {"model_version_id": str(mv["id"]), "weights_uri": mv["weights_uri"],
-               "format": formato, "imgsz": imgsz, "precision": precision,
-               "dla": dla, "dynamic": dynamic,
-               "model_slug": model_slug, "version": version,
-               "project_slug": project_slug}
+    payload = jobs.Export(
+        model_version_id=str(mv["id"]), weights_uri=mv["weights_uri"],
+        model_slug=model_slug, project_slug=project_slug, version=version,
+        format=formato, imgsz=imgsz, precision=precision, dla=dla,
+        dynamic=dynamic)
     async with db.connection() as conn:
         async with conn.transaction():
             job = await db.fetch_row(
                 "INSERT INTO job (project_id, type, payload, requires,"
                 " created_by)"
                 " VALUES (%s,'export',%s::jsonb,%s::jsonb,%s) RETURNING id",
-                (m["project_id"], json.dumps(payload),
+                (m["project_id"], json.dumps(payload.como_dict()),
                  json.dumps({"infer": True}), actor.id), conn=conn)
             await audit(actor, "model.export", "model_version", str(mv["id"]),
                         project_id=str(m["project_id"]),
@@ -190,19 +192,18 @@ async def enfileirar_avaliacao(project_slug: str, model_slug: str, version: int,
     uri, build_id, rotulo = await _artefato_para_avaliar(
         m["id"], version, mv["weights_uri"], formato, precision, dla)
 
-    payload = {"model_version_id": str(mv["id"]), "artifact_uri": uri,
-               "model_build_id": build_id, "format": formato,
-               "rotulo": rotulo, "schema_id": str(mv["schema_id"]),
-               "dataset_version_id": str(dv["id"]),
-               "dataset_slug": dataset_slug, "imgsz": imgsz,
-               "project_slug": project_slug}
+    payload = jobs.Evaluate(
+        model_version_id=str(mv["id"]), artifact_uri=uri,
+        schema_id=str(mv["schema_id"]), dataset_version_id=str(dv["id"]),
+        dataset_slug=dataset_slug, project_slug=project_slug, format=formato,
+        rotulo=rotulo, imgsz=imgsz, model_build_id=build_id)
     async with db.connection() as conn:
         async with conn.transaction():
             job = await db.fetch_row(
                 "INSERT INTO job (project_id, type, payload, requires,"
                 " created_by)"
                 " VALUES (%s,'evaluate',%s::jsonb,%s::jsonb,%s) RETURNING id",
-                (m["project_id"], json.dumps(payload),
+                (m["project_id"], json.dumps(payload.como_dict()),
                  json.dumps({"infer": True}), actor.id), conn=conn)
             await audit(actor, "model.evaluate", "model_version",
                         str(mv["id"]), project_id=str(m["project_id"]),

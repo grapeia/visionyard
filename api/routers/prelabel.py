@@ -18,6 +18,8 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Path, Request, status
 from pydantic import BaseModel, Field
 
+from contracts import jobs
+
 from .. import auth, db
 from ..audit import audit
 from ..auth import Principal
@@ -106,21 +108,22 @@ async def enfileirar_prelabel(
         raise HTTPException(status.HTTP_404_NOT_FOUND, erro)
     mv = await _resolver_versao(proj["id"], body)
 
-    payload = {"model_version_id": str(mv["id"]),
-               "weights_uri": mv["weights_uri"],
-               "schema_id": str(mv["schema_id"]),
-               "dataset_slug": body.dataset_slug,
-               "sample_id": str(body.sample_id) if body.sample_id else None,
-               "sample_ids": [str(i) for i in ids] or None,
-               "conf": body.conf, "only_missing": body.only_missing,
-               "project_slug": project_slug}
+    # str() nos ids: o payload é JSON e quem o lê do outro lado é o agente,
+    # que não tem pydantic para desserializar UUID de volta.
+    payload = jobs.Prelabel(
+        model_version_id=str(mv["id"]), weights_uri=mv["weights_uri"],
+        schema_id=str(mv["schema_id"]), project_slug=project_slug,
+        conf=body.conf, only_missing=body.only_missing,
+        dataset_slug=body.dataset_slug,
+        sample_id=str(body.sample_id) if body.sample_id else None,
+        sample_ids=[str(i) for i in ids] or None)
     async with db.connection() as conn:
         async with conn.transaction():
             job = await db.fetch_row(
                 "INSERT INTO job (project_id, type, payload, requires,"
                 " created_by)"
                 " VALUES (%s,'prelabel',%s::jsonb,%s::jsonb,%s) RETURNING id",
-                (proj["id"], json.dumps(payload),
+                (proj["id"], json.dumps(payload.como_dict()),
                  json.dumps({"prelabel": True}), actor.id), conn=conn)
             await audit(actor, "prelabel.enqueue", "job", str(job["id"]),
                         project_id=str(proj["id"]),

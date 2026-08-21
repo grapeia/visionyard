@@ -38,20 +38,22 @@ def detectar_capacidades() -> dict:
 def executar_job(cli: Client, cfg: Config, job: dict) -> None:
     from pathlib import Path
     tipo = job["type"]
+    # Importado com apelido: os quatro executores se chamam `executar`, e sob o
+    # mesmo nome o mypy vê uma redefinição com outra assinatura em cada ramo.
     if tipo == "train":
-        from .train import executar
-        executar(cli, job, Path(cfg.work_dir), cfg.models_bucket,
-                 cfg.models_prefix)
+        from .train import executar as treinar
+        treinar(cli, job, Path(cfg.work_dir), cfg.models_bucket,
+                cfg.models_prefix)
     elif tipo == "prelabel":
-        from .prelabel import executar
-        executar(cli, job, Path(cfg.work_dir))
+        from .prelabel import executar as pretaguear
+        pretaguear(cli, job, Path(cfg.work_dir))
     elif tipo == "export":
-        from .export import executar
-        executar(cli, job, Path(cfg.work_dir), cfg.models_bucket,
+        from .export import executar as compilar
+        compilar(cli, job, Path(cfg.work_dir), cfg.models_bucket,
                  cfg.models_prefix)
     elif tipo == "evaluate":
-        from .evaluate import executar
-        executar(cli, job, Path(cfg.work_dir))
+        from .evaluate import executar as avaliar
+        avaliar(cli, job, Path(cfg.work_dir))
     else:
         # tipo desconhecido: recusa limpa em vez de deixar o job preso em
         # 'running' para sempre.

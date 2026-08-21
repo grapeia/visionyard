@@ -40,6 +40,7 @@ api/            Control API (FastAPI)
   importers/    adaptadores de origem (GCS, Label Studio) sobre base.Importer
   static/       interface web servida direto, sem build
 agent/          worker das máquinas de execução
+contracts/      o que API e agente combinam (payload de job); só stdlib
 db/migrations/  SQL versionado, NNN_nome.sql
 tests/          suíte contra Postgres real
 ```
@@ -68,6 +69,23 @@ a regra vai junto para `services/`.
 **SQL direto, sem ORM.** O schema é escrito à mão em `db/migrations/`; um ORM por
 cima seria uma segunda descrição do mesmo modelo para manter em sincronia. Query
 nova vai no módulo que a usa, com `%s`/`%(nome)s` — nunca f-string com valor.
+
+**Payload de job é contrato, não dicionário.** O que a API grava em
+`job.payload` e o que o executor do agente lê é uma dataclass em
+`contracts/jobs.py` — o produtor constrói e grava `como_dict()`, o consumidor
+lê com `de_payload()` e usa atributo. É a única borda do sistema que atravessa
+máquina e cadência de deploy, e antes do contrato os dois lados a descreviam
+por conta própria: renomear uma chave passava no lint, no tipo e na suíte, e
+falhava horas depois como `KeyError` num dispositivo. `contracts/` não importa
+de `api` nem de `agent` e não usa nada além da stdlib — é o que permite ao
+dispositivo de borda carregá-lo sem levar fastapi e psycopg junto.
+
+**Chave de payload não se renomeia.** Job enfileirado antes de um deploy é
+reclamado depois dele: mudar um nome em `contracts/jobs.py` quebra o que já
+está na fila. Campo novo entra com default; renomear ou remover é
+`PAYLOAD_VERSION` nova, e o parser recusa versão que não conhece com uma
+mensagem que manda atualizar o agente. Chave desconhecida é ignorada de
+propósito — o controlador sobe antes dos agentes.
 
 **Migration aplicada não se edita.** O runner guarda checksum e recusa arquivo
 alterado. Mudança de schema é sempre um `NNN_` novo.

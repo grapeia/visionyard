@@ -13,8 +13,11 @@ from __future__ import annotations
 import json
 import re
 from typing import Any
+from uuid import uuid4
 
 from fastapi import HTTPException, status
+
+from contracts import jobs
 
 from .. import db
 from ..audit import audit
@@ -64,33 +67,33 @@ async def criar_run(project_slug: str, actor: Principal, *, dataset_slug: str,
                 " RETURNING id", (dv["project_id"], exp_slug, experiment,
                                   actor.id), conn=conn)
 
+            # O id do run é sorteado aqui, e não pelo banco, para caber no
+            # payload do job: o run tem FK para o job, então ele só pode ser
+            # inserido depois — e sem o id em mãos o payload precisaria de um
+            # UPDATE posterior para ganhar a chave por onde o agente reporta.
+            run_id = str(uuid4())
             # payload leva tudo que o agente precisa sem uma segunda ida ao banco;
             # requires é o contrato de roteamento: só device com 'train' pega.
-            payload = {"dataset_version_id": str(dv["id"]),
-                       "model_slug": model_slug,
-                       "base_model": base_model, "params": params,
-                       "project_slug": project_slug,
-                       "dataset_slug": dv["dataset_slug"],
-                       "version": dv["version"]}
+            payload = jobs.Train(
+                dataset_version_id=str(dv["id"]), run_id=run_id,
+                model_slug=model_slug, base_model=base_model, params=params,
+                project_slug=project_slug, dataset_slug=dv["dataset_slug"],
+                version=dv["version"])
             job = await db.fetch_row(
                 "INSERT INTO job (project_id, type, payload, requires,"
                 " created_by, target_device_id)"
                 " VALUES (%s,'train',%s::jsonb,%s::jsonb,%s,%s) RETURNING id",
-                (dv["project_id"], json.dumps(payload),
+                (dv["project_id"], json.dumps(payload.como_dict()),
                  json.dumps({"train": True}), actor.id, target_device_id),
                 conn=conn)
 
             run = await db.fetch_row(
-                "INSERT INTO training_run (experiment_id, job_id,"
+                "INSERT INTO training_run (id, experiment_id, job_id,"
                 " dataset_version_id, schema_id, base_model_name, params,"
-                " created_by) VALUES (%s,%s,%s,%s,%s,%s::jsonb,%s) RETURNING id",
-                (exp["id"], job["id"], dv["id"], dv["schema_id"],
+                " created_by) VALUES (%s,%s,%s,%s,%s,%s,%s::jsonb,%s)"
+                " RETURNING id",
+                (run_id, exp["id"], job["id"], dv["id"], dv["schema_id"],
                  base_model, json.dumps(params), actor.id), conn=conn)
-
-            # o run precisa estar no payload para o agente mandar métricas por ele
-            await conn.execute(
-                "UPDATE job SET payload = payload || %s::jsonb WHERE id = %s",
-                (json.dumps({"run_id": str(run["id"])}), job["id"]))
 
             await audit(actor, "run.create", "training_run", str(run["id"]),
                         project_id=str(dv["project_id"]),

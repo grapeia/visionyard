@@ -14,6 +14,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from contracts import jobs
+
 from . import gcs
 from .client import Client
 from .materialize import materializar, roi_tupla
@@ -23,9 +25,9 @@ from .train_worker import MARCADOR
 def executar(cli: Client, job: dict, work_dir: Path, models_bucket: str,
              models_prefix: str) -> None:
     job_id = job["id"]
-    payload = job["payload"]
-    run_id = payload["run_id"]
-    params = payload.get("params", {})
+    p = jobs.Train.de_payload(job["payload"])
+    run_id = p.run_id
+    params = p.params
 
     seq = {"n": 0}
 
@@ -39,7 +41,7 @@ def executar(cli: Client, job: dict, work_dir: Path, models_bucket: str,
     meta = cli.manifest_meta(job_id)
     classes = meta["classes"]
     roi = roi_tupla(meta.get("roi"))
-    log(f"versão {payload.get('version')} de {payload.get('dataset_slug')}: "
+    log(f"versão {p.version} de {p.dataset_slug}: "
         f"{meta['stats']['imagens']} imagens, {len(classes)} classes"
         + (f" — recorte ROI {roi}" if roi else ""))
 
@@ -57,12 +59,13 @@ def executar(cli: Client, job: dict, work_dir: Path, models_bucket: str,
     cfg = {"data": conta["data_yaml"], "epochs": epochs,
            "imgsz": params.get("imgsz", 640),
            "batch": params.get("batch", 16),
-           "base_model": payload.get("base_model", "yolo11n.pt"),
+           "base_model": p.base_model,
            "project": str(raiz / "runs")}
     raiz_repo = Path(__file__).resolve().parent.parent
 
     cancelado = {"v": False}
-    melhor = {"mAP50-95": -1.0, "metrics": {}}
+    melhor_map = -1.0
+    melhor_metrics: dict = {}
     recentes: list[str] = []   # últimas linhas não-métrica, p/ diagnóstico
 
     log("iniciando o treino")
@@ -71,9 +74,13 @@ def executar(cli: Client, job: dict, work_dir: Path, models_bucket: str,
         cwd=str(raiz_repo), stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT, text=True, bufsize=1)
 
+    saida = proc.stdout
+    if saida is None:      # não acontece com stdout=PIPE; o Optional é da assinatura
+        raise RuntimeError("subprocesso de treino subiu sem saída para ler")
+
     # o worker emite uma linha `@@EPOCH@@ {json}` por época; o resto (ruído do
     # Ultralytics) é ignorado, guardando só as últimas linhas p/ diagnóstico.
-    for linha in proc.stdout:                     # bloqueia até a próxima linha
+    for linha in saida:                           # bloqueia até a próxima linha
         linha = linha.rstrip("\n")
         if not linha.startswith(MARCADOR):
             if linha.strip():
@@ -85,9 +92,9 @@ def executar(cli: Client, job: dict, work_dir: Path, models_bucket: str,
         if norm:
             cli.metrics(job_id, [{"epoch": epoch, "key": k, "value": v}
                                  for k, v in norm.items()])
-            if norm.get("mAP50-95", -1) > melhor["mAP50-95"]:
-                melhor["mAP50-95"] = norm["mAP50-95"]
-                melhor["metrics"] = norm
+            if norm.get("mAP50-95", -1) > melhor_map:
+                melhor_map = norm["mAP50-95"]
+                melhor_metrics = norm
         log(f"época {epoch}/{epochs}: mAP50-95={norm.get('mAP50-95', 0):.4f}")
         if cli.job_heartbeat(job_id, {"epoch": epoch, "de": epochs}):
             cancelado["v"] = True
@@ -118,17 +125,16 @@ def executar(cli: Client, job: dict, work_dir: Path, models_bucket: str,
                          "publicar o peso")
         return
 
-    slug = payload.get("model_slug", "detector")
     destino = (f"gs://{models_bucket}/{models_prefix}/"
-               f"{payload.get('project_slug')}/{slug}/{run_id}/best.pt")
+               f"{p.project_slug}/{p.model_slug}/{run_id}/best.pt")
     log(f"publicando peso em {destino}")
     gcs.enviar(best, destino)
     sha = gcs.sha256_arquivo(best)
     reg = cli.register_model(job_id, destino, sha, best.stat().st_size,
-                             melhor["metrics"])
+                             melhor_metrics)
     log(f"modelo {reg['model_slug']} v{reg['version']} registrado")
     cli.finish(job_id, "succeeded",
                result={"model_version_id": reg["model_version_id"],
-                       "version": reg["version"], "metrics": melhor["metrics"],
+                       "version": reg["version"], "metrics": melhor_metrics,
                        "materializacao": {"train": conta["train"],
                                           "val": conta["val"]}})

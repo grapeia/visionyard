@@ -18,6 +18,8 @@ RUN pip install --no-cache-dir -r requirements-api.txt
 
 COPY api/ api/
 COPY db/ db/
+# contracts/ é o payload de job que a API grava e o agente lê — a API o importa.
+COPY contracts/ contracts/
 
 # Usuário sem privilégio. `data/` é ponto de montagem (manifestos de versão e
 # dumps de importação) e precisa ser dele, não do root.

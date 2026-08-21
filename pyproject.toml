@@ -28,7 +28,11 @@ ignore = [
 
 [tool.mypy]
 python_version = "3.12"
-files = ["api", "db"]
+# `contracts` e `agent` entraram com o item 13 do PLANO: o payload de job é a
+# borda que atravessa máquina e deploy, e o contrato só vale se o lado que o LÊ
+# também for conferido — um `p.weights_url` no executor tem de reprovar aqui, e
+# não horas depois num dispositivo.
+files = ["api", "db", "contracts", "agent"]
 # Permissivo de propósito no começo: o objetivo imediato é travar recaída de
 # tipo em quem já está anotado (ver PLANO, item 2), não anotar o mundo.
 ignore_missing_imports = true

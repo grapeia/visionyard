@@ -25,6 +25,11 @@ O agente apenas acrescenta o diagnóstico (GPU, CUDA).
 pip install -r agent/requirements.txt
 ```
 
+O agente roda a partir da **raiz do repositório**, e não da pasta `agent/`
+sozinha: além dela vai `contracts/`, onde mora o contrato do payload de job que
+a Control API grava e os executores leem. É código sem dependência nenhuma
+além da stdlib — não muda o que precisa ser instalado na máquina.
+
 ## Configuração (variáveis de ambiente)
 
 | Variável | Obrigatória | Para quê |

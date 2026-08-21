@@ -100,8 +100,8 @@ def materializar(items_jsonl: Path, classes: list[str], destino: Path,
                 destino_img = destino / "images" / split / (nome + ".jpg")
                 if not destino_img.exists():
                     from PIL import Image
-                    with Image.open(img_cache) as im:
-                        im = im.convert("RGB")
+                    with Image.open(img_cache) as arq:
+                        im = arq.convert("RGB")
                         W, H = im.size
                         x1 = min(max(round(roi[0] * W), 0), W)
                         y1 = min(max(round(roi[1] * H), 0), H)

@@ -12,14 +12,15 @@ import os
 import platform
 from pathlib import Path
 
+from contracts import jobs
+
 from . import gcs
 from .client import Client
 
 
-def _detectar_alvo(payload: dict) -> dict:
-    alvo = {"precision": payload.get("precision", "fp16"),
-            "imgsz": payload.get("imgsz", 640), "dla": bool(payload.get("dla")),
-            "dynamic": bool(payload.get("dynamic"))}
+def _detectar_alvo(p: jobs.Export) -> dict:
+    alvo = {"precision": p.precision, "imgsz": p.imgsz, "dla": p.dla,
+            "dynamic": p.dynamic}
     # JetPack/TRT, quando dá para descobrir — entra no alvo para rastrear
     for chave, env in (("jetpack", "JETPACK_VERSION"), ("trt", "TRT_VERSION")):
         v = os.environ.get(env)
@@ -34,10 +35,8 @@ def executar(cli: Client, job: dict, work_dir: Path, models_bucket: str,
     from ultralytics import YOLO
 
     job_id = job["id"]
-    payload = job["payload"]
-    fmt = payload.get("format", "engine")
-    imgsz = payload.get("imgsz", 640)
-    precision = payload.get("precision", "fp16")
+    p = jobs.Export.de_payload(job["payload"])
+    fmt, imgsz, precision = p.format, p.imgsz, p.precision
     seq = {"n": 0}
 
     def log(msg: str, level: str = "info") -> None:
@@ -53,10 +52,10 @@ def executar(cli: Client, job: dict, work_dir: Path, models_bucket: str,
     raiz = work_dir / job_id
     raiz.mkdir(parents=True, exist_ok=True)
     peso = raiz / "model.pt"
-    gcs.baixar(payload["weights_uri"], peso)
-    log(f"compilando v{payload.get('version')} para {fmt} "
+    gcs.baixar(p.weights_uri, peso)
+    log(f"compilando v{p.version} para {fmt} "
         f"({precision}, imgsz={imgsz}"
-        + (", dinâmico" if payload.get("dynamic") else "") + ")")
+        + (", dinâmico" if p.dynamic else "") + ")")
     cli.job_heartbeat(job_id, {"etapa": "export"})
 
     modelo = YOLO(str(peso))
@@ -65,8 +64,8 @@ def executar(cli: Client, job: dict, work_dir: Path, models_bucket: str,
         kwargs["half"] = precision == "fp16"
         kwargs["int8"] = precision == "int8"
         # dynamic iguala o letterbox ao do .pt (DLA não aceita — a API já zera)
-        kwargs["dynamic"] = bool(payload.get("dynamic"))
-        if payload.get("dla"):
+        kwargs["dynamic"] = p.dynamic
+        if p.dla:
             kwargs["device"] = "dla:0"
     saida = Path(modelo.export(**kwargs))
     log(f"gerado {saida.name}")
@@ -102,12 +101,12 @@ def executar(cli: Client, job: dict, work_dir: Path, models_bucket: str,
         log(f"latência não medida: {e}", "warn")
 
     destino = (f"gs://{models_bucket}/{models_prefix}/"
-               f"{payload.get('project_slug')}/{payload.get('model_slug')}/"
-               f"v{payload.get('version')}/builds/{saida.name}")
+               f"{p.project_slug}/{p.model_slug}/"
+               f"v{p.version}/builds/{saida.name}")
     gcs.enviar(saida, destino)
     sha = gcs.sha256_arquivo(saida)
     reg = cli.register_build(job_id, fmt, destino, sha, saida.stat().st_size,
-                             _detectar_alvo(payload), bench)
+                             _detectar_alvo(p), bench)
     log(f"build registrado ({fmt})"
         + (" — já existia" if reg.get("ja_existia") else ""))
     cli.finish(job_id, "succeeded",

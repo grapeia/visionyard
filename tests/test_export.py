@@ -67,10 +67,15 @@ async def test_export_engine_dynamic_por_padrao_e_estatico_no_dla(
     job2 = (await client.post("/v1/agent/claim", headers=_h(tok))).json()["job"]
     assert job2["payload"]["dynamic"] is False
 
-    # o alvo do build registra o dynamic (jobs antigos sem a chave = estático)
+    # o alvo do build registra o dynamic (payload sem a chave = estático, que
+    # é o default do contrato — job enfileirado antes dela continua na fila)
     from agent.export import _detectar_alvo
-    assert _detectar_alvo({"dynamic": True})["dynamic"] is True
-    assert _detectar_alvo({})["dynamic"] is False
+    from contracts import jobs
+    base = {"model_version_id": "x", "weights_uri": "gs://b/w.pt",
+            "model_slug": "detector", "project_slug": "p", "version": 1}
+    din = _detectar_alvo(jobs.Export.de_payload({**base, "dynamic": True}))
+    assert din["dynamic"] is True
+    assert _detectar_alvo(jobs.Export.de_payload(base))["dynamic"] is False
 
 
 async def test_build_mesmo_alvo_nao_duplica(admin, client, tmp_path):
