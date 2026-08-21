@@ -1,0 +1,22 @@
+-- 013_drop_dataset_selection.sql — derruba uma coluna que descreve um modelo
+-- que não existe mais.
+--
+-- `dataset.selection` nasceu na 002 como "regra de seleção, não lista de
+-- arquivos": um filtro sobre metadados (`{"filter":{"metadata.linha":"A"},
+-- "require_annotation":true, ...}`) que seria resolvido no congelamento.
+--
+-- A 007 trocou esse modelo por origens explícitas (`dataset_source`): o
+-- dataset passou a ser a lista de origens que ele referencia, e as imagens
+-- dele são as que vieram dessas origens. Desde então nenhuma linha de Python
+-- ou de JavaScript lê ou escreve `selection` — ela só existe como o `'{}'`
+-- que o DEFAULT grava.
+--
+-- Derrubar é o único jeito de a coluna parar de mentir: migration aplicada
+-- não se edita, então o comentário da 002 continua descrevendo em detalhe o
+-- modelo antigo, e quem lê o schema pelo `\d dataset` encontrava primeiro a
+-- coluna e depois a explicação errada. Sem coluna, não há o que interpretar.
+--
+-- Não há dado a preservar: se algum dia a seleção por filtro voltar, ela volta
+-- como coluna nova, com o formato que o novo modelo exigir.
+
+ALTER TABLE dataset DROP COLUMN selection;

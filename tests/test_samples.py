@@ -156,7 +156,7 @@ async def test_escopo_por_dataset(admin, tmp_path):
             "SELECT ds.id FROM data_source ds JOIN project p"
             "  ON p.id = ds.project_id WHERE p.slug=%s LIMIT 1",
             (PROJ["slug"],)).fetchone()[0])
-    await admin.put(f"/v1/projects/{PROJ['slug']}/datasets/d1/origens/{src}")
+    await admin.put(f"/v1/projects/{PROJ['slug']}/datasets/d1/sources/{src}")
 
     # escopo do dataset devolve as 6; um dataset vazio devolve 0
     r = await admin.get(f"/v1/projects/{PROJ['slug']}/samples?dataset=d1")

@@ -19,7 +19,7 @@ async def _versao_congelada(admin, tmp_path) -> None:
     await admin.post(f"/v1/projects/{PROJ['slug']}/datasets", json=DS)
     src = await _source_id(PROJ["slug"])
     base = f"/v1/projects/{PROJ['slug']}/datasets/{DS['slug']}"
-    await admin.put(f"{base}/origens/{src}")
+    await admin.put(f"{base}/sources/{src}")
     r = await admin.post(f"{base}/freeze", json={"descricao": "base"})
     assert r.status_code == 201, r.text
 

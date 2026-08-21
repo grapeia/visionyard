@@ -4,11 +4,12 @@
 """
 from __future__ import annotations
 
+import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import db, logs
@@ -61,7 +62,30 @@ app.include_router(users_router.router, prefix="/v1")
 
 @app.get("/healthz", tags=["ops"])
 async def healthz():
-    await db.fetch_one("SELECT 1 AS ok")
+    """Vivo: o processo responde. NÃO toca no banco, de propósito.
+
+    Esta é a sonda que o orquestrador usa para decidir REINICIAR. Consultar o
+    banco aqui faria de uma oscilação do Postgres um interruptor do processo:
+    a API sã seria derrubada em série, e reiniciar não traz o banco de volta —
+    só apaga o que ela ainda conseguia servir (tela, estático, o 503 honesto).
+    """
+    return {"status": "ok"}
+
+
+@app.get("/readyz", tags=["ops"])
+async def readyz():
+    """Pronto: dá para servir requisição que precisa do banco.
+
+    Esta é a sonda de tráfego — a que tira a réplica do balanceador enquanto o
+    banco não volta, sem matá-la. 503 e não 500: é indisponibilidade
+    temporária, e o detalhe do erro fica no log, sob o código da requisição.
+    """
+    try:
+        await db.fetch_one("SELECT 1 AS ok")
+    except Exception:
+        logging.getLogger("visionyard").exception("banco indisponível no readyz")
+        return JSONResponse(status_code=503,
+                            content={"status": "sem banco"})
     return {"status": "ok"}
 
 

@@ -612,7 +612,7 @@ $("formOrigem").addEventListener("submit", comTravaDeEnvio($("formOrigem"), asyn
     $("dlgOrigem").close();
     await esperarJob(r.job_id);
     await api(`/projects/${estado.projeto}/datasets/${estado.atual}` +
-              `/origens/${r.source_id}`, { method: "PUT" });
+              `/sources/${r.source_id}`, { method: "PUT" });
     $("formOrigem").reset();
     await abrirDataset(estado.atual);
   } catch (e) { avisar(e.message, true); }
@@ -641,7 +641,7 @@ async function removerOrigem(id, uri) {
       "não mudam. Só as próximas versões deixam de incluir essas imagens."))
     return;
   try {
-    await api(`/projects/${estado.projeto}/datasets/${estado.atual}/origens/${id}`,
+    await api(`/projects/${estado.projeto}/datasets/${estado.atual}/sources/${id}`,
               { method: "DELETE" });
     avisar("Origem removida da definição.");
     await abrirDataset(estado.atual);

@@ -82,8 +82,12 @@ services:
         condition: service_completed_successfully
     restart: unless-stopped
     healthcheck:
+      # /readyz (e não /healthz): aqui a pergunta é "dá para servir", que
+      # inclui o banco. A sonda de VIDA é /healthz, que não consulta nada —
+      # num orquestrador que reinicia por liveness, apontá-lo para o banco
+      # faria de uma oscilação do Postgres um interruptor do processo.
       test: ["CMD-SHELL",
-             "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=4).status == 200 else 1)\""]
+             "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/readyz', timeout=4).status == 200 else 1)\""]
       interval: 30s
       timeout: 10s
       retries: 3

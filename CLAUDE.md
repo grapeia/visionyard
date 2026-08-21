@@ -104,7 +104,14 @@ como referência de tom.
 (`dataset_version`, `manifest_uri`, `samples_created`). Variável local, mensagem
 de erro, docstring e comentário em português. Chave de resposta JSON segue o que
 a interface já consome — há mistura consolidada (`gravadas`, `alvos`, `stats`);
-não renomeie sem mexer no `app.js`.
+não renomeie sem mexer no `app.js`. Parâmetro de query segue a regra da chave
+de resposta, e não a do nome de rota: `pagina`, `filtro` e `limite` convivem com
+`limit` e `type` porque são superfície que o `app.js` consome.
+
+Duas exceções que ficam: `008_indices_e_imutabilidade.sql` e
+`009_sample_source_e_cascade.sql` têm nome em português. Renomear arquivo de
+migration é pior do que a inconsistência — o nome é a chave em
+`schema_migrations`, e trocá-lo faria o runner reaplicar a migration.
 
 **Erro de usuário é HTTPException com texto em português.** Erro de infra
 (GCS, banco) vai para o log e devolve mensagem genérica — o texto do

@@ -38,7 +38,7 @@ _CODIGO_VALIDO = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 # Rotas que não geram linha de acesso: o healthz é batido pelo orquestrador a
 # cada poucos segundos e afogaria o resto.
-_SEM_LOG = ("/healthz", "/static", "/favicon.ico")
+_SEM_LOG = ("/healthz", "/readyz", "/static", "/favicon.ico")
 
 FORMATO = "%(asctime)s %(levelname)s %(name)s [%(request_id)s] %(message)s"
 

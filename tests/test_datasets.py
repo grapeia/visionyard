@@ -155,7 +155,7 @@ async def test_criar_dataset_e_adicionar_origem(admin, tmp_path):
 
     src = await _source_id(PROJ["slug"])
     r = await admin.put(
-        f"/v1/projects/{PROJ['slug']}/datasets/{DS['slug']}/origens/{src}")
+        f"/v1/projects/{PROJ['slug']}/datasets/{DS['slug']}/sources/{src}")
     assert r.status_code == 204
 
     r = await admin.get(f"/v1/projects/{PROJ['slug']}/datasets/{DS['slug']}")
@@ -168,7 +168,7 @@ async def test_preview_conta_anotadas_e_pendentes(admin, tmp_path):
     await admin.post(f"/v1/projects/{PROJ['slug']}/datasets", json=DS)
     src = await _source_id(PROJ["slug"])
     await admin.put(
-        f"/v1/projects/{PROJ['slug']}/datasets/{DS['slug']}/origens/{src}")
+        f"/v1/projects/{PROJ['slug']}/datasets/{DS['slug']}/sources/{src}")
 
     r = await admin.get(
         f"/v1/projects/{PROJ['slug']}/datasets/{DS['slug']}/preview")
@@ -185,7 +185,7 @@ async def test_congelar_gera_manifesto(admin, tmp_path, monkeypatch):
     await admin.post(f"/v1/projects/{PROJ['slug']}/datasets", json=DS)
     src = await _source_id(PROJ["slug"])
     await admin.put(
-        f"/v1/projects/{PROJ['slug']}/datasets/{DS['slug']}/origens/{src}")
+        f"/v1/projects/{PROJ['slug']}/datasets/{DS['slug']}/sources/{src}")
 
     r = await admin.post(
         f"/v1/projects/{PROJ['slug']}/datasets/{DS['slug']}/freeze",
@@ -220,7 +220,7 @@ async def test_roi_muda_identidade_da_versao(admin, tmp_path):
     await admin.post(f"/v1/projects/{PROJ['slug']}/datasets", json=DS)
     src = await _source_id(PROJ["slug"])
     await admin.put(
-        f"/v1/projects/{PROJ['slug']}/datasets/{DS['slug']}/origens/{src}")
+        f"/v1/projects/{PROJ['slug']}/datasets/{DS['slug']}/sources/{src}")
     base = f"/v1/projects/{PROJ['slug']}/datasets/{DS['slug']}"
 
     r = await admin.post(f"{base}/freeze", json={"descricao": "sem roi"})
@@ -253,7 +253,7 @@ async def test_congelar_duas_vezes_sem_mudanca_e_rejeitado(admin, tmp_path):
     await admin.post(f"/v1/projects/{PROJ['slug']}/datasets", json=DS)
     src = await _source_id(PROJ["slug"])
     await admin.put(
-        f"/v1/projects/{PROJ['slug']}/datasets/{DS['slug']}/origens/{src}")
+        f"/v1/projects/{PROJ['slug']}/datasets/{DS['slug']}/sources/{src}")
     url = f"/v1/projects/{PROJ['slug']}/datasets/{DS['slug']}/freeze"
 
     assert (await admin.post(url, json={"descricao": "v1"})).status_code == 201
@@ -289,7 +289,7 @@ async def test_congelar_com_imagem_sem_md5_recusa(admin, tmp_path):
     await admin.post(f"/v1/projects/{PROJ['slug']}/datasets", json=DS)
     src = await _source_id(PROJ["slug"])
     await admin.put(
-        f"/v1/projects/{PROJ['slug']}/datasets/{DS['slug']}/origens/{src}")
+        f"/v1/projects/{PROJ['slug']}/datasets/{DS['slug']}/sources/{src}")
 
     _zerar_md5_de_uma_anotada()
 
@@ -322,11 +322,11 @@ async def test_remover_origem_preserva_versao_congelada(admin, tmp_path):
     await admin.post(f"/v1/projects/{PROJ['slug']}/datasets", json=DS)
     src = await _source_id(PROJ["slug"])
     base = f"/v1/projects/{PROJ['slug']}/datasets/{DS['slug']}"
-    await admin.put(f"{base}/origens/{src}")
+    await admin.put(f"{base}/sources/{src}")
     r = await admin.post(f"{base}/freeze", json={"descricao": "v1"})
     assert r.status_code == 201
 
-    assert (await admin.delete(f"{base}/origens/{src}")).status_code == 204
+    assert (await admin.delete(f"{base}/sources/{src}")).status_code == 204
 
     d = (await admin.get(base)).json()
     assert d["origens"] == []
@@ -343,7 +343,7 @@ async def test_diff_entre_versoes(admin, tmp_path):
     await admin.post(f"/v1/projects/{PROJ['slug']}/datasets", json=DS)
     src = await _source_id(PROJ["slug"])
     base = f"/v1/projects/{PROJ['slug']}/datasets/{DS['slug']}"
-    await admin.put(f"{base}/origens/{src}")
+    await admin.put(f"{base}/sources/{src}")
     await admin.post(f"{base}/freeze", json={"descricao": "v1"})
 
     # segunda origem, com imagens novas
@@ -368,7 +368,7 @@ async def test_diff_entre_versoes(admin, tmp_path):
             "  ON p.id = ds.project_id WHERE p.slug = %s"
             " ORDER BY ds.created_at", (PROJ["slug"],)).fetchall()
     assert len(rows) == 2
-    await admin.put(f"{base}/origens/{rows[1][0]}")
+    await admin.put(f"{base}/sources/{rows[1][0]}")
 
     r = await admin.post(f"{base}/freeze", json={"descricao": "mais imagens"})
     assert r.status_code == 201, r.text
@@ -448,7 +448,7 @@ async def test_imagem_em_duas_origens_pertence_as_duas(admin, tmp_path):
     # a SEGUNDA origem sozinha precisa resolver as 4 imagens
     await admin.post(f"/v1/projects/{PROJ['slug']}/datasets", json=DS)
     base = f"/v1/projects/{PROJ['slug']}/datasets/{DS['slug']}"
-    await admin.put(f"{base}/origens/{fontes[1]}")
+    await admin.put(f"{base}/sources/{fontes[1]}")
 
     d = (await admin.get(base)).json()
     assert d["origens"][0]["imagens"] == 4, "origem mostrava 0 imagens"
@@ -468,7 +468,7 @@ async def test_congelar_em_paralelo_nao_corrompe(admin, tmp_path):
     await admin.post(f"/v1/projects/{PROJ['slug']}/datasets", json=DS)
     src = await _source_id(PROJ["slug"])
     base = f"/v1/projects/{PROJ['slug']}/datasets/{DS['slug']}"
-    await admin.put(f"{base}/origens/{src}")
+    await admin.put(f"{base}/sources/{src}")
 
     r1, r2 = await asyncio.gather(
         admin.post(f"{base}/freeze", json={"descricao": "A", "seed": 1}),
@@ -495,7 +495,7 @@ async def test_por_grupo_sem_a_chave_recusa(admin, tmp_path):
     await admin.post(f"/v1/projects/{PROJ['slug']}/datasets", json=DS)
     src = await _source_id(PROJ["slug"])
     base = f"/v1/projects/{PROJ['slug']}/datasets/{DS['slug']}"
-    await admin.put(f"{base}/origens/{src}")
+    await admin.put(f"{base}/sources/{src}")
     r = await admin.post(f"{base}/freeze",
                          json={"descricao": "x", "split_method": "by_group"})
     assert r.status_code == 409

@@ -245,7 +245,7 @@ async def test_append_nao_invalida_anotacao_antiga(admin, tmp_path):
     await admin.post(f"/v1/projects/{DPROJ['slug']}/datasets", json=DS)
     src = await _source_id(DPROJ["slug"])
     base = f"/v1/projects/{DPROJ['slug']}/datasets/{DS['slug']}"
-    await admin.put(f"{base}/origens/{src}")
+    await admin.put(f"{base}/sources/{src}")
     p = (await admin.get(f"{base}/preview")).json()
     assert p["anotadas"] == 5, "append quebrou a compatibilidade das anotações"
 

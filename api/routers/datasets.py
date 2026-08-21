@@ -189,7 +189,7 @@ async def get_dataset(project_slug: Annotated[str, P()],
             "pretags_rascunho": pretags["n"]}
 
 
-@router.put("/projects/{project_slug}/datasets/{dataset_slug}/origens/{source_id}",
+@router.put("/projects/{project_slug}/datasets/{dataset_slug}/sources/{source_id}",
             status_code=status.HTTP_204_NO_CONTENT)
 async def add_origin(project_slug: Annotated[str, P()],
                      dataset_slug: Annotated[str, P()], source_id: str,
@@ -213,7 +213,7 @@ async def add_origin(project_slug: Annotated[str, P()],
                         ip=auth.client_ip(request), conn=conn)
 
 
-@router.delete("/projects/{project_slug}/datasets/{dataset_slug}/origens/{source_id}",
+@router.delete("/projects/{project_slug}/datasets/{dataset_slug}/sources/{source_id}",
                status_code=status.HTTP_204_NO_CONTENT)
 async def remove_origin(project_slug: Annotated[str, P()],
                         dataset_slug: Annotated[str, P()], source_id: str,
