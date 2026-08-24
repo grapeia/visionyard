@@ -3,7 +3,6 @@
  * Aqui o dataset é o ESCOPO já escolhido na barra; o que se escolhe é o modelo.
  * É a assistência do rotulador: os rascunhos caem na grade daquela mesma aba. */
 
-import { modelos } from "./modelos.js";
 import { $, RANK, api, avisar, comTravaDeEnvio, erroAviso, esc, estado, num, post } from "./nucleo.js";
 import { dados } from "./rotulagem.js";
 

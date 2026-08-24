@@ -1,7 +1,6 @@
 /* O anotador: canvas, alças, teclado e a gravação da caixa. */
 
 import { mostrarAba } from "./abas.js";
-import { modelos } from "./modelos.js";
 import { $, api, avisar, clamp, clamp01, cor, erroAviso, esc, estado, post } from "./nucleo.js";
 import { hachurarFora } from "./roi.js";
 import { carregarDados, dados, preencherEscopo } from "./rotulagem.js";
