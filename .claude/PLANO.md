@@ -483,6 +483,20 @@ levar junto todas as miniaturas. Eram cinco caminhos sem nenhuma afirmação.
 O cliente também passou a ser construído uma vez: a galeria construía um por
 carga de página, dentro do threadpool.
 
+### 17. `/train-devices` sem cerca de projeto — `pendente`
+Achado do review de 2026-08-24, e é decisão, não conserto. O `cab0590`
+corrigiu o 422 tirando o `require_role("engineer")` — papel é por projeto e a
+rota não tem projeto no caminho —, e o que ficou no lugar é `CurrentUser`: um
+`viewer`, ou um usuário que não é membro de projeto nenhum, lista o `slug`, o
+`name` e o `status` de toda máquina de treino da instalação. `/deploy-devices`
+já era assim, então isto é consistência, não novidade; mas é a instalação
+inteira visível a quem tem conta, e vale escolher de propósito.
+
+Duas saídas: assumir que nome e estado de máquina não são segredo dentro da
+instalação (e escrever isso), ou exigir participação em ao menos um projeto —
+que é um conceito de RBAC que hoje não existe em lugar nenhum, e teria de
+valer para as duas rotas.
+
 ## Registro
 
 - **2026-08-10** — revisão de arquitetura, criação do `CLAUDE.md` e deste plano.
@@ -641,3 +655,21 @@ carga de página, dentro do threadpool.
   achado do caminho foi `/targets` num job de treino, que respondia 200 com
   lista vazia — o escopo lido com `.get()` virava `None` e a consulta não casava
   com nada. Suíte: **206 testes passando** (eram 205).
+- **2026-08-24** — review dos três commits de código de 21/08 (alto esforço,
+  `8f576f9..HEAD`). Quatro achados, três corrigidos com teste antes. O grave é
+  regressão do próprio item 13: `diretorio_manifesto` passou a exigir o
+  contrato de treino, e `/manifest` virou 404 para todo job de avaliação — a
+  rota que o `agent/evaluate.py` chama antes de medir. A leitura crua não tinha
+  o problema porque `dataset_version_id` está nos dois payloads; nada acusou
+  porque a suíte só chegava ao manifesto pelo caminho do treino, e o teste do
+  item 13 conferia que rota alheia dá 404, não que a própria continua servindo
+  (`410cc76`, com a exceção escrita na invariante do `CLAUDE.md`).
+  O segundo veio do item 6: o `?v=` alcança só o ponto de entrada, e os 15
+  módulos importados iam sem diretriz de cache nenhuma — o `StaticFiles` manda
+  etag e last-modified, e o navegador então aplica frescor heurístico. Um
+  deploy que mexesse em `nucleo.js` entregaria o `app.js` novo sobre o
+  `nucleo.js` velho (`b5ad9c3`); os dois testes de cache são os primeiros —
+  nem a casca tinha um. O terceiro é higiene do mesmo item: `prelabel.js` e
+  `anotador.js` importavam `modelos` e o sombreavam com uma lista de mesmo nome
+  (`70a23c3`). O quarto virou o item 17: `/train-devices` é decisão de acesso,
+  não defeito. Suíte: **210 testes passando** (eram 206).
