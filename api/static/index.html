@@ -559,7 +559,9 @@
 </dialog>
 
 <!-- Módulos ES nativos, sem build. O `?v=` continua no ponto de entrada; os
-     módulos que ele importa revalidam pelo etag que o StaticFiles já envia. -->
+     módulos que ele importa revalidam porque o /static vai com `no-cache`
+     (`main.EstaticoQueRevalida`) — sem isso o navegador daria por frescos os
+     que este `?v=` não alcança. -->
 <script type="module" src="/static/app.js?v=20260821"></script>
 </body>
 </html>

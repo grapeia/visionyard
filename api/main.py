@@ -7,9 +7,10 @@ from __future__ import annotations
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any
 
 from fastapi import FastAPI
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -108,4 +109,21 @@ async def index():
                         headers={"Cache-Control": "no-cache"})
 
 
-app.mount("/static", StaticFiles(directory=STATIC), name="static")
+class EstaticoQueRevalida(StaticFiles):
+    """`Cache-Control: no-cache` em todo estático, pela mesma razão da casca.
+
+    O `?v=` está só no ponto de entrada, e os 15 módulos que o `app.js` importa
+    não têm como carregá-lo — não há build para reescrever os especificadores.
+    O `StaticFiles` manda etag e last-modified e nenhuma diretriz de cache, e aí
+    o navegador aplica frescor heurístico: um deploy que muda `nucleo.js` junto
+    com o `app.js` entrega o `app.js` novo e reaproveita o `nucleo.js` velho do
+    cache, e a página morre no import. Revalidar custa um 304 por módulo.
+    """
+
+    def file_response(self, *args: Any, **kwargs: Any) -> Response:
+        resposta = super().file_response(*args, **kwargs)
+        resposta.headers["Cache-Control"] = "no-cache"
+        return resposta
+
+
+app.mount("/static", EstaticoQueRevalida(directory=STATIC), name="static")
