@@ -121,3 +121,27 @@ async def test_avaliar_engine_sem_build_recusa(admin, client, tmp_path):
         json={"dataset_slug": DS["slug"], "dataset_version": 1, "format": "engine"})
     assert r.status_code == 404
     assert "compile antes" in r.json()["detail"]
+
+
+async def test_avaliacao_le_o_manifesto_do_benchmark(admin, client, tmp_path):
+    """O manifesto tem dois leitores, e a avaliação é o segundo.
+
+    `agent/evaluate.py` pede `/manifest` e `/manifest/items` antes de medir: as
+    caixas do benchmark são a verdade contra a qual o artefato é comparado.
+    Quando a rota passou a ler o payload pelo contrato, passou a exigir o de
+    treino — e toda avaliação virava 404 antes de baixar o benchmark.
+    """
+    await _produzir_modelo(admin, client, tmp_path)
+    r = await admin.post(
+        f"/v1/projects/{PROJ['slug']}/models/detector/versions/1/evaluate",
+        json={"dataset_slug": DS["slug"], "dataset_version": 1})
+    assert r.status_code == 201, r.text
+    tok, job = await _claim_eval(admin, client)
+    assert job["type"] == "evaluate"
+
+    meta = await client.get(f"/v1/agent/jobs/{job['id']}/manifest", headers=_h(tok))
+    assert meta.status_code == 200, meta.text
+    assert meta.json()["classes"] == ["classe_a", "classe_b"]
+    itens = await client.get(f"/v1/agent/jobs/{job['id']}/manifest/items",
+                             headers=_h(tok))
+    assert itens.status_code == 200

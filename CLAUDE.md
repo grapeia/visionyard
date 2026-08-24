@@ -171,7 +171,11 @@ pede.
   404 por acidente, e em `/targets` nem isso: o escopo lido com `.get()` virava
   `None` e a resposta era 200 com lista vazia. Payload do tipo certo que o
   parser recusa é bug de quem enfileirou: sobe e vira 500 na rede de
-  `logs.correlacionar`, não 404.
+  `logs.correlacionar`, não 404. A exceção é `/manifest`, que tem dois donos —
+  o treino aprende com o manifesto e a avaliação mede contra ele, e os dois
+  payloads carregam `dataset_version_id`. Ela confere contra os dois tipos
+  (`_confere_tipo`), e ter dois donos não é ter todos: um `export` continua
+  levando 404.
 - **Job que roda dentro da API não é reclamável por máquina nenhuma.** O
   claim casa `capabilities @> requires` — e `requires` vazio casa com qualquer
   device —, não filtra por tipo, e realcança job `running` com ponto velho.

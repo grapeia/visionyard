@@ -174,3 +174,29 @@ async def test_rota_de_agente_so_serve_job_do_seu_tipo(admin, client, tmp_path):
     # e o que é do tipo certo continua passando
     assert (await client.get(f"/v1/agent/jobs/{jid}/manifest",
                              headers=_h(tok))).status_code == 200
+
+
+async def test_manifesto_serve_treino_e_avaliacao_e_mais_ninguem(
+        admin, client, tmp_path):
+    """A única rota do agente com dois donos — e ter dois não é ter todos.
+
+    O treino aprende com o manifesto e a avaliação mede contra ele; os dois
+    payloads carregam `dataset_version_id`. Ler pelo contrato de treino, como
+    a rota passou a fazer, recusava com 404 toda avaliação antes de ela baixar
+    o benchmark (o caso feliz está em `test_evaluate.py`). Aqui fica o outro
+    lado: aceitar dois tipos não é aceitar qualquer um.
+    """
+    await _produzir_modelo(admin, client, tmp_path)
+    r = await admin.post(
+        f"/v1/projects/{PROJ['slug']}/models/detector/versions/1/export",
+        json={"format": "engine"})
+    assert r.status_code == 201, r.text
+    dev = await _device(admin, {"infer": True}, slug="edge-export")
+    tok = dev["token"]
+    job = (await client.post("/v1/agent/claim", headers=_h(tok))).json()["job"]
+    assert job["type"] == "export"
+
+    for url in (f"/v1/agent/jobs/{job['id']}/manifest",
+                f"/v1/agent/jobs/{job['id']}/manifest/items"):
+        r = await client.get(url, headers=_h(tok))
+        assert r.status_code == 404, url

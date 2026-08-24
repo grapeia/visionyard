@@ -185,19 +185,32 @@ async def job_com_payload[P: jobs.Payload](
     o código da requisição no corpo e o traceback no log.
     """
     job = await job_da_maquina(job_id, device_id)
-    if job["type"] != contrato.TIPO:
-        raise HTTPException(
-            status.HTTP_404_NOT_FOUND,
-            f"job é de {job['type']}, e esta rota é de {contrato.TIPO}")
+    _confere_tipo(job, contrato.TIPO)
     return job, contrato.de_payload(job["payload"])
 
 
+def _confere_tipo(job: dict, *tipos: str) -> None:
+    """404 antes de ler o payload — ver `job_com_payload`."""
+    if job["type"] not in tipos:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND,
+            f"job é de {job['type']}, e esta rota é de {' ou '.join(tipos)}")
+
+
 # --------------------------------------------------------------------------- #
-# Manifesto (só quem é dono do job de treino lê)
+# Manifesto (só quem é dono do job que o lê)
 # --------------------------------------------------------------------------- #
 
 async def diretorio_manifesto(job_id: str, device_id: str) -> FsPath:
-    _, p = await job_com_payload(job_id, device_id, jobs.Train)
+    """O manifesto tem dois leitores: o treino, que aprende com ele, e a
+    avaliação, que mede contra ele. Por isso esta é a única rota do agente que
+    não pertence a um tipo só — exigir `Train` aqui devolve 404 para toda
+    avaliação, antes de ela baixar o benchmark."""
+    job = await job_da_maquina(job_id, device_id)
+    _confere_tipo(job, jobs.Train.TIPO, jobs.Evaluate.TIPO)
+    contrato: type[jobs.Train] | type[jobs.Evaluate] = (
+        jobs.Train if job["type"] == jobs.Train.TIPO else jobs.Evaluate)
+    p = contrato.de_payload(job["payload"])
     row = await db.fetch_one(
         "SELECT manifest_uri FROM dataset_version WHERE id = %s",
         (p.dataset_version_id,))
