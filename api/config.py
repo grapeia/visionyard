@@ -65,6 +65,19 @@ class Settings(BaseSettings):
     # de arquivo enorme), e recolher cedo demais mataria job que está vivo.
     import_job_stale_seconds: int = 900
 
+    # Onde a importação executa. `true` mantém o laço dentro do processo da
+    # API, que é o comportamento histórico e o default: a instalação de uma
+    # máquina só continua funcionando sem nada a mais para subir. `false` tira
+    # a execução daqui — e aí quem reclama da fila é `python -m api.worker`,
+    # que é o que impede o hash de um arquivo grande de disputar o event loop
+    # com quem está atendendo requisição.
+    import_worker_embedded: bool = True
+
+    # De quanto em quanto o executor volta a olhar a fila. Enfileirar cutuca o
+    # laço embutido, então este intervalo só governa o worker de fora e o
+    # recolhimento — não a latência de começar uma importação.
+    import_worker_poll_seconds: float = 2.0
+
     # Job cujo agente não bate ponto há este tempo é considerado órfão (reboot,
     # crash) e volta a ser reclamável por outro agente, respeitando max_attempts.
     # Precisa ser bem maior que o intervalo de heartbeat do agente, senão um

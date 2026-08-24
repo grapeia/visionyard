@@ -18,6 +18,22 @@ PROJ = {"slug": "linha-de-inspecao", "name": "Linha de inspeção", "task_type":
         "classes": ["classe_a", "classe_b"]}
 
 
+@pytest.fixture
+def sem_laco_embutido(monkeypatch):
+    """Desliga o laço que a API sobe no lifespan.
+
+    É lido a cada volta do laço, então desligar aqui basta — sem isso a
+    importação já teria sido executada quando o teste fosse olhar a fila, e não
+    haveria como afirmar que quem a executa é quem a reclama.
+
+    Os testes de recolhimento também o pedem: o laço chama `recolher_orfaos` a
+    cada volta, e uma volta caindo no meio do teste roubaria dele a linha que
+    ele ia recolher.
+    """
+    from api.config import settings
+    monkeypatch.setattr(settings, "import_worker_embedded", False)
+
+
 # --------------------------------------------------------------------------- #
 # Conversão — erro aqui é silencioso: o treino roda, só que pior
 # --------------------------------------------------------------------------- #
@@ -384,7 +400,8 @@ async def _import_preso(admin, superuser, *, ha_segundos: int) -> str:
     return str(row[0])
 
 
-async def test_importacao_orfa_e_recolhida(admin, superuser):
+async def test_importacao_orfa_e_recolhida(admin, superuser,
+                                           sem_laco_embutido):
     """Sem isto o job fica preso em `running` para sempre: o reaper do agente
     filtra por `heartbeat_at` e por `attempts >= max_attempts`, e importação
     não bate ponto nem conta tentativa."""
@@ -400,7 +417,8 @@ async def test_importacao_orfa_e_recolhida(admin, superuser):
     assert "reimportar" in j["error"].lower()
 
 
-async def test_importacao_viva_nao_e_recolhida(admin, superuser):
+async def test_importacao_viva_nao_e_recolhida(admin, superuser,
+                                               sem_laco_embutido):
     """O ponto recente é a diferença entre 'morreu' e 'está demorando' — um
     dump grande passa minutos numa imagem só."""
     from api.services import imports as svc
@@ -412,7 +430,8 @@ async def test_importacao_viva_nao_e_recolhida(admin, superuser):
     assert j["status"] == "running"
 
 
-async def test_relato_atrasado_nao_reescreve_import_recolhido(admin, superuser):
+async def test_relato_atrasado_nao_reescreve_import_recolhido(
+        admin, superuser, sem_laco_embutido):
     """Mesma invariante do agente: quem foi dado por morto e volta não
     ressuscita o desfecho. Aqui o caso é a task que sobreviveu ao reaper e
     termina depois dele."""
@@ -427,7 +446,8 @@ async def test_relato_atrasado_nao_reescreve_import_recolhido(admin, superuser):
     assert (j["result"] or {}).get("samples_created") != 7
 
 
-async def test_listar_jobs_recolhe_o_que_ficou_preso(admin, superuser):
+async def test_listar_jobs_recolhe_o_que_ficou_preso(admin, superuser,
+                                                     sem_laco_embutido):
     """A tela de jobs é onde o job preso é visto; recolher ali é o que faz o
     reaper rodar numa instalação sem agente nenhum batendo claim."""
     await _import_preso(admin, superuser, ha_segundos=24 * 3600)
@@ -435,7 +455,8 @@ async def test_listar_jobs_recolhe_o_que_ficou_preso(admin, superuser):
     assert [j["status"] for j in jobs if j["type"] == "import"] == ["failed"]
 
 
-async def test_import_orfao_nao_e_reclamado_por_maquina(admin, client, superuser):
+async def test_import_orfao_nao_e_reclamado_por_maquina(
+        admin, client, superuser, sem_laco_embutido):
     """Job de importação roda DENTRO da API: não há executor do outro lado.
 
     O claim do agente não filtra por tipo e casa qualquer `requires` vazio, e
@@ -452,7 +473,8 @@ async def test_import_orfao_nao_e_reclamado_por_maquina(admin, client, superuser
     assert r.json()["job"] is None, "a máquina reclamou um job de importação"
 
 
-async def test_evento_concorrente_nao_derruba_o_recolhimento(admin, superuser):
+async def test_evento_concorrente_nao_derruba_o_recolhimento(
+        admin, superuser, sem_laco_embutido):
     """`job_event` tem PK (job_id, seq) e o seq sai de `max(seq)+1`.
 
     Desde que o recolhimento passou a escrever evento, há dois escritores no
@@ -478,3 +500,127 @@ async def test_evento_concorrente_nao_derruba_o_recolhimento(admin, superuser):
             await asyncio.sleep(0.2)   # calcula seq=1 e trava no índice único
         # o commit solta a outra: ou ela desiste, ou estoura
     await tarefa
+
+
+# --------------------------------------------------------------------------- #
+# A fila: quem pede não é quem executa
+# --------------------------------------------------------------------------- #
+
+async def test_quem_pede_nao_executa_e_a_fila_espera(admin, tmp_path,
+                                                     sem_laco_embutido):
+    """O item 5: a importação sai do processo que atendeu a requisição.
+
+    Antes, o POST criava o job já `running` e o executava ali mesmo, num
+    `asyncio.create_task` — deploy no meio matava a execução, e o hash de um
+    arquivo grande disputava o event loop com quem estava atendendo
+    requisição. Agora o POST enfileira e responde; o job fica esperando até
+    alguém reclamar, e é esse alguém que pode estar noutro processo.
+    """
+    from api import worker
+
+    await admin.post("/v1/projects", json=PROJ)
+    db_path, _ = _dump(tmp_path)
+    r = await admin.post(f"/v1/projects/{PROJ['slug']}/imports?dry_run=false",
+                         json={"kind": "label_studio_sqlite",
+                               "sqlite_path": str(db_path),
+                               "image_root": str(tmp_path),
+                               "image_base_uri": "gs://bucket/frames"})
+    assert r.status_code == 200, r.text
+    job_id = r.json()["job_id"]
+    assert r.json()["status"] == "queued"
+
+    # nada aconteceu: ninguém reclamou ainda
+    j = (await admin.get(f"/v1/projects/{PROJ['slug']}/jobs/{job_id}")).json()
+    assert j["status"] == "queued" and j["started_at"] is None
+    proj = (await admin.get(f"/v1/projects/{PROJ['slug']}")).json()
+    assert proj["counts"]["samples"] == 0
+
+    # o executor reclama e roda — reconstruindo o importador só a partir da
+    # linha do job, que é o que permite que ele viva noutro processo
+    assert await worker.passo() is True
+
+    j = (await admin.get(f"/v1/projects/{PROJ['slug']}/jobs/{job_id}")).json()
+    assert j["status"] == "succeeded", j
+    assert j["result"]["samples_created"] == 3
+    proj = (await admin.get(f"/v1/projects/{PROJ['slug']}")).json()
+    assert proj["counts"]["samples"] == 3
+
+    assert await worker.passo() is False      # a fila esvaziou
+
+
+async def test_dois_executores_nao_pegam_a_mesma_importacao(admin, tmp_path,
+                                                            sem_laco_embutido):
+    """Duas réplicas da API, ou a API e um worker de fora, olham a mesma fila.
+
+    Sem `FOR UPDATE SKIP LOCKED` no claim, as duas importariam o mesmo dump ao
+    mesmo tempo — e o segundo relatório reescreveria o primeiro em `job.result`.
+    """
+    import asyncio
+
+    from api import worker
+
+    await admin.post("/v1/projects", json=PROJ)
+    db_path, _ = _dump(tmp_path)
+    await admin.post(f"/v1/projects/{PROJ['slug']}/imports?dry_run=false",
+                     json={"kind": "label_studio_sqlite",
+                           "sqlite_path": str(db_path),
+                           "image_root": str(tmp_path)})
+
+    pegaram = await asyncio.gather(worker.passo(), worker.passo())
+    assert sorted(pegaram) == [False, True]
+
+
+async def test_fila_sem_executor_no_ar_e_recolhida(admin, superuser,
+                                                   sem_laco_embutido):
+    """O jeito novo de a importação não acontecer: ninguém veio buscá-la.
+
+    Só existe desde que a execução saiu do processo do POST — antes, enfileirar
+    e executar eram o mesmo ato. A mensagem é outra de propósito: reimportar
+    não conserta fila sem executor, e quem lê a tela precisa saber que o
+    problema é da instalação.
+    """
+    from api.services import imports as svc
+
+    job_id = await _import_na_fila(admin, superuser, ha_segundos=24 * 3600)
+    assert await svc.recolher_orfaos() == 1
+
+    j = (await admin.get(f"/v1/projects/{PROJ['slug']}/jobs/{job_id}")).json()
+    assert j["status"] == "failed"
+    assert "api.worker" in j["error"]
+    assert "reimportar" not in j["error"].lower()
+
+
+async def test_fila_que_anda_nao_e_recolhida(admin, superuser,
+                                             sem_laco_embutido):
+    """Esperar a vez não é estar abandonado.
+
+    Três dumps grandes enfileirados juntos: o terceiro passa horas na fila
+    porque os dois primeiros estão sendo importados, e recolhê-lo por isso
+    mataria o comportamento correto de uma fila. O que distingue os dois casos
+    é haver ou não uma importação em curso.
+    """
+    from api.services import imports as svc
+
+    job_id = await _import_na_fila(admin, superuser, ha_segundos=24 * 3600)
+    await _import_preso(admin, superuser, ha_segundos=5)   # uma rodando, viva
+
+    assert await svc.recolher_orfaos() == 0
+    j = (await admin.get(f"/v1/projects/{PROJ['slug']}/jobs/{job_id}")).json()
+    assert j["status"] == "queued"
+
+
+async def _import_na_fila(admin, superuser, *, ha_segundos: int) -> str:
+    """Job de importação em `queued` desde N segundos atrás."""
+    await admin.post("/v1/projects", json=PROJ)
+    import psycopg
+
+    from .conftest import TEST_DSN
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        pid = conn.execute("SELECT id FROM project WHERE slug = %s",
+                           (PROJ["slug"],)).fetchone()[0]
+        row = conn.execute(
+            "INSERT INTO job (project_id, type, payload, status, created_by,"
+            " created_at) VALUES (%s,'import','{}'::jsonb,'queued',%s,"
+            "                     now() - make_interval(secs => %s))"
+            " RETURNING id", (pid, superuser["id"], ha_segundos)).fetchone()
+    return str(row[0])

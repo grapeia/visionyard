@@ -37,6 +37,7 @@ Duas invariantes sustentam o resto:
 |---|---|
 | `api/` | Control API (FastAPI) + interface web servida estática, sem build |
 | `agent/` | worker que roda nas máquinas de execução e reclama jobs |
+| `api/worker.py` | executor da importação: a mesma fila, dentro da API ou como processo próprio |
 | `contracts/` | o que os dois combinam: o payload de cada tipo de job. Só stdlib |
 | `db/` | migrations SQL versionadas, runner e seed do primeiro usuário |
 | `tests/` | suíte da API contra Postgres real |
@@ -113,6 +114,7 @@ As que importam no primeiro dia:
 | `VISIONYARD_DATABASE_URL` | DSN do Postgres |
 | `VISIONYARD_BUCKETS` | JSON de buckets GCS que a instalação enxerga — sem isso a UI não navega imagem nenhuma |
 | `VISIONYARD_IMPORT_ROOT` | raiz permitida para importação de arquivo; é uma cerca, não uma conveniência |
+| `VISIONYARD_IMPORT_WORKER_EMBEDDED` | `false` tira a execução da importação do processo da API — aí `python -m api.worker` precisa estar no ar |
 | `VISIONYARD_COOKIE_SECURE` | `true` em produção, atrás de TLS |
 | `VISIONYARD_TRUSTED_PROXIES` | CIDR dos proxies que terminam TLS; vazio = sem proxy |
 
@@ -152,3 +154,23 @@ no `pyproject.toml`.
 Além de catalogar um prefixo de bucket GCS (sem baixar nada: a listagem já
 traz `md5Hash` e `size`), há um importador de dump do Label Studio. Ambos são
 adaptadores de uma interface comum em `api/importers/`.
+
+A rota **enfileira**; quem executa é `api/worker.py`. Por default o laço dele
+mora dentro do processo da API — uma instalação de uma máquina não precisa
+subir nada a mais. Numa instalação onde a importação disputa recurso com quem
+está usando a tela, ou com mais de uma réplica da API, tire o laço de lá:
+
+```bash
+VISIONYARD_IMPORT_WORKER_EMBEDDED=false   # no ambiente da API
+.venv/bin/python -m api.worker            # e este processo no ar
+```
+
+Não é um agente, e não pode ser: o executor precisa enxergar
+`VISIONYARD_IMPORT_ROOT`, que está no disco de quem serve a API — uma máquina
+de GPU ou de borda não alcança esse caminho. Por isso a importação não passa
+por `contracts/`, e por isso o claim do agente a ignora.
+
+Subir o worker sem desligar o laço embutido não duplica trabalho (o claim é
+`FOR UPDATE SKIP LOCKED`), mas **desligá-lo sem subir o worker** deixa a
+importação parada na fila: depois de `VISIONYARD_IMPORT_JOB_STALE_SECONDS` ela
+é fechada como falha, com uma mensagem dizendo que o processo não está no ar.

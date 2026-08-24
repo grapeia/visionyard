@@ -39,6 +39,7 @@ api/            Control API (FastAPI)
   deps.py       principal da requisição, RBAC por projeto
   routers/      uma rota por arquivo de aba — só HTTP
   services/     a regra de domínio e o SQL que a implementa
+  worker.py     executor da importação: mesma fila, dentro da API ou fora
   importers/    adaptadores de origem (GCS, Label Studio) sobre base.Importer
   static/       módulos ES servidos direto, sem build (app.js é a entrada)
 agent/          worker das máquinas de execução
@@ -64,9 +65,9 @@ recebe escalares e `dict`/`list[dict]`, e é o router que valida e converte.
 linha de SQL. `datasets` está pela metade — `services/datasets.py` tem os
 auxiliares do congelamento (resolve → split → manifesto), mas a regra de
 versionamento e as 21 consultas seguem no `freeze` de `routers/datasets.py`.
-`imports` também: `services/imports.py` tem o ciclo de vida do job (ponto,
-progresso, desfecho, recolhimento), e o resto da rota — cerca de caminho,
-upsert de origem, listagem — segue inline. Os demais (`auth`, `buckets`,
+`imports` está quase: `services/imports.py` tem a fila inteira (enfileirar,
+reclamar, ponto, progresso, desfecho, recolhimento), a cerca de caminho, o
+importador e o upsert de origem; sobrou inline a listagem de jobs do projeto. Os demais (`auth`, `buckets`,
 `devices`, `jobs`, `prelabel`, `projects`, `users`) carregam o SQL inline por
 inteiro. Quando um deles for mexido a sério, a regra vai junto para
 `services/`.
@@ -183,7 +184,9 @@ pede.
   `services/agents.py: TIPOS_LOCAIS`, no claim E no reaper. Sem isso a máquina
   encerra a importação como "tipo não suportado" por cima de quem a está
   executando, e ganha sempre: o prazo do agente (180s) é menor que o dela
-  (900s).
+  (900s). Que a importação agora tenha uma fila e um executor próprio não muda
+  isso — o executor dela é `api/worker.py`, que reclama por
+  `services/imports.py: reclamar` e não pela porta do agente.
 - **O agente não declara capacidade de roteamento.** `registrar_presenca` filtra
   por `CAPS_DIAGNOSTICO`; deixar `train`/`infer` passar permite que um
   dispositivo de borda reclame treino.
@@ -201,15 +204,22 @@ pede.
   `async with db.connection()` + `conn.transaction()`, e todo helper de dentro
   recebe `conn=conn` — inclusive o `audit()`, para que o fato e o seu registro
   comitem juntos.
-- Job de importação roda em `asyncio.create_task` dentro do processo da API: a
-  task morre com o processo, e nenhuma máquina o reclama (ver a invariante
-  acima). Quem cuida dele é
-  `services/imports.py: recolher_orfaos`, chamada nas duas telas de jobs — a
-  importação bate ponto a cada lote e quem parou de bater há
-  `import_job_stale_seconds` é fechada como falha. Toda escrita de desfecho
-  daquele job (`concluir_job`, `falhar_job`) leva `AND status = 'running'` no
-  `WHERE`: sem isso a task que sobreviveu ao recolhimento reescreveria como
-  `succeeded` um job que a tela já deu por interrompido.
+- **A importação é fila, não `create_task`.** O POST enfileira `queued` e
+  responde; quem executa é `api/worker.py`, ou dentro do processo da API
+  (`import_worker_embedded`, o default) ou como `python -m api.worker`. Os dois
+  reclamam da mesma fila com `FOR UPDATE SKIP LOCKED`, então subir os dois não
+  duplica trabalho. Não é job de agente e nunca vai ser: o executor precisa
+  enxergar `import_root`, que está no disco da API.
+  Quem não terminar é fechado por `services/imports.py: recolher_orfaos`,
+  chamada nas duas telas de jobs e a cada volta do laço — em dois casos com
+  mensagens diferentes: a que parou de bater ponto (reimportar resolve) e a que
+  ficou na fila sem executor no ar (reimportar não resolve). O segundo tem a
+  guarda `NOT EXISTS (importação running)`: fila que anda não está abandonada,
+  senão o terceiro de três dumps grandes seria recolhido por esperar a vez.
+  Toda escrita de desfecho (`concluir_job`, `falhar_job`) leva
+  `AND status = 'running'` no `WHERE`: sem isso o executor que sobreviveu ao
+  recolhimento reescreveria como `succeeded` um job que a tela já deu por
+  interrompido.
 - O front monta HTML por template string. Todo valor vindo do servidor passa por
   `esc()`. Não há build nem lint: o descuido não é detectado.
 - **O front é módulo ES nativo, sem build nem bundler.** `app.js` é a entrada

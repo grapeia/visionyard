@@ -1,36 +1,68 @@
-"""Ciclo de vida do job de importação.
+"""A fila da importação: enfileirar, reclamar, bater ponto, fechar.
 
-A importação roda dentro do processo da API (`asyncio.create_task`, em
-`routers/imports.py`), e é o que a torna a única execução do sistema sem dono
-do outro lado: deploy no meio leva a task junto e a linha do job fica em
-`running` para sempre. O reaper do agente não a alcança — ele exige
-`heartbeat_at` e `attempts >= max_attempts`, e importação não batia ponto nem
-conta tentativa.
+A importação é a única execução do sistema que **não** atravessa máquina: ela
+lê o dump e as imagens sob `import_root`, no disco da API, e um dispositivo de
+borda não enxerga esse caminho. Por isso ela não é job de agente e não passa
+por `contracts/jobs.py` — quem a executa é `api/worker.py`, o mesmo código
+rodando ou dentro do processo da API ou como `python -m api.worker`.
 
-Enquanto a execução não sai do processo (item 5 do PLANO), o que fecha o buraco
-é um par: a importação bate ponto enquanto lê, e quem abre a tela de jobs
-recolhe o que parou de bater. Recolher numa leitura é de propósito — é
-exatamente quando o job preso é visto, e numa instalação sem agente nenhum
-nada mais roda periodicamente para fazê-lo.
+O que a fila resolve é a diferença entre *pedir* e *executar*. Antes, quem
+atendia o POST executava a importação ali mesmo (`asyncio.create_task`), e daí
+saíam as três consequências do item 5 do PLANO: deploy no meio matava a
+execução, o hash de um arquivo grande disputava o event loop com quem estava
+atendendo requisição, e não havia como ter mais de uma réplica. Com o job
+nascendo `queued` e sendo reclamado por `FOR UPDATE SKIP LOCKED`, os três
+somem juntos: quem executa pode estar noutro processo, e o job que ninguém
+pegou continua na fila para o próximo.
+
+O recolhimento continua: quem parou de bater ponto é fechado como falha, numa
+leitura de tela — é exatamente quando o job preso é visto, e numa instalação
+sem agente nenhum nada mais roda periodicamente para fazê-lo.
 """
 from __future__ import annotations
 
 import json
+from pathlib import Path as FsPath
 from typing import Any
 
+from fastapi import HTTPException, status
+
 from .. import db
+from ..audit import audit
+from ..auth import Principal
 from ..config import settings
+from ..importers.base import Importer
+from ..importers.gcs_prefix import GCSPrefixImporter
+from ..importers.label_studio import LabelStudioImporter
 
 # Recolher deixa a mensagem na tela de quem importou, que a lê com papel
 # `viewer`: ela diz o que aconteceu e o que fazer. Reimportar é seguro — a
 # identidade da imagem é o md5, então o que já entrou não duplica.
-MOTIVO_ORFAO = ("importação interrompida antes de terminar (o processo da API "
-                "caiu ou reiniciou) — pode reimportar: o que já entrou não "
-                "duplica")
+MOTIVO_ORFAO = ("importação interrompida antes de terminar (o processo que a "
+                "executava caiu ou reiniciou) — pode reimportar: o que já "
+                "entrou não duplica")
+
+# O outro jeito de a importação não acontecer, e que só existe desde que ela
+# saiu do processo do POST: ninguém veio buscá-la. Diz o que fazer a quem
+# administra sem mandar o usuário reimportar — reimportar não conserta fila
+# sem executor.
+MOTIVO_SEM_EXECUTOR = ("importação ficou na fila e ninguém veio executá-la — "
+                       "o processo de importação (`python -m api.worker`) não "
+                       "está no ar; avise quem administra a instalação")
 
 
 async def recolher_orfaos() -> int:
-    """Fecha as importações que pararam de bater ponto. Devolve quantas."""
+    """Fecha as importações que não vão terminar. Devolve quantas.
+
+    Dois casos, com mensagens diferentes porque a ação de quem lê é diferente:
+    a que começou e parou de bater ponto (reimportar resolve), e a que nunca
+    começou porque não há executor no ar (reimportar não resolve).
+
+    O segundo caso pede a guarda do `NOT EXISTS`: uma fila que anda não está
+    abandonada. Sem ela, três importações grandes enfileiradas juntas fariam a
+    terceira ser recolhida por ter esperado a vez — que é justamente o
+    comportamento correto de uma fila.
+    """
     async with db.connection() as conn:
         async with conn.transaction():
             mortas = await db.fetch_all(
@@ -42,10 +74,24 @@ async def recolher_orfaos() -> int:
                 " RETURNING id",
                 {"erro": MOTIVO_ORFAO,
                  "s": settings.import_job_stale_seconds}, conn=conn)
-            for m in mortas:
-                await registrar_evento(str(m["id"]), MOTIVO_ORFAO, "error",
-                                       conn=conn)
-    return len(mortas)
+
+            paradas = await db.fetch_all(
+                "UPDATE job SET status = 'failed', finished_at = now(),"
+                "               error = %(erro)s"
+                " WHERE type = 'import' AND status = 'queued'"
+                "   AND created_at < now() - make_interval(secs => %(s)s)"
+                "   AND NOT EXISTS (SELECT 1 FROM job f"
+                "                    WHERE f.type = 'import'"
+                "                      AND f.status = 'running')"
+                " RETURNING id",
+                {"erro": MOTIVO_SEM_EXECUTOR,
+                 "s": settings.import_job_stale_seconds}, conn=conn)
+
+            for job_id, motivo in ([(m["id"], MOTIVO_ORFAO) for m in mortas]
+                                   + [(q["id"], MOTIVO_SEM_EXECUTOR)
+                                      for q in paradas]):
+                await registrar_evento(str(job_id), motivo, "error", conn=conn)
+    return len(mortas) + len(paradas)
 
 
 async def registrar_evento(job_id: str, mensagem: str, nivel: str = "info",
@@ -101,3 +147,150 @@ async def falhar_job(job_id: str, erro: str,
         "               result = %s::jsonb"
         " WHERE id = %s AND status = 'running'",
         (erro, json.dumps(resultado), job_id))
+
+
+# --------------------------------------------------------------------------- #
+# A origem, o projeto e o importador — o que o router fazia inline
+# --------------------------------------------------------------------------- #
+
+def _dentro_da_raiz(caminho: str) -> FsPath:
+    """Resolve o caminho e exige que ele esteja sob `settings.import_root`.
+
+    `resolve()` antes da comparação porque `../` e symlink escapariam de uma
+    checagem textual.
+    """
+    raiz = FsPath(settings.import_root).resolve()
+    alvo = FsPath(caminho).resolve()
+    if raiz != alvo and raiz not in alvo.parents:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"caminho fora da pasta de importação ({settings.import_root})")
+    return alvo
+
+
+def construir_importador(payload: dict[str, Any]) -> Importer:
+    """O importador descrito pelo payload — o **único** leitor dessa forma.
+
+    Ele é lido duas vezes e em processos diferentes: no POST, para validar a
+    entrada e descrever a origem, e depois pelo executor, que relê a mesma
+    linha de `job.payload`. Ter um leitor só é o que impede a chave renomeada
+    de passar no POST e falhar horas depois no worker — o mesmo motivo do
+    `contracts/jobs.py`, sem precisar dele: os dois leitores são deste
+    repositório e sobem no mesmo deploy.
+
+    A cerca de caminho é conferida nas duas leituras, e não só na primeira:
+    `import_root` é do processo que executa, e o worker pode ter outro.
+    """
+    if payload["kind"] == "gcs_prefix":
+        if not payload["bucket"].strip():
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "informe o bucket")
+        return GCSPrefixImporter(bucket=payload["bucket"],
+                                 prefix=payload["prefix"],
+                                 limit=payload["limit"])
+    if not payload["sqlite_path"]:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                            "informe o caminho do dump do Label Studio")
+    if not payload["image_root"]:
+        # Sem isto o importador pula TODOS os samples (não tem como calcular a
+        # identidade) e o job termina com "succeeded" e zero importados.
+        raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                            "informe onde estão as imagens (image_root)")
+    caminho = _dentro_da_raiz(payload["sqlite_path"])
+    raiz_img = _dentro_da_raiz(payload["image_root"])
+    try:
+        return LabelStudioImporter(
+            sqlite_path=str(caminho), image_root=str(raiz_img),
+            image_base_uri=payload["image_base_uri"],
+            project_id=payload["ls_project_id"])
+    except FileNotFoundError:
+        # Mensagem sem o caminho: dizer "não encontrado em /x/y" confirmaria o
+        # que existe e o que não existe no servidor.
+        raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                            "dump do Label Studio não encontrado") from None
+
+
+async def contexto_do_projeto(project_id: str) -> dict[str, Any]:
+    """Projeto + schema corrente + classes, que é o que `run_import` precisa.
+
+    Resolvido por quem executa, e não gravado no payload: o executor pode ser
+    outro processo, e o que ele tem em mãos é a linha do job.
+    """
+    # Todo projeto nasce com o schema v1 na mesma transação de `create_project`:
+    # existe projeto sem imagem, nunca projeto sem schema.
+    schema = await db.fetch_row(
+        "SELECT id, classes FROM label_schema WHERE project_id = %s"
+        " ORDER BY version DESC LIMIT 1", (project_id,))
+    return {"project_id": project_id, "schema_id": str(schema["id"]),
+            "classes": [c["name"] for c in schema["classes"]]}
+
+
+async def upsert_source(project_id: str, kind: str, uri: str, name: str,
+                        config: dict, actor_id: str) -> str:
+    """Reaproveita a origem existente para o mesmo destino.
+
+    Reimportar o mesmo prefixo não pode criar uma segunda origem, senão o
+    mesmo bucket apareceria duas vezes na tela do dataset.
+    """
+    row = await db.fetch_row(
+        "INSERT INTO data_source (project_id, kind, uri, name, config,"
+        " created_by) VALUES (%s,%s,%s,%s,%s::jsonb,%s)"
+        " ON CONFLICT (project_id, kind, uri) WHERE uri IS NOT NULL"
+        " DO UPDATE SET name = EXCLUDED.name RETURNING id",
+        (project_id, kind, uri, name, json.dumps(config), actor_id))
+    return str(row["id"])
+
+
+# --------------------------------------------------------------------------- #
+# Fila
+# --------------------------------------------------------------------------- #
+
+async def enfileirar(actor: Principal, *, project_id: str, kind: str,
+                     payload: dict[str, Any], source_id: str,
+                     ip: str | None) -> str:
+    """Cria o job `queued` e o registra na auditoria, na mesma transação.
+
+    Nasce `queued`, e não `running` como antes: quem o marca `running` é quem
+    o reclama. Enquanto ninguém reclamou, ele está apenas esperando — e é isso
+    que faz um deploy no meio deixar de matar a importação.
+    """
+    async with db.connection() as conn:
+        async with conn.transaction():
+            job = await db.fetch_row(
+                "INSERT INTO job (project_id, type, payload, status,"
+                " created_by, data_source_id)"
+                " VALUES (%s,'import',%s::jsonb,'queued',%s,%s) RETURNING id",
+                (project_id, json.dumps(payload), actor.id, source_id),
+                conn=conn)
+            job_id = str(job["id"])
+            await audit(actor, "import.start", "job", job_id,
+                        project_id=project_id, after={"kind": kind},
+                        ip=ip, conn=conn)
+    return job_id
+
+
+async def reclamar() -> dict[str, Any] | None:
+    """Pega a próxima importação da fila, ou `None`. Chamada em laço.
+
+    `FOR UPDATE SKIP LOCKED` pela mesma razão do claim do agente: dois
+    executores rodando ao mesmo tempo — duas réplicas da API, ou a API e um
+    worker de fora — nunca pegam o mesmo job, e nenhum dos dois espera pelo
+    outro.
+
+    Só pega `queued`. Importação que travou no meio não volta para a fila: o
+    recolhimento a fecha como falha, e refazê-la é decisão de quem lê a tela —
+    é o mesmo desfecho de antes, e mantê-lo aqui é o que impede esta mudança
+    de virar também uma mudança de política de retentativa.
+    """
+    async with db.connection() as conn:
+        async with conn.transaction():
+            cur = await conn.execute(
+                "UPDATE job SET status = 'running', started_at = now(),"
+                "               heartbeat_at = now(), attempts = attempts + 1"
+                " WHERE id = (SELECT id FROM job"
+                "              WHERE type = 'import' AND status = 'queued'"
+                "                AND NOT cancel_requested"
+                "              ORDER BY priority, created_at"
+                "              FOR UPDATE SKIP LOCKED LIMIT 1)"
+                " RETURNING id, project_id, payload, created_by,"
+                "           data_source_id")
+            return await cur.fetchone()

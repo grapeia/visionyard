@@ -4,8 +4,9 @@
 """
 from __future__ import annotations
 
+import asyncio
 import logging
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Any
 
@@ -14,7 +15,8 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import db, logs
+from . import db, logs, worker
+from .config import settings
 from .routers import agents as agents_router
 from .routers import auth as auth_router
 from .routers import buckets as buckets_router
@@ -34,9 +36,22 @@ from .routers import users as users_router
 async def lifespan(app: FastAPI):
     logs.configurar()
     await db.open_pool()
+    # O laço da importação mora aqui quando `import_worker_embedded` — e a
+    # task sobe de qualquer jeito, porque a configuração é lida a cada volta
+    # do laço, não uma vez na subida. Ela reclama da mesma fila que
+    # `python -m api.worker`: subir os dois não duplica trabalho, o claim é
+    # `FOR UPDATE SKIP LOCKED`.
+    parar = asyncio.Event()
+    laco = asyncio.create_task(
+        worker.lacar(parar, ativo=lambda: settings.import_worker_embedded))
     try:
         yield
     finally:
+        parar.set()
+        worker.cutucar()          # não espera o poll para reparar no `parar`
+        laco.cancel()
+        with suppress(asyncio.CancelledError):
+            await laco
         await db.close_pool()
 
 

@@ -103,32 +103,54 @@ viraram o item 10:
   a do serviço). Conferido rota a rota — as mesmas 41 rotas sem descrição antes
   e depois.
 
-### 5. Importação sair do processo da API — `em curso`
-`imports.py` usa `asyncio.create_task`. Três consequências: deploy no meio
+### 5. Importação sair do processo da API — `feito` (2026-08-24)
+`imports.py` usava `asyncio.create_task`. Três consequências: deploy no meio
 deixava job em `running` para sempre; o hash de arquivo grande disputa o event
 loop com quem está atendendo requisição; e não sobrevive a mais de uma réplica.
 
-**A primeira está fechada** (`dfc39bb`), pela alternativa barata que este item
-já previa. `services/imports.py` leva o ciclo de vida do job: a importação bate
-ponto a cada lote (o progresso já ia ao banco, agora leva `heartbeat_at`
-junto), e `recolher_orfaos` fecha como falha quem parou de bater há
-`import_job_stale_seconds` — 15 minutos, muito acima do prazo do agente, porque
-um dump grande passa minutos numa imagem só. O recolhimento roda nas duas telas
-de jobs, e não num laço periódico: é quando o job preso é visto, e numa
-instalação sem agente nenhum nem o reaper do claim rodaria. As duas escritas de
-desfecho ganharam `AND status = 'running'` — a task pode sobreviver ao
-recolhimento e terminar depois dele.
+**A primeira foi fechada em `dfc39bb`**, pela alternativa barata que este item
+já previa: a importação bate ponto a cada lote e `recolher_orfaos` fecha como
+falha quem parou de bater. Isso continua valendo — é o que fecha a importação
+que começou e morreu no meio.
 
-Sobra a execução sair do processo, e com ela uma decisão de modelo que este
-item supunha resolvida: **o agente não serve de executor de importação**. O
-import do Label Studio lê o dump e as imagens sob `import_root`, no disco da
-API; uma máquina de GPU ou de borda não enxerga esse caminho, e mandá-la
-enxergar seria expor o diretório de importação na rede. O formato que fecha as
-outras duas consequências é um segundo processo do MESMO código
-(`python -m api.worker`) reclamando da mesma fila — mesmo claim, mesmo
-heartbeat, mesmo `job.type`, sem passar por `contracts/jobs.py`, que descreve
-só o que atravessa máquina. O `import` entra em `POR_TIPO` se algum dia a
-origem for exclusivamente remota.
+**As outras duas saíram com a fila** (`api/worker.py`). O POST enfileira
+`queued` e responde; quem executa reclama com `FOR UPDATE SKIP LOCKED` e só aí
+marca `running`. O executor é o mesmo código em dois lugares: dentro do
+processo da API por default (`import_worker_embedded`, para a instalação de uma
+máquina não precisar subir nada a mais) ou como `python -m api.worker`. Com o
+laço fora, o hash para de disputar o event loop; com o claim atômico, duas
+réplicas deixam de ser problema e passam a ser capacidade.
+
+A decisão de modelo que o item supunha resolvida e não estava: **o agente não
+serve de executor de importação**. O import do Label Studio lê o dump e as
+imagens sob `import_root`, no disco da API; uma máquina de GPU ou de borda não
+enxerga esse caminho, e mandá-la enxergar seria expor o diretório de importação
+na rede. Por isso a importação não passa por `contracts/jobs.py`, que descreve
+só o que atravessa máquina, e segue em `TIPOS_LOCAIS` — o claim do agente não a
+alcança. O `import` só entraria em `POR_TIPO` se algum dia a origem fosse
+exclusivamente remota.
+
+Três coisas ficaram registradas por serem escolha, não consequência:
+
+- **O executor não relê o payload por contrato, mas por um leitor só.**
+  `services/imports.py: construir_importador` é chamada pelo POST (para validar
+  a entrada e descrever a origem) e pelo executor (para reconstruir o
+  importador). Ter um leitor é o que impede a chave renomeada de passar no POST
+  e falhar no worker — o mesmo motivo do `contracts/`, sem precisar dele: os
+  dois leitores são deste repositório e sobem no mesmo deploy.
+- **A cerca de caminho é conferida nas duas leituras.** `import_root` é do
+  processo que executa, e o worker pode ter outro.
+- **Reclamar não é retentar.** O claim só pega `queued`; importação que travou
+  no meio continua sendo fechada como falha, e refazê-la segue sendo decisão de
+  quem lê a tela. Mudar isso seria mudar política de retentativa junto, e não é
+  o que este item pedia.
+
+O risco que a mudança criou tem guarda própria: desligar o laço embutido e
+esquecer de subir o worker deixaria a importação parada na fila para sempre. O
+recolhimento ganhou esse segundo caso, com mensagem diferente (reimportar não
+conserta fila sem executor) e com a guarda `NOT EXISTS (importação running)` —
+fila que anda não está abandonada, senão o terceiro de três dumps grandes seria
+recolhido por esperar a vez.
 
 ### 6. Quebrar o `app.js` — `feito` (2026-08-21)
 2.771 linhas, sem módulos, estado global mutável e zero teste. Era o item de
@@ -673,3 +695,16 @@ valer para as duas rotas.
   `anotador.js` importavam `modelos` e o sombreavam com uma lista de mesmo nome
   (`70a23c3`). O quarto virou o item 17: `/train-devices` é decisão de acesso,
   não defeito. Suíte: **210 testes passando** (eram 206).
+- **2026-08-24** — item 5 fechado. `api/worker.py` executa a importação
+  reclamando da fila, dentro da API por default ou como `python -m api.worker`;
+  o POST passou a enfileirar `queued` em vez de executar. `routers/imports.py`
+  perdeu o `_run_job`, a cerca de caminho, a construção do importador e o
+  upsert de origem — foram todos para `services/imports.py`, que era o gatilho
+  que o `CLAUDE.md` previa para essa rota. A conferência que vale foi fora da
+  suíte: API no ar com o laço desligado, POST respondendo `queued`, o job
+  ainda `queued` um segundo depois, e o `python -m api.worker` como processo
+  separado reclamando e concluindo (3 imagens, 2 anotações), com saída limpa no
+  SIGTERM. Os quatro testes novos fixam o que a suíte consegue afirmar: que
+  quem pede não executa, que dois executores não pegam o mesmo job, que fila
+  sem executor é recolhida com a mensagem certa, e que fila que anda não é.
+  Suíte: **214 testes passando** (eram 210).

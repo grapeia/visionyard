@@ -2,43 +2,27 @@
 
 `dry_run=true` responde na hora com o relatório do que aconteceria, sem gravar
 nada — é o modo que se usa para conferir o mapeamento de classes antes de
-mexer no projeto. Sem dry-run, cria um `job` e executa em segundo plano.
-
-A execução é in-process porque importar não usa GPU: o que ela consome é
-I/O de disco/rede. Quando houver origem grande o bastante para justificar,
-o mesmo job pode ser reivindicado por um agente sem mudar o contrato — é por
-isso que ela já nasce como `job` e não como uma chamada síncrona qualquer.
+mexer no projeto. Sem dry-run, a rota **enfileira** e responde: quem executa é
+`api/worker.py`, dentro deste processo ou fora dele conforme
+`import_worker_embedded`. A regra da fila mora em `services/imports.py`.
 """
 from __future__ import annotations
 
-import asyncio
-import json
-import logging
 from datetime import datetime
-from pathlib import Path as FsPath
 from typing import Annotated, Any, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Request, status
 from pydantic import BaseModel, Field
 
-from .. import auth, db
-from ..audit import audit
+from .. import auth, db, worker
 from ..auth import Principal
-from ..config import settings
-from ..deps import require_role
+from ..deps import projeto_ou_404, require_role
 from ..importers.base import ImportReport
-from ..importers.gcs_prefix import GCSPrefixImporter
-from ..importers.label_studio import LabelStudioImporter
 from ..importers.runner import run_import
 from ..services import imports as svc
 
 router = APIRouter(tags=["imports"])
-
-logger = logging.getLogger(__name__)
-
-# Referências fortes das importações em curso (ver create_import).
-_EM_ANDAMENTO: set = set()
 
 
 class ImportIn(BaseModel):
@@ -124,79 +108,6 @@ class DetalheDeJob(BaseModel):
     events: list[EventoDeJob]
 
 
-def _dentro_da_raiz(caminho: str) -> FsPath:
-    """Resolve o caminho e exige que ele esteja sob `settings.import_root`.
-
-    `resolve()` antes da comparação porque `../` e symlink escapariam de uma
-    checagem textual.
-    """
-    raiz = FsPath(settings.import_root).resolve()
-    alvo = FsPath(caminho).resolve()
-    if raiz != alvo and raiz not in alvo.parents:
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST,
-            f"caminho fora da pasta de importação ({settings.import_root})")
-    return alvo
-
-
-def _build_importer(body: ImportIn):
-    if body.kind == "gcs_prefix":
-        if not body.bucket.strip():
-            raise HTTPException(status.HTTP_400_BAD_REQUEST, "informe o bucket")
-        return GCSPrefixImporter(bucket=body.bucket, prefix=body.prefix,
-                                 limit=body.limit)
-    if not body.sqlite_path:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST,
-                            "informe o caminho do dump do Label Studio")
-    if not body.image_root:
-        # Sem isto o importador pula TODOS os samples (não tem como calcular a
-        # identidade) e o job termina com "succeeded" e zero importados.
-        raise HTTPException(status.HTTP_400_BAD_REQUEST,
-                            "informe onde estão as imagens (image_root)")
-    caminho = _dentro_da_raiz(body.sqlite_path)
-    raiz_img = _dentro_da_raiz(body.image_root)
-    try:
-        return LabelStudioImporter(
-            sqlite_path=str(caminho), image_root=str(raiz_img),
-            image_base_uri=body.image_base_uri, project_id=body.ls_project_id)
-    except FileNotFoundError:
-        # Mensagem sem o caminho: dizer "não encontrado em /x/y" confirmaria o
-        # que existe e o que não existe no servidor.
-        raise HTTPException(status.HTTP_400_BAD_REQUEST,
-                            "dump do Label Studio não encontrado") from None
-
-
-async def _upsert_source(project_id: str, kind: str, uri: str, name: str,
-                         config: dict, actor_id: str) -> str:
-    """Reaproveita a origem existente para o mesmo destino.
-
-    Reimportar o mesmo prefixo não pode criar uma segunda origem, senão o
-    mesmo bucket apareceria duas vezes na tela do dataset.
-    """
-    row = await db.fetch_row(
-        "INSERT INTO data_source (project_id, kind, uri, name, config,"
-        " created_by) VALUES (%s,%s,%s,%s,%s::jsonb,%s)"
-        " ON CONFLICT (project_id, kind, uri) WHERE uri IS NOT NULL"
-        " DO UPDATE SET name = EXCLUDED.name RETURNING id",
-        (project_id, kind, uri, name, json.dumps(config), actor_id))
-    return str(row["id"])
-
-
-async def _project_context(slug: str) -> dict:
-    proj = await db.fetch_one(
-        "SELECT id FROM project WHERE slug = %s AND archived_at IS NULL",
-        (slug,))
-    if proj is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "projeto não encontrado")
-    # Todo projeto nasce com o schema v1 na mesma transação de `create_project`:
-    # existe projeto sem imagem, nunca projeto sem schema.
-    schema = await db.fetch_row(
-        "SELECT id, classes FROM label_schema WHERE project_id = %s"
-        " ORDER BY version DESC LIMIT 1", (proj["id"],))
-    return {"project_id": str(proj["id"]), "schema_id": str(schema["id"]),
-            "classes": [c["name"] for c in schema["classes"]]}
-
-
 @router.post("/projects/{project_slug}/imports",
              response_model=Simulacao | ImportacaoEnfileirada)
 async def create_import(body: ImportIn, project_slug: Annotated[str, Path()],
@@ -207,86 +118,48 @@ async def create_import(body: ImportIn, project_slug: Annotated[str, Path()],
 
     Default é `dry_run=true` de propósito: importar é uma operação que mexe no
     dado de todo mundo, e o custo de conferir antes é uma requisição.
+
+    Sem dry-run a rota **não executa**: ela enfileira e responde. O importador
+    ainda é construído aqui porque é o que valida a entrada — caminho fora de
+    `import_root`, dump inexistente, bucket em branco — e o que descreve a
+    origem na resposta. Quem o constrói de novo para executar é o worker, a
+    partir da mesma linha de `job.payload`.
     """
-    ctx = await _project_context(project_slug)
-    importer = _build_importer(body)
-    report = ImportReport()
+    proj = await projeto_ou_404(project_slug)
+    ctx = await svc.contexto_do_projeto(str(proj["id"]))
+    importador = svc.construir_importador(body.model_dump())
 
     if dry_run:
+        report = ImportReport()
         await run_import(project_id=ctx["project_id"],
                          schema_id=ctx["schema_id"],
-                         schema_classes=ctx["classes"], importer=importer,
+                         schema_classes=ctx["classes"], importer=importador,
                          actor_id=actor.id,
                          class_overrides=body.class_overrides,
                          source_id=None, dry_run=True, report=report)
-        return {"dry_run": True, "source": importer.describe(),
-                "source_classes": importer.classes(),
+        return {"dry_run": True, "source": importador.describe(),
+                "source_classes": importador.classes(),
                 "schema_classes": ctx["classes"], "report": report.as_dict()}
 
     uri = (f"gs://{body.bucket.strip('/')}/{body.prefix.lstrip('/')}"
            if body.kind == "gcs_prefix" else body.sqlite_path)
-    source_id = await _upsert_source(
+    source_id = await svc.upsert_source(
         ctx["project_id"],
         "gcs" if body.kind == "gcs_prefix" else "import",
-        uri, importer.describe(), body.model_dump(), actor.id)
-    source = {"id": source_id}
+        uri, importador.describe(), body.model_dump(), actor.id)
 
-    async with db.connection() as conn:
-        async with conn.transaction():
-            job = await db.fetch_row(
-                "INSERT INTO job (project_id, type, payload, status,"
-                " created_by, data_source_id, started_at, heartbeat_at)"
-                " VALUES (%s,'import',%s::jsonb,'running',%s,%s,now(),now())"
-                " RETURNING id",
-                (ctx["project_id"], json.dumps(body.model_dump()), actor.id,
-                 source["id"]), conn=conn)
-            job_id = str(job["id"])
+    job_id = await svc.enfileirar(
+        actor, project_id=ctx["project_id"], kind=body.kind,
+        payload=body.model_dump(), source_id=source_id,
+        ip=auth.client_ip(request))
+    # O laço embutido dorme entre polls; sem o cutucão, começar uma importação
+    # passaria a custar até `import_worker_poll_seconds`, e antes era imediato.
+    worker.cutucar()
 
-            await audit(actor, "import.start", "job", job_id,
-                        project_id=ctx["project_id"],
-                        after={"kind": body.kind},
-                        ip=auth.client_ip(request), conn=conn)
-
-    # Guardar a referência: sem isso o coletor pode recolher a task no meio da
-    # importação e o job fica preso em 'running' para sempre.
-    tarefa = asyncio.create_task(_run_job(job_id, ctx, importer, actor.id,
-                                          body.class_overrides,
-                                          str(source["id"])))
-    _EM_ANDAMENTO.add(tarefa)
-    tarefa.add_done_callback(_EM_ANDAMENTO.discard)
     # Devolve a origem criada/reaproveitada: quem chamou precisa vinculá-la a
     # um dataset, e adivinhar "a mais recente" depois seria uma corrida.
-    return {"dry_run": False, "job_id": job_id, "status": "running",
-            "source_id": source_id, "source": importer.describe()}
-
-
-async def _run_job(job_id: str, ctx: dict, importer, actor_id: str,
-                   overrides: dict, source_id: str) -> None:
-    report = ImportReport()
-    try:
-        await svc.registrar_evento(job_id, f"Importando de {importer.describe()}")
-        await run_import(project_id=ctx["project_id"],
-                         schema_id=ctx["schema_id"],
-                         schema_classes=ctx["classes"], importer=importer,
-                         actor_id=actor_id, class_overrides=overrides,
-                         source_id=source_id, dry_run=False, report=report,
-                         progress_cb=lambda n: svc.registrar_progresso(job_id, n))
-        await svc.concluir_job(job_id, report.as_dict())
-        await svc.registrar_evento(
-            job_id,
-            f"Concluído: {report.samples_created} imagens novas, "
-            f"{report.samples_existing} já existentes, "
-            f"{report.annotations_created} anotações, "
-            f"{report.skipped_total} puladas")
-    except Exception as e:
-        # `job.error` e os eventos são lidos com papel `viewer`. Erro do GCS ou
-        # do banco cita conta de serviço, projeto e caminho interno — detalhe
-        # fica no log, mesmo tratamento já aplicado na navegação de bucket.
-        logger.exception("job de importação %s falhou", job_id)
-        await svc.falhar_job(job_id, f"falhou: {type(e).__name__}",
-                             report.as_dict())
-        await svc.registrar_evento(job_id, f"Falhou ({type(e).__name__}) — "
-                                           f"detalhe no log do servidor", "error")
+    return {"dry_run": False, "job_id": job_id, "status": "queued",
+            "source_id": source_id, "source": importador.describe()}
 
 
 @router.get("/projects/{project_slug}/jobs",
