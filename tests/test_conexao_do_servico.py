@@ -25,7 +25,7 @@ from pathlib import Path
 import pytest
 
 # Serviços já convertidos. Entra um nome aqui a cada migração.
-MIGRADOS = ["datasets", "projects", "users"]
+MIGRADOS = ["datasets", "devices", "projects", "users"]
 
 # Acessos de `db.py`: só valem como `db.X(..., conn=...)`.
 ACESSOS_DB = {"fetch_one", "fetch_all", "fetch_row", "execute"}

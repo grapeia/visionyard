@@ -61,13 +61,13 @@ Duas escolhas dentro dessa divisão, feitas para não criar cerimônia: o servi�
 uma segunda descrição do mesmo erro) e o serviço **não conhece pydantic** —
 recebe escalares e `dict`/`list[dict]`, e é o router que valida e converte.
 
-`agents`, `datasets`, `models`, `projects`, `samples`, `training` e `users` já
-estão assim: o router não tem uma linha de SQL. `imports` está quase:
-`services/imports.py` tem a fila inteira (enfileirar, reclamar, ponto,
+`agents`, `datasets`, `devices`, `models`, `projects`, `samples`, `training` e
+`users` já estão assim: o router não tem uma linha de SQL. `imports` está
+quase: `services/imports.py` tem a fila inteira (enfileirar, reclamar, ponto,
 progresso, desfecho, recolhimento), a cerca de caminho, o importador e o upsert
 de origem; sobrou inline a listagem de jobs do projeto. Os demais (`auth`,
-`buckets`, `devices`, `jobs`, `prelabel`) carregam o SQL inline por inteiro.
-Quando um deles for mexido a sério, a regra vai junto para `services/`.
+`buckets`, `jobs`, `prelabel`) carregam o SQL inline por inteiro. Quando um
+deles for mexido a sério, a regra vai junto para `services/`.
 
 **Serviço migrado recebe `conn`.** É a forma que o item 15 do PLANO tomou, e
 `services/datasets.py` é onde ela já vale: toda função do módulo que fala com o

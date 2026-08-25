@@ -512,9 +512,14 @@ conexão à parte, e duas remoções simultâneas a atravessavam. Ficou registra
 ali o que a migração sozinha **não** resolveria — contar dentro da transação
 continua vendo 2 em READ COMMITTED; o que resolve é lock consultivo.
 
+`devices` foi o quarto (2026-08-24) e não trouxe forma nova — trouxe a mesma
+correção que o review do `users` tinha acabado de ensinar, agora aplicada antes
+de alguém apontar: ler-e-inserir no cadastro de máquina, e contar-e-apagar na
+exclusão.
+
 Faltam os serviços de `agents`, `imports`, `models`, `samples` e `training`, e
-os routers que ainda não têm serviço nenhum (`auth`, `buckets`, `devices`,
-`jobs`, `prelabel`).
+os routers que ainda não têm serviço nenhum (`auth`, `buckets`, `jobs`,
+`prelabel`).
 
 ### 16. Porta de storage — `feito` (2026-08-20)
 O acesso ao GCS está espalhado e sem porta. `routers/samples.py:63` faz
@@ -847,3 +852,13 @@ valer para as duas rotas.
   review supunha dois tokens válidos, e não é isso que acontece), mas garantia
   por violação de unicidade é 500 em quem clicou duas vezes — passou a
   serializar com lock consultivo. Suíte: **230 testes passando** (eram 227).
+- **2026-08-24** — `devices` virou router + serviço (219 → 144 linhas no
+  router). Sem forma nova: o valor foi aplicar de saída a lição do review
+  anterior, em vez de esperar o próximo apontar. Duas correções vieram junto,
+  as duas de ler-decide-escreva com um índice por perto: o cadastro lia o slug
+  e inseria (dois cadastros simultâneos davam 500 no UNIQUE em vez de 409 —
+  virou `ON CONFLICT DO NOTHING`), e a exclusão contava jobs num comando e
+  apagava noutro (a máquina reclamando um job entre os dois deixava o FK
+  recusar com 500, em vez do 409 que explica desativar em lugar de excluir — a
+  condição foi para dentro do `DELETE`, e a contagem só é feita depois, para a
+  mensagem). Suíte: **231 testes passando** (eram 230).

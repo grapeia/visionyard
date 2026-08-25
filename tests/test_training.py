@@ -247,6 +247,24 @@ async def test_run_exige_versao_congelada(admin, tmp_path):
     assert r.status_code == 404
 
 
+async def test_mesmo_slug_cadastrado_duas_vezes_ao_mesmo_tempo(admin):
+    """Ler-e-inserir de novo, agora no cadastro de máquina.
+
+    Duas requisições veem "não existe" — READ COMMITTED dá snapshot novo a cada
+    comando, mesmo dentro de uma transação — e a segunda estoura no UNIQUE de
+    `device.slug`, virando 500 no lugar do 409. Quem decide é o índice.
+    """
+    import asyncio
+
+    corpo = {"slug": "gemea", "name": "Gêmea", "device_class": "gpu-server",
+             "capabilities": {"train": True}}
+    r1, r2 = await asyncio.gather(admin.post("/v1/devices", json=corpo),
+                                  admin.post("/v1/devices", json=corpo))
+    assert sorted([r1.status_code, r2.status_code]) == [201, 409], \
+        (r1.status_code, r1.text, r2.status_code, r2.text)
+    assert len((await admin.get("/v1/devices")).json()) == 1
+
+
 async def test_excluir_device_sem_historico(admin, client, tmp_path):
     """Máquina que nunca rodou nada pode ser excluída."""
     await _device(admin, {"infer": True}, slug="descartavel")
