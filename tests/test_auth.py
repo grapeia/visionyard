@@ -338,3 +338,77 @@ async def test_mesmo_nome_de_token_criado_duas_vezes_ao_mesmo_tempo(admin):
     assert sorted([r1.status_code, r2.status_code]) == [201, 409], \
         (r1.status_code, r1.text, r2.status_code, r2.text)
     assert len((await admin.get("/v1/me/tokens")).json()) == 1
+
+
+# --------------------------------------------------------------------------- #
+# /me/sessions — a tela que não tinha teste nenhum
+# --------------------------------------------------------------------------- #
+
+async def test_listar_sessoes_pelo_cookie(admin):
+    """`user_session.ip` é `inet`, e o psycopg devolve `IPv4Address`.
+
+    O `response_model` declara `str`, então toda sessão com IP — ou seja, toda
+    sessão de verdade — reprovava na validação e virava 500. Ninguém pegou
+    porque esta rota não tinha teste.
+    """
+    r = await admin.get("/v1/me/sessions")
+    assert r.status_code == 200, r.text
+    sessoes = r.json()
+    assert len(sessoes) == 1
+    assert sessoes[0]["current"] is True
+    assert isinstance(sessoes[0]["ip"], str)
+
+
+async def test_listar_sessoes_por_token_de_api(admin, client):
+    """Quem entra por Bearer não tem sessão — e isso não pode ser 500.
+
+    `(id = %s) AS current` com `session_id` nulo dá NULL em toda linha, e o
+    modelo declara `bool`. A pergunta "qual destas é a minha?" tem resposta:
+    nenhuma.
+
+    Cliente sem cookie de propósito: `principal_from_request` prefere o cookie,
+    então mandar o Bearer de um cliente logado não exercitaria este caminho.
+    """
+    tok = (await admin.post("/v1/me/tokens",
+                            json={"name": "leitor"})).json()["token"]
+    async with client.__class__(transport=client._transport,
+                                base_url="http://test") as c2:
+        r = await c2.get("/v1/me/sessions",
+                         headers={"Authorization": f"Bearer {tok}"})
+    assert r.status_code == 200, r.text
+    assert r.json() and all(s["current"] is False for s in r.json())
+
+
+async def test_revogar_sessao_duas_vezes_e_idempotente(admin, client, superuser):
+    """Repetir o DELETE é o cliente que perdeu a resposta, não erro dele.
+
+    O 404 aqui diria "essa sessão não existe" sobre uma que existe e está
+    revogada — e um script que trata 404 como "alguém apagou por baixo" agiria
+    em cima de uma informação falsa.
+    """
+    async with client.__class__(transport=client._transport,
+                                base_url="http://test") as outro:
+        await outro.post("/v1/login", json={"email": superuser["email"],
+                                            "password": superuser["password"]})
+        alvo = next(s for s in (await admin.get("/v1/me/sessions")).json()
+                    if not s["current"])
+
+    assert (await admin.delete(
+        f"/v1/me/sessions/{alvo['id']}")).status_code == 204
+    assert (await admin.delete(
+        f"/v1/me/sessions/{alvo['id']}")).status_code == 204
+
+
+async def test_nome_de_token_revogado_pode_ser_reusado(admin):
+    """O UNIQUE cobria linha revogada; a listagem, não.
+
+    O nome sumia da tela e seguia bloqueando: o usuário via `[]` e recebia
+    "já existe token chamado 'ci'" sobre algo que não conseguia enxergar em
+    lugar nenhum.
+    """
+    tid = (await admin.post("/v1/me/tokens", json={"name": "ci"})).json()["id"]
+    assert (await admin.delete(f"/v1/me/tokens/{tid}")).status_code == 204
+    assert (await admin.get("/v1/me/tokens")).json() == []
+
+    r = await admin.post("/v1/me/tokens", json={"name": "ci"})
+    assert r.status_code == 201, r.text

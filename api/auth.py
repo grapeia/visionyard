@@ -228,9 +228,17 @@ async def revoke_all_sessions(user_id: str, *,
 
 async def listar_sessoes(user: Principal) -> list[dict[str, Any]]:
     async with db.connection() as conn:
+        # `ip::text` porque a coluna é `inet` e o psycopg devolve
+        # `IPv4Address`, que o `response_model` (str) recusa — 500 em toda
+        # sessão que tem IP, ou seja, em todas.
+        #
+        # `IS TRUE` porque quem entra por token de API não tem sessão:
+        # `session_id` é NULL, `id = NULL` dá NULL em toda linha, e o modelo
+        # declara `bool`. A pergunta "qual destas é a minha?" tem resposta —
+        # nenhuma —, e é `false`, não erro.
         return await db.fetch_all(
-            "SELECT id, issued_at, last_seen_at, expires_at, ip, user_agent,"
-            "       (id = %s) AS current"
+            "SELECT id, issued_at, last_seen_at, expires_at, ip::text,"
+            "       user_agent, (id = %s) IS TRUE AS current"
             "  FROM user_session WHERE user_id = %s AND revoked_at IS NULL"
             " ORDER BY last_seen_at DESC", (user.session_id, user.id),
             conn=conn)
@@ -243,10 +251,16 @@ async def revogar_sessao(user: Principal, session_id: UUID) -> None:
     Um comando só, e não ler-para-depois-revogar: entre os dois cabe a sessão
     ser revogada por outro caminho, e o 404 sairia de um estado que já não é o
     que se está decidindo.
+
+    Sem `AND revoked_at IS NULL` de propósito: repetir o DELETE é o cliente que
+    perdeu a resposta, não erro dele. Com a cláusula, a segunda chamada diria
+    "essa sessão não existe" sobre uma que existe e está revogada — e um script
+    que trata 404 como "alguém apagou por baixo" agiria sobre informação falsa.
+    O `now()` a mais numa sessão já revogada não muda nada.
     """
     row = await db.fetch_one(
-        "UPDATE user_session SET revoked_at = now()"
-        " WHERE id = %s AND user_id = %s AND revoked_at IS NULL RETURNING id",
+        "UPDATE user_session SET revoked_at = COALESCE(revoked_at, now())"
+        " WHERE id = %s AND user_id = %s RETURNING id",
         (session_id, user.id))
     if row is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "sessão não encontrada")
@@ -301,14 +315,17 @@ async def criar_token(user: Principal, *, name: str,
     expira = (_now() + timedelta(days=expires_in_days)
               if expires_in_days else None)
     async with db.connection() as conn, conn.transaction():
-        # `ON CONFLICT` e não ler-antes-de-inserir: `api_token` tem
-        # UNIQUE (user_id, name), e duas criações simultâneas do mesmo nome
-        # leem "não existe" as duas — a segunda estouraria no índice, virando
-        # 500 no lugar do 409. Quem decide é o índice.
+        # `ON CONFLICT` e não ler-antes-de-inserir: duas criações simultâneas
+        # do mesmo nome leem "não existe" as duas, e a segunda estouraria no
+        # índice — 500 no lugar do 409. Quem decide é o índice.
+        #
+        # O `WHERE revoked_at IS NULL` casa com o índice parcial da migration
+        # 014, que casa com o que a listagem mostra: antes dela o UNIQUE cobria
+        # linha revogada, então um nome sumia da tela e seguia bloqueando.
         row = await db.fetch_one(
             "INSERT INTO api_token (user_id, name, prefix, token_sha256,"
             " expires_at) VALUES (%s,%s,%s,%s,%s)"
-            " ON CONFLICT (user_id, name) DO NOTHING"
+            " ON CONFLICT (user_id, name) WHERE revoked_at IS NULL DO NOTHING"
             " RETURNING id, name, created_at",
             (user.id, name, token_prefix(token), token_digest(token), expira),
             conn=conn)

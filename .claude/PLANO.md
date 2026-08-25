@@ -896,6 +896,25 @@ valer para as duas rotas.
   o próprio controle de acesso). De `routers/imports.py` saíram o dry-run, o
   upsert de origem e as duas telas de job; ficou no router só o `worker.cutucar()`,
   que é assunto do processo e não da regra — o worker de fora nem é cutucado.
-  Routers somam **2.213 linhas**; serviços, 3.419. Suíte: **232 testes
-  passando** (eram 231), e a conferência do worker fora do processo refeita
-  ponta a ponta depois do refactor de `imports`.
+  Routers somam **2.213 linhas**; serviços, 3.419. Suíte: **238 testes
+  passando**, e a conferência do worker fora do processo refeita ponta a ponta
+  depois do refactor de `imports`. (O número saiu de `pytest --collect-only`;
+  os "231/232" que eu vinha anotando eram contagem de olho na saída de pontos,
+  e não somavam os casos que a parametrização de
+  `test_conexao_do_servico.py` acrescenta a cada serviço migrado.)
+- **2026-08-24** — review do `auth` (alto esforço). Quatro achados, os quatro
+  procedentes, os quatro corrigidos com teste antes. Dois são graves e não eram
+  meus: **`GET /me/sessions` estava quebrada** — 500 em toda chamada. Duas
+  causas independentes, e as duas do mesmo tipo (a linha do banco não cabendo
+  no `response_model` que o item 14 criou): `user_session.ip` é `inet` e o
+  psycopg devolve `IPv4Address` onde o modelo diz `str`; e `(id = %s) AS
+  current` com `session_id` nulo — quem entra por token de API — dá NULL onde o
+  modelo diz `bool`. A rota não tinha um único teste, e é por isso que passou:
+  o item 14 garantiu que toda rota **declara** o que devolve, não que o que ela
+  devolve cabe na declaração.
+  Um é regressão minha: `revogar_sessao` ganhou `AND revoked_at IS NULL` e
+  perdeu a idempotência — repetir o DELETE passou a dar 404 sobre uma sessão
+  que existe e está revogada. O quarto é pré-existente e virou a migration 014:
+  o `UNIQUE (user_id, name)` de `api_token` cobria linha revogada, e a listagem
+  não, então revogar um token fazia o nome sumir da tela e seguir bloqueando.
+  Suíte: **242 testes passando** (eram 238).
