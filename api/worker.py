@@ -36,6 +36,20 @@ from .services import imports as svc
 
 logger = logging.getLogger(__name__)
 
+# O que a tela mostra quando o executor recusa o pedido já gravado. Sem o
+# detalhe de propósito: a recusa que acontece de verdade é a da cerca de
+# caminho, e o texto dela cita `import_root` — o layout de disco do servidor
+# não vai para a tela de quem tem papel `viewer`.
+MOTIVO_RECUSA = ("o processo que executa a importação recusou este pedido — "
+                 "a configuração dele difere da de quem pediu; detalhe no log "
+                 "do servidor")
+
+# Quanto a API espera o laço embutido reparar no pedido de parada antes de
+# cancelá-lo. É para o laço ocioso (o caso quase sempre): ele acorda com o
+# cutucão e sai na mesma volta. Esperar uma importação em curso terminar
+# seguraria o deploy por minutos.
+GRACA_DE_PARADA = 5.0
+
 # Despertador de cada laço vivo. É um conjunto, e não um `Event` de módulo,
 # porque `asyncio.Event` se amarra ao loop em que foi esperado pela primeira
 # vez: um só, criado no import, morreria com "bound to a different event loop"
@@ -80,13 +94,15 @@ async def executar(job: dict) -> None:
             f"{report.annotations_created} anotações, "
             f"{report.skipped_total} puladas")
     except HTTPException as e:
-        # Texto de serviço já é mensagem de usuário em português. Chega aqui
-        # quando o payload deixou de valer entre enfileirar e executar — o caso
-        # real é `import_root` diferente no processo que executa.
+        # Recusa do serviço ao reler o payload: o caso real é `import_root`
+        # diferente no processo que executa. O texto dela é de quem POSTa (um
+        # `engineer`) e cita o caminho configurado no servidor; `job.error` é
+        # lido com papel `viewer`, então aqui vai o motivo sem o caminho, e o
+        # detalhe fica no log — mesmo tratamento do erro de infra.
         logger.warning("importação %s recusada ao executar: %s", job_id,
                        e.detail)
-        await svc.falhar_job(job_id, str(e.detail), report.as_dict())
-        await svc.registrar_evento(job_id, str(e.detail), "error")
+        await svc.falhar_job(job_id, MOTIVO_RECUSA, report.as_dict())
+        await svc.registrar_evento(job_id, MOTIVO_RECUSA, "error")
     except Exception as e:
         # `job.error` e os eventos são lidos com papel `viewer`. Erro do GCS ou
         # do banco cita conta de serviço, projeto e caminho interno — detalhe

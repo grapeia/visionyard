@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from contextlib import asynccontextmanager, suppress
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
@@ -49,9 +49,16 @@ async def lifespan(app: FastAPI):
     finally:
         parar.set()
         worker.cutucar()          # não espera o poll para reparar no `parar`
-        laco.cancel()
-        with suppress(asyncio.CancelledError):
-            await laco
+        try:
+            # A graça é para o laço ocioso, que é o caso quase sempre: sem o
+            # `await`, `parar` e `cutucar` eram teatro — o `cancel()` na linha
+            # seguinte chegava antes de a task voltar a rodar para vê-los.
+            # Importação em curso não cabe na graça (leva minutos), e o
+            # `wait_for` a cancela: o job fica em `running` e quem o fecha é
+            # `recolher_orfaos`, como já era antes de haver fila.
+            await asyncio.wait_for(laco, timeout=worker.GRACA_DE_PARADA)
+        except (TimeoutError, asyncio.CancelledError):
+            pass
         await db.close_pool()
 
 

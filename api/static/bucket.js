@@ -92,10 +92,18 @@ $("formOrigem").addEventListener("submit", comTravaDeEnvio($("formOrigem"), asyn
       limit: limite ? Number(limite) : null,
     });
     $("dlgOrigem").close();
-    await esperarJob(r.job_id);
+    // Vincular ANTES de esperar. O `source_id` já veio do POST e o vínculo não
+    // depende de a catalogação ter terminado; esperando primeiro, a espera que
+    // estoura deixava a origem sem vínculo nenhum — o usuário via um dataset
+    // vazio e nada que ligasse uma coisa à outra. E a espera passou a incluir
+    // a vez na fila, porque a importação agora é executada uma de cada vez.
     await api(`/projects/${estado.projeto}/datasets/${estado.atual}` +
               `/sources/${r.source_id}`, { method: "PUT" });
     $("formOrigem").reset();
-    await abrirDataset(estado.atual);
+    try {
+      await esperarJob(r.job_id);
+    } finally {
+      await abrirDataset(estado.atual);
+    }
   } catch (e) { avisar(e.message, true); }
 }));

@@ -609,7 +609,8 @@ async def test_fila_que_anda_nao_e_recolhida(admin, superuser,
     assert j["status"] == "queued"
 
 
-async def _import_na_fila(admin, superuser, *, ha_segundos: int) -> str:
+async def _import_na_fila(admin, superuser, *, ha_segundos: int,
+                          payload: dict | None = None) -> str:
     """Job de importação em `queued` desde N segundos atrás."""
     await admin.post("/v1/projects", json=PROJ)
     import psycopg
@@ -620,7 +621,123 @@ async def _import_na_fila(admin, superuser, *, ha_segundos: int) -> str:
                            (PROJ["slug"],)).fetchone()[0]
         row = conn.execute(
             "INSERT INTO job (project_id, type, payload, status, created_by,"
-            " created_at) VALUES (%s,'import','{}'::jsonb,'queued',%s,"
+            " created_at) VALUES (%s,'import',%s::jsonb,'queued',%s,"
             "                     now() - make_interval(secs => %s))"
-            " RETURNING id", (pid, superuser["id"], ha_segundos)).fetchone()
+            " RETURNING id",
+            (pid, json.dumps(payload or {}), superuser["id"],
+             ha_segundos)).fetchone()
     return str(row[0])
+
+
+async def _import_concluido(admin, superuser, *, ha_segundos: int) -> str:
+    """Job de importação que terminou bem há N segundos — prova de que havia
+    executor no ar naquele instante."""
+    await admin.post("/v1/projects", json=PROJ)
+    import psycopg
+
+    from .conftest import TEST_DSN
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        pid = conn.execute("SELECT id FROM project WHERE slug = %s",
+                           (PROJ["slug"],)).fetchone()[0]
+        row = conn.execute(
+            "INSERT INTO job (project_id, type, payload, status, created_by,"
+            " started_at, finished_at)"
+            " VALUES (%s,'import','{}'::jsonb,'succeeded',%s,"
+            "         now() - make_interval(secs => %s),"
+            "         now() - make_interval(secs => %s)) RETURNING id",
+            (pid, superuser["id"], ha_segundos + 1, ha_segundos)).fetchone()
+    return str(row[0])
+
+
+async def test_recolher_uma_travada_nao_leva_a_fila_junto(admin, superuser,
+                                                          sem_laco_embutido):
+    """Recolher a que travou não é prova de que ninguém está executando.
+
+    A guarda da fila olhava só `NOT EXISTS (importação running)` — e o UPDATE
+    logo acima, na mesma transação, acabara de tirar do `running` a que passou
+    do prazo. O executor podia estar vivo (um dump grande passa minutos numa
+    imagem só, sem bater ponto), e a fila atrás dele morria junto, com uma
+    mensagem dizendo que o processo não está no ar.
+    """
+    from api.services import imports as svc
+
+    fila = await _import_na_fila(admin, superuser, ha_segundos=24 * 3600)
+    await _import_preso(admin, superuser, ha_segundos=24 * 3600)
+
+    assert await svc.recolher_orfaos() == 1        # só a travada
+    j = (await admin.get(f"/v1/projects/{PROJ['slug']}/jobs/{fila}")).json()
+    assert j["status"] == "queued"
+
+
+async def test_importacao_recem_concluida_protege_a_fila(admin, superuser,
+                                                         sem_laco_embutido):
+    """Entre terminar uma e reclamar a próxima, nenhuma está `running`.
+
+    Uma tela de jobs aberta nesse instante recolhia a fila inteira. Ter
+    terminado uma importação há pouco é a mesma prova de vida que estar
+    executando uma.
+    """
+    from api.services import imports as svc
+
+    fila = await _import_na_fila(admin, superuser, ha_segundos=24 * 3600)
+    await _import_concluido(admin, superuser, ha_segundos=5)
+
+    assert await svc.recolher_orfaos() == 0
+    j = (await admin.get(f"/v1/projects/{PROJ['slug']}/jobs/{fila}")).json()
+    assert j["status"] == "queued"
+
+
+def test_payload_sem_a_chave_de_hoje_ainda_e_lido():
+    """O payload atravessa deploy desde que a importação virou fila.
+
+    Job enfileirado antes de um deploy é reclamado depois dele — é a mesma
+    assimetria do `contracts/jobs.py`, e a mesma regra: campo novo entra com
+    default. Lendo com `[]`, acrescentar um campo ao `ImportIn` mataria com
+    `KeyError` tudo o que já estava na fila.
+    """
+    from api.services import imports as svc
+
+    imp = svc.construir_importador({"kind": "gcs_prefix", "bucket": "b"})
+    assert "b" in imp.describe()
+
+
+async def test_erro_do_executor_nao_publica_caminho_do_servidor(
+        admin, superuser, tmp_path, sem_laco_embutido):
+    """`job.error` é lido com papel `viewer` — a cerca cita `import_root`.
+
+    O caso é o que o próprio executor prevê: worker com `import_root` diferente
+    do de quem pediu. A recusa é legítima, mas o texto dela punha o caminho
+    absoluto do servidor na tela de todo mundo.
+    """
+    from api import worker
+    from api.config import settings
+
+    job_id = await _import_na_fila(
+        admin, superuser, ha_segundos=0,
+        payload={"kind": "label_studio_sqlite",
+                 "sqlite_path": "/fora/da/cerca/ls.sqlite3",
+                 "image_root": "/fora/da/cerca"})
+    assert await worker.passo() is True
+
+    j = (await admin.get(f"/v1/projects/{PROJ['slug']}/jobs/{job_id}")).json()
+    assert j["status"] == "failed"
+    assert settings.import_root not in j["error"]
+    assert all(settings.import_root not in e["message"] for e in j["events"])
+
+
+async def test_maquina_nao_reclama_importacao_na_fila(admin, client, superuser,
+                                                      sem_laco_embutido):
+    """A importação passou a existir em `queued` — o estado que o claim mira.
+
+    `requires` vazio casa com qualquer capacidade e o claim não filtra por
+    tipo: o que a mantém fora é `TIPOS_LOCAIS`. Antes desta fila o caso era
+    inalcançável (o job nascia `running`), e o teste que existia só cobria o
+    órfão.
+    """
+    from .test_training import _device, _h
+
+    await _import_na_fila(admin, superuser, ha_segundos=0)
+    dev = await _device(admin, {"train": True, "infer": True}, slug="qualquer")
+    r = await client.post("/v1/agent/claim", headers=_h(dev["token"]))
+    assert r.status_code == 200
+    assert r.json()["job"] is None

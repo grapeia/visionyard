@@ -58,10 +58,22 @@ async def recolher_orfaos() -> int:
     a que começou e parou de bater ponto (reimportar resolve), e a que nunca
     começou porque não há executor no ar (reimportar não resolve).
 
-    O segundo caso pede a guarda do `NOT EXISTS`: uma fila que anda não está
-    abandonada. Sem ela, três importações grandes enfileiradas juntas fariam a
-    terceira ser recolhida por ter esperado a vez — que é justamente o
-    comportamento correto de uma fila.
+    O segundo caso é o delicado: fila que anda não está abandonada, e recolhê-la
+    faria a terceira de três importações grandes morrer por ter esperado a vez.
+    A prova de vida é dupla, e as duas metades são necessárias — **estar**
+    executando uma agora, ou **ter terminado** uma há pouco:
+
+    - só `running` deixava dois buracos. Um é o intervalo entre concluir uma e
+      reclamar a próxima, em que nenhuma está `running` e uma tela de jobs
+      aberta nesse instante recolheria a fila inteira. O outro é pior: o UPDATE
+      logo acima acaba de tirar do `running`, na mesma transação, justamente a
+      que passou do prazo — e um dump grande passa minutos numa imagem só sem
+      bater ponto, com o executor vivo do outro lado.
+    - `finished_at` recente fecha os dois: quem terminou alguma coisa há menos
+      de um prazo estava no ar há menos de um prazo.
+
+    A prova é da instalação, e não do projeto, de propósito: o executor é um só
+    para todos os projetos, então é a liveness dele que se está medindo.
     """
     async with db.connection() as conn:
         async with conn.transaction():
@@ -82,7 +94,9 @@ async def recolher_orfaos() -> int:
                 "   AND created_at < now() - make_interval(secs => %(s)s)"
                 "   AND NOT EXISTS (SELECT 1 FROM job f"
                 "                    WHERE f.type = 'import'"
-                "                      AND f.status = 'running')"
+                "                      AND (f.status = 'running'"
+                "                           OR f.finished_at > now()"
+                "                              - make_interval(secs => %(s)s)))"
                 " RETURNING id",
                 {"erro": MOTIVO_SEM_EXECUTOR,
                  "s": settings.import_job_stale_seconds}, conn=conn)
@@ -174,23 +188,36 @@ def construir_importador(payload: dict[str, Any]) -> Importer:
     Ele é lido duas vezes e em processos diferentes: no POST, para validar a
     entrada e descrever a origem, e depois pelo executor, que relê a mesma
     linha de `job.payload`. Ter um leitor só é o que impede a chave renomeada
-    de passar no POST e falhar horas depois no worker — o mesmo motivo do
-    `contracts/jobs.py`, sem precisar dele: os dois leitores são deste
-    repositório e sobem no mesmo deploy.
+    de passar no POST e falhar depois no executor.
+
+    **Toda chave é lida com default**, pela mesma razão que vale para
+    `contracts/jobs.py`: desde que a importação virou fila, um job enfileirado
+    antes de um deploy é reclamado depois dele, e o que atravessa é o payload,
+    não o código. Campo novo no `ImportIn` lido aqui com `[]` mataria com
+    `KeyError` tudo o que já estava na fila.
 
     A cerca de caminho é conferida nas duas leituras, e não só na primeira:
     `import_root` é do processo que executa, e o worker pode ter outro.
     """
-    if payload["kind"] == "gcs_prefix":
-        if not payload["bucket"].strip():
+    kind = payload.get("kind")
+    if kind == "gcs_prefix":
+        if not payload.get("bucket", "").strip():
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "informe o bucket")
         return GCSPrefixImporter(bucket=payload["bucket"],
-                                 prefix=payload["prefix"],
-                                 limit=payload["limit"])
-    if not payload["sqlite_path"]:
+                                 prefix=payload.get("prefix", ""),
+                                 limit=payload.get("limit"))
+    if kind != "label_studio_sqlite":
+        # Payload que este processo não sabe ler. Acontece com job enfileirado
+        # por um controlador mais novo — o mesmo caso do `PayloadInvalido` do
+        # contrato do agente, e a mensagem tem de dizer o que fazer.
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"origem de importação desconhecida ({kind!r}) — atualize o "
+            f"processo que executa a importação")
+    if not payload.get("sqlite_path"):
         raise HTTPException(status.HTTP_400_BAD_REQUEST,
                             "informe o caminho do dump do Label Studio")
-    if not payload["image_root"]:
+    if not payload.get("image_root"):
         # Sem isto o importador pula TODOS os samples (não tem como calcular a
         # identidade) e o job termina com "succeeded" e zero importados.
         raise HTTPException(status.HTTP_400_BAD_REQUEST,
@@ -200,8 +227,8 @@ def construir_importador(payload: dict[str, Any]) -> Importer:
     try:
         return LabelStudioImporter(
             sqlite_path=str(caminho), image_root=str(raiz_img),
-            image_base_uri=payload["image_base_uri"],
-            project_id=payload["ls_project_id"])
+            image_base_uri=payload.get("image_base_uri", ""),
+            project_id=payload.get("ls_project_id"))
     except FileNotFoundError:
         # Mensagem sem o caminho: dizer "não encontrado em /x/y" confirmaria o
         # que existe e o que não existe no servidor.

@@ -708,3 +708,31 @@ valer para as duas rotas.
   quem pede não executa, que dois executores não pegam o mesmo job, que fila
   sem executor é recolhida com a mensagem certa, e que fila que anda não é.
   Suíte: **214 testes passando** (eram 210).
+- **2026-08-24** — review do `dde88be` (alto esforço). Seis achados, os seis
+  procedentes, os seis corrigidos; quatro com teste antes.
+  Dois são consequência do que a fila trouxe e eu não tinha visto. A guarda que
+  protege a fila do recolhimento olhava só `NOT EXISTS (import running)`, e
+  isso não é prova de vida do executor: o UPDATE logo acima, na mesma
+  transação, acaba de tirar do `running` justamente a que passou do prazo — e
+  um dump grande passa minutos numa imagem só com o executor vivo do outro
+  lado. Havia ainda o intervalo entre concluir uma e reclamar a próxima. A
+  prova virou dupla: estar executando **ou** ter terminado há menos de um
+  prazo. E `construir_importador` lia o payload com `[]` sob a justificativa de
+  que os dois leitores sobem no mesmo deploy — o que este mesmo commit tornou
+  falso, porque agora é o payload que atravessa o deploy, não o código. Toda
+  chave passou a ser lida com default, pela mesma regra do `contracts/`.
+  Um é do front e não estava no diff: `bucket.js` esperava a importação
+  terminar **antes** de vincular a origem ao dataset, e a espera do `esperarJob`
+  estoura em 6 min. Com a execução serializada, esperar a vez de outra
+  importação passou a contar no mesmo orçamento — e a espera que estoura
+  deixava a origem sem vínculo nenhum, com o usuário vendo um dataset vazio. O
+  vínculo passou a ser feito antes: ele nunca dependeu de a catalogação ter
+  terminado.
+  Os outros três: `job.error` publicava `import_root` para papel `viewer` na
+  recusa do executor (o caminho absoluto do servidor na tela de todo mundo);
+  o `parar.set()` do lifespan era teatro, porque o `cancel()` da linha seguinte
+  chegava antes de a task voltar a rodar — agora há uma graça de 5s, que é o
+  que o laço ocioso precisa; e faltava teste para o caso que a fila tornou
+  alcançável, um device reclamando enquanto uma importação está `queued` (o
+  `TIPOS_LOCAIS` já a barrava, mas nada afirmava isso). Suíte: **219 testes
+  passando** (eram 214).
