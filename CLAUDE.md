@@ -61,18 +61,19 @@ Duas escolhas dentro dessa divisão, feitas para não criar cerimônia: o servi�
 uma segunda descrição do mesmo erro) e o serviço **não conhece pydantic** —
 recebe escalares e `dict`/`list[dict]`, e é o router que valida e converte.
 
-Todos já estão assim, com duas ressalvas. `imports` está quase:
-`services/imports.py` tem a fila inteira (enfileirar, reclamar, ponto,
-progresso, desfecho, recolhimento), a cerca de caminho, o importador e o upsert
-de origem; sobrou inline a listagem de jobs do projeto. E `auth` é o único
-router que ainda carrega SQL por inteiro — tokens de API, sessões e troca de
-senha. Quando ele for mexido a sério, a regra vai junto: para `api/auth.py`, e
-não para um `services/auth.py`, porque é `api/auth.py` que já é o serviço desse
-domínio (login, sessão, token) e de quem `deps.py` depende.
+**Nenhum router tem uma linha de SQL** — `grep` por `"SELECT` em
+`api/routers/` não acha nada, e é assim que se confere. Duas notas de layout:
 
-`services/buckets.py` é o único serviço sem uma linha de SQL: o que ele guarda
-é a cerca da allowlist e a forma da navegação, e o acesso ao GCS passa pela
-porta de `storage.py`.
+- O serviço de `auth` é `api/auth.py`, e não `services/auth.py`: dividir login,
+  sessão e token em dois arquivos que precisariam se importar não ajudaria
+  ninguém, e é de `api/auth.py` que `deps.py` depende. Lá convivem duas
+  convenções de erro, de propósito — o caminho de login levanta
+  `AuthError`/`ThrottledError` porque a escolha entre 401 e 429 é de
+  apresentação (e a mensagem não pode dizer qual foi); o resto levanta
+  `HTTPException` como todo serviço.
+- `services/buckets.py` é o único serviço sem uma linha de SQL: o que ele
+  guarda é a cerca da allowlist e a forma da navegação, e o acesso ao GCS passa
+  pela porta de `storage.py`.
 
 **Serviço migrado recebe `conn`.** É a forma que o item 15 do PLANO tomou, e
 `services/datasets.py` é onde ela já vale: toda função do módulo que fala com o
@@ -84,8 +85,14 @@ tipo aceita, o lint aceita e a suíte passa, porque o resultado só diverge sob
 concorrência. `tests/test_conexao_do_servico.py` varre por AST cada serviço
 da sua lista `MIGRADOS` — entra um nome ali a cada migração — e reprova
 `db.fetch_*`/`db.execute` sem `conn=`, o acesso importado solto e o auxiliar
-que alcança o pool sozinho (`deps.projeto_ou_404`). Os serviços ainda não
-migrados seguem alcançando o pool; a regra vale por módulo.
+que alcança o pool sozinho (`deps.projeto_ou_404`).
+
+A lista é dos módulos que adotaram a disciplina **inteira**. Ficam de fora os
+que têm escrita de comando único por natureza e que não pode esperar transação
+de ninguém — o ponto da importação, o contador de tentativa de login, o toque
+de `last_seen_at` da sessão. Nesses (`imports`, `auth`, e os serviços de
+`agents`, `models`, `samples`, `training`, ainda por converter) a regra vale
+onde há sequência leia-decida-escreva, e é revisão que confere.
 
 **`conn.transaction()` vai no mesmo `async with` que abre a conexão.** O
 psycopg decide o que o bloco é pelo estado da conexão: ociosa, abre transação;

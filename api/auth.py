@@ -11,14 +11,29 @@ Dois tipos de principal chegam pela mesma porta:
 
 A distinção importa pra atribuição: job.created_by é a pessoa, job.device_id é
 a máquina.
+
+**Este módulo é o serviço do domínio de autenticação** — não há
+`services/auth.py`, porque dividir login, sessão e token em dois arquivos que
+precisariam se importar não ajudaria ninguém, e é daqui que `deps.py` depende.
+Vale para ele a forma do item 15 do PLANO: quem abre a conexão é a função
+pública, e `conn.transaction()` vai no mesmo `async with`.
+
+Duas convenções de erro convivem aqui, de propósito. O caminho de **login**
+levanta `AuthError`/`ThrottledError` e é o router que decide o status: ali a
+distinção entre "credencial errada" (401) e "excedeu a tentativa" (429) é
+escolha de apresentação, e a mensagem que vai ao usuário não pode dizer qual
+das duas foi. O resto — token, sessão, senha — levanta `HTTPException` como
+todo serviço do repositório.
 """
 from __future__ import annotations
 
 import ipaddress
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from typing import Any
+from uuid import UUID
 
-from fastapi import Request
+from fastapi import HTTPException, Request, status
 
 from . import db
 from .audit import audit
@@ -29,6 +44,7 @@ from .security import (
     needs_rehash,
     new_token,
     token_digest,
+    token_prefix,
     verify_password,
 )
 
@@ -210,9 +226,116 @@ async def revoke_all_sessions(user_id: str, *,
                      conn=conn)
 
 
+async def listar_sessoes(user: Principal) -> list[dict[str, Any]]:
+    async with db.connection() as conn:
+        return await db.fetch_all(
+            "SELECT id, issued_at, last_seen_at, expires_at, ip, user_agent,"
+            "       (id = %s) AS current"
+            "  FROM user_session WHERE user_id = %s AND revoked_at IS NULL"
+            " ORDER BY last_seen_at DESC", (user.session_id, user.id),
+            conn=conn)
+
+
+async def revogar_sessao(user: Principal, session_id: UUID) -> None:
+    """Derruba uma sessão minha. O `user_id` no `WHERE` **é** o controle de
+    acesso: sem ele, o id de outra pessoa derrubaria a sessão dela.
+
+    Um comando só, e não ler-para-depois-revogar: entre os dois cabe a sessão
+    ser revogada por outro caminho, e o 404 sairia de um estado que já não é o
+    que se está decidindo.
+    """
+    row = await db.fetch_one(
+        "UPDATE user_session SET revoked_at = now()"
+        " WHERE id = %s AND user_id = %s AND revoked_at IS NULL RETURNING id",
+        (session_id, user.id))
+    if row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "sessão não encontrada")
+
+
+async def trocar_senha(user: Principal, *, atual: str, nova: str,
+                       ip: str | None) -> None:
+    """Troca a senha e derruba TODO acesso anterior — sessões e tokens de API.
+
+    Só revogar sessão deixava o atacante dentro: um token criado por ele segue
+    autenticando via Bearer e, sem `expires_at`, nunca expira. Quem troca a
+    senha porque ela vazou espera exatamente o contrário. Numa transação só:
+    senha nova com sessão antiga viva é o pior dos dois mundos.
+    """
+    async with db.connection() as conn, conn.transaction():
+        row = await db.fetch_one(
+            "SELECT password_hash FROM app_user WHERE id = %s", (user.id,),
+            conn=conn)
+        if not row or not verify_password(atual, row["password_hash"]):
+            raise HTTPException(status.HTTP_403_FORBIDDEN,
+                                "senha atual incorreta")
+        await db.execute("UPDATE app_user SET password_hash = %s WHERE id = %s",
+                         (hash_password(nova), user.id), conn=conn)
+        await revoke_all_sessions(user.id, conn=conn)
+        await db.execute(
+            "UPDATE api_token SET revoked_at = now()"
+            " WHERE user_id = %s AND revoked_at IS NULL", (user.id,), conn=conn)
+        await audit(user, "user.password.change", "app_user", user.id, ip=ip,
+                    conn=conn)
+
+
 # --------------------------------------------------------------------------- #
 # Token de API (script agindo como um usuário)
 # --------------------------------------------------------------------------- #
+
+async def listar_tokens(user: Principal) -> list[dict[str, Any]]:
+    async with db.connection() as conn:
+        return await db.fetch_all(
+            "SELECT id, name, prefix, created_at, expires_at, last_used_at"
+            "  FROM api_token WHERE user_id = %s AND revoked_at IS NULL"
+            " ORDER BY created_at DESC", (user.id,), conn=conn)
+
+
+async def criar_token(user: Principal, *, name: str,
+                      expires_in_days: int | None,
+                      ip: str | None) -> dict[str, Any]:
+    """Token de API que age COMO este usuário (herda os papéis dele).
+
+    O valor é devolvido uma única vez — o banco guarda só o sha256.
+    """
+    token = new_token()
+    expira = (_now() + timedelta(days=expires_in_days)
+              if expires_in_days else None)
+    async with db.connection() as conn, conn.transaction():
+        # `ON CONFLICT` e não ler-antes-de-inserir: `api_token` tem
+        # UNIQUE (user_id, name), e duas criações simultâneas do mesmo nome
+        # leem "não existe" as duas — a segunda estouraria no índice, virando
+        # 500 no lugar do 409. Quem decide é o índice.
+        row = await db.fetch_one(
+            "INSERT INTO api_token (user_id, name, prefix, token_sha256,"
+            " expires_at) VALUES (%s,%s,%s,%s,%s)"
+            " ON CONFLICT (user_id, name) DO NOTHING"
+            " RETURNING id, name, created_at",
+            (user.id, name, token_prefix(token), token_digest(token), expira),
+            conn=conn)
+        if row is None:
+            raise HTTPException(status.HTTP_409_CONFLICT,
+                                f"já existe token chamado '{name}'")
+        await audit(user, "token.create", "api_token", str(row["id"]),
+                    after={"name": name}, ip=ip, conn=conn)
+    return {**row, "token": token}
+
+
+async def revogar_token(user: Principal, token_id: UUID,
+                        ip: str | None) -> None:
+    """O `user_id` no `WHERE` **é** o controle de acesso, como em
+    `revogar_sessao`."""
+    async with db.connection() as conn, conn.transaction():
+        row = await db.fetch_one(
+            "UPDATE api_token SET revoked_at = now()"
+            " WHERE id = %s AND user_id = %s AND revoked_at IS NULL"
+            " RETURNING id", (token_id, user.id), conn=conn)
+        if row is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND,
+                                "token não encontrado")
+        await audit(user, "token.revoke", "api_token", str(token_id), ip=ip,
+                    conn=conn)
+
+
 
 async def resolve_api_token(token: str) -> Principal:
     row = await db.fetch_one(

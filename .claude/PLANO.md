@@ -517,13 +517,18 @@ correção que o review do `users` tinha acabado de ensinar, agora aplicada ante
 de alguém apontar: ler-e-inserir no cadastro de máquina, e contar-e-apagar na
 exclusão.
 
-`prelabel`, `jobs` e `buckets` fecharam a fila de routers (2026-08-24). Falta
-só `auth`, e ele tem uma decisão de layout antes: a regra dele vai para
-`api/auth.py`, que já é o serviço desse domínio, e não para um `services/auth.py`
-que dividiria o mesmo assunto em dois arquivos.
+**A fila de routers fechou em 2026-08-24**: nenhum tem mais uma linha de SQL.
+O `auth` foi o último, e a regra dele foi para `api/auth.py` — que já era o
+serviço desse domínio — e não para um `services/auth.py` que dividiria o mesmo
+assunto em dois arquivos.
 
-Faltam ainda os serviços que existiam antes desta forma e seguem alcançando o
-pool: `agents`, `imports`, `models`, `samples` e `training`.
+O que sobra do item 15 não é router, é serviço: `agents`, `models`, `samples` e
+`training` foram escritos antes desta forma e ainda alcançam o pool. `imports` e
+`auth` estão no meio do caminho de propósito — as sequências leia-decida-escreva
+deles já recebem `conn`, mas as escritas de comando único (o ponto da
+importação, o contador de tentativa de login, o toque de `last_seen_at`) não
+podem esperar transação de ninguém, e por isso os dois ficam fora da lista
+`MIGRADOS` da varredura.
 
 ### 16. Porta de storage — `feito` (2026-08-20)
 O acesso ao GCS está espalhado e sem porta. `routers/samples.py:63` faz
@@ -878,3 +883,19 @@ valer para as duas rotas.
   serviço que não importa `db`, e por isso fica fora da varredura de conexão.
   Os routers somam **2.336 linhas** contra 2.771 só do `app.js` antes do item
   6. Suíte: **231 testes passando**.
+- **2026-08-24** — `auth` migrado e `imports` terminado: **nenhum router tem
+  mais SQL**. Os handlers de token, sessão e senha saíram de
+  `routers/auth.py` (261 → 196 linhas) para `api/auth.py`, com a decisão de
+  layout escrita lá: `api/auth.py` já era o serviço do domínio, e um
+  `services/auth.py` dividiria login/sessão/token em dois arquivos que
+  precisariam se importar. Uma correção junto, a mesma família das últimas: a
+  criação de token de API lia `(user_id, name)` antes de inserir, e o UNIQUE da
+  tabela transformava duas criações simultâneas do mesmo nome em 500 — virou
+  `ON CONFLICT DO NOTHING`. Duas outras leituras que decidiam viraram um
+  comando só (revogar token e revogar sessão, com o `user_id` no `WHERE` sendo
+  o próprio controle de acesso). De `routers/imports.py` saíram o dry-run, o
+  upsert de origem e as duas telas de job; ficou no router só o `worker.cutucar()`,
+  que é assunto do processo e não da regra — o worker de fora nem é cutucado.
+  Routers somam **2.213 linhas**; serviços, 3.419. Suíte: **232 testes
+  passando** (eram 231), e a conferência do worker fora do processo refeita
+  ponta a ponta depois do refactor de `imports`.

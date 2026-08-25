@@ -1,28 +1,21 @@
-"""Rotas de autenticação: login, logout, quem sou eu, trocar senha."""
+"""Rotas de autenticação: login, logout, quem sou eu, trocar senha.
+
+Só HTTP: o corpo, o `response_model`, o cookie e o código de status. A regra
+mora em `api/auth.py`, que é o serviço deste domínio — não há
+`services/auth.py`; o porquê está lá.
+"""
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import datetime
 from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Path, Request, Response, status
 from pydantic import BaseModel, EmailStr, Field
 
-from .. import auth, db
-from ..audit import audit
+from .. import auth
 from ..config import settings
 from ..deps import CurrentUser
-from ..security import (
-    hash_password,
-    new_token,
-    token_digest,
-    token_prefix,
-    verify_password,
-)
-
-
-def _utcnow() -> datetime:
-    return datetime.now(UTC)
 
 router = APIRouter(tags=["auth"])
 
@@ -153,10 +146,7 @@ async def accept_invite(body: InviteAcceptIn, request: Request,
 
 @router.get("/me/tokens", response_model=list[TokenDeApi])
 async def list_my_tokens(user: CurrentUser):
-    return await db.fetch_all(
-        "SELECT id, name, prefix, created_at, expires_at, last_used_at"
-        "  FROM api_token WHERE user_id = %s AND revoked_at IS NULL"
-        " ORDER BY created_at DESC", (user.id,))
+    return await auth.listar_tokens(user)
 
 
 @router.post("/me/tokens", response_model=TokenCriado,
@@ -167,27 +157,10 @@ async def create_my_token(body: TokenCreateIn, user: CurrentUser,
 
     O valor é devolvido uma única vez — o banco guarda só o sha256.
     """
-    dup = await db.fetch_one(
-        "SELECT id FROM api_token WHERE user_id = %s AND name = %s",
-        (user.id, body.name))
-    if dup:
-        raise HTTPException(status.HTTP_409_CONFLICT,
-                            f"já existe token chamado '{body.name}'")
-    token = new_token()
-    expires = (_utcnow() + timedelta(days=body.expires_in_days)
-               if body.expires_in_days else None)
-    async with db.connection() as conn:
-        async with conn.transaction():
-            row = await db.fetch_row(
-                "INSERT INTO api_token (user_id, name, prefix, token_sha256,"
-                " expires_at) VALUES (%s,%s,%s,%s,%s)"
-                " RETURNING id, name, created_at",
-                (user.id, body.name, token_prefix(token), token_digest(token),
-                 expires), conn=conn)
-            await audit(user, "token.create", "api_token", str(row["id"]),
-                        after={"name": body.name},
-                        ip=auth.client_ip(request), conn=conn)
-    return {**row, "token": token,
+    novo = await auth.criar_token(user, name=body.name,
+                                  expires_in_days=body.expires_in_days,
+                                  ip=auth.client_ip(request))
+    return {**novo,
             "aviso": "guarde agora — não é possível recuperá-lo depois"}
 
 
@@ -195,46 +168,17 @@ async def create_my_token(body: TokenCreateIn, user: CurrentUser,
                status_code=status.HTTP_204_NO_CONTENT)
 async def revoke_my_token(token_id: Annotated[UUID, Path()],
                           user: CurrentUser, request: Request):
-    async with db.connection() as conn:
-        async with conn.transaction():
-            row = await db.fetch_one(
-                "UPDATE api_token SET revoked_at = now()"
-                " WHERE id = %s AND user_id = %s AND revoked_at IS NULL"
-                " RETURNING id", (token_id, user.id), conn=conn)
-            if row is None:
-                raise HTTPException(status.HTTP_404_NOT_FOUND,
-                                    "token não encontrado")
-            await audit(user, "token.revoke", "api_token", str(token_id),
-                        ip=auth.client_ip(request), conn=conn)
+    await auth.revogar_token(user, token_id, auth.client_ip(request))
 
 
 @router.post("/me/password", status_code=status.HTTP_204_NO_CONTENT)
 async def change_password(body: PasswordChangeIn, user: CurrentUser,
                           request: Request, response: Response):
-    row = await db.fetch_one("SELECT password_hash FROM app_user WHERE id = %s",
-                             (user.id,))
-    if not row or not verify_password(body.current_password,
-                                      row["password_hash"]):
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "senha atual incorreta")
-
-    # Trocar senha derruba TODO acesso anterior — sessões e tokens de API. Só
-    # revogar sessão deixava o atacante dentro: um token criado por ele segue
-    # autenticando via Bearer e, sem expires_at, nunca expira. Quem troca a
-    # senha porque ela vazou espera exatamente o contrário. Numa transação só:
-    # senha nova com sessão antiga viva é o pior dos dois mundos.
-    async with db.connection() as conn:
-        async with conn.transaction():
-            await db.execute(
-                "UPDATE app_user SET password_hash = %s WHERE id = %s",
-                (hash_password(body.new_password), user.id), conn=conn)
-            await auth.revoke_all_sessions(user.id, conn=conn)
-            await db.execute(
-                "UPDATE api_token SET revoked_at = now()"
-                " WHERE user_id = %s AND revoked_at IS NULL", (user.id,),
-                conn=conn)
-            await audit(user, "user.password.change", "app_user", user.id,
-                        ip=auth.client_ip(request), conn=conn)
-
+    """Trocar a senha derruba todo acesso anterior — sessões e tokens de API —
+    e devolve uma sessão nova, para quem trocou não ser deslogado."""
+    await auth.trocar_senha(user, atual=body.current_password,
+                            nova=body.new_password,
+                            ip=auth.client_ip(request))
     token = await auth.create_session(user.id, auth.client_ip(request),
                                       request.headers.get("user-agent"))
     _set_cookie(response, token)
@@ -242,20 +186,11 @@ async def change_password(body: PasswordChangeIn, user: CurrentUser,
 
 @router.get("/me/sessions", response_model=list[SessaoAberta])
 async def my_sessions(user: CurrentUser):
-    return await db.fetch_all(
-        "SELECT id, issued_at, last_seen_at, expires_at, ip, user_agent,"
-        "       (id = %s) AS current"
-        "  FROM user_session WHERE user_id = %s AND revoked_at IS NULL"
-        " ORDER BY last_seen_at DESC", (user.session_id, user.id))
+    return await auth.listar_sessoes(user)
 
 
 @router.delete("/me/sessions/{session_id}",
                status_code=status.HTTP_204_NO_CONTENT)
 async def revoke_my_session(session_id: Annotated[UUID, Path()],
                             user: CurrentUser):
-    row = await db.fetch_one(
-        "SELECT id FROM user_session WHERE id = %s AND user_id = %s",
-        (session_id, user.id))
-    if row is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "sessão não encontrada")
-    await auth.revoke_session(str(session_id))
+    await auth.revogar_sessao(user, session_id)

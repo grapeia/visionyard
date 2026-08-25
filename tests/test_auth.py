@@ -322,3 +322,19 @@ async def test_dois_convites_ao_mesmo_tempo_deixam_um_vivo(admin):
             " WHERE user_id = %s AND used_at IS NULL AND revoked_at IS NULL",
             (uid,)).fetchone()[0]
     assert vivos == 1
+
+
+async def test_mesmo_nome_de_token_criado_duas_vezes_ao_mesmo_tempo(admin):
+    """`api_token` tem UNIQUE (user_id, name), e o handler lia antes de inserir.
+
+    As duas requisições leem "não existe" — READ COMMITTED — e a segunda
+    estoura no índice: 500 em vez do 409 que o handler pretendia dar.
+    """
+    import asyncio
+
+    corpo = {"name": "ci"}
+    r1, r2 = await asyncio.gather(admin.post("/v1/me/tokens", json=corpo),
+                                  admin.post("/v1/me/tokens", json=corpo))
+    assert sorted([r1.status_code, r2.status_code]) == [201, 409], \
+        (r1.status_code, r1.text, r2.status_code, r2.text)
+    assert len((await admin.get("/v1/me/tokens")).json()) == 1

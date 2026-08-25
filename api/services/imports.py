@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 from pathlib import Path as FsPath
 from typing import Any
+from uuid import UUID
 
 from fastapi import HTTPException, status
 
@@ -31,9 +32,10 @@ from .. import db
 from ..audit import audit
 from ..auth import Principal
 from ..config import settings
-from ..importers.base import Importer
+from ..importers.base import Importer, ImportReport
 from ..importers.gcs_prefix import GCSPrefixImporter
 from ..importers.label_studio import LabelStudioImporter
+from .projects import projeto_ou_404 as _projeto_ou_404
 
 # Recolher deixa a mensagem na tela de quem importou, que a lê com papel
 # `viewer`: ela diz o que aconteceu e o que fazer. Reimportar é seguro — a
@@ -236,7 +238,8 @@ def construir_importador(payload: dict[str, Any]) -> Importer:
                             "dump do Label Studio não encontrado") from None
 
 
-async def contexto_do_projeto(project_id: str) -> dict[str, Any]:
+async def contexto_do_projeto(project_id: str, *,
+                             conn: db.Conn | None = None) -> dict[str, Any]:
     """Projeto + schema corrente + classes, que é o que `run_import` precisa.
 
     Resolvido por quem executa, e não gravado no payload: o executor pode ser
@@ -246,13 +249,14 @@ async def contexto_do_projeto(project_id: str) -> dict[str, Any]:
     # existe projeto sem imagem, nunca projeto sem schema.
     schema = await db.fetch_row(
         "SELECT id, classes FROM label_schema WHERE project_id = %s"
-        " ORDER BY version DESC LIMIT 1", (project_id,))
+        " ORDER BY version DESC LIMIT 1", (project_id,), conn=conn)
     return {"project_id": project_id, "schema_id": str(schema["id"]),
             "classes": [c["name"] for c in schema["classes"]]}
 
 
 async def upsert_source(project_id: str, kind: str, uri: str, name: str,
-                        config: dict, actor_id: str) -> str:
+                        config: dict, actor_id: str, *,
+                        conn: db.Conn | None = None) -> str:
     """Reaproveita a origem existente para o mesmo destino.
 
     Reimportar o mesmo prefixo não pode criar uma segunda origem, senão o
@@ -263,7 +267,8 @@ async def upsert_source(project_id: str, kind: str, uri: str, name: str,
         " created_by) VALUES (%s,%s,%s,%s,%s::jsonb,%s)"
         " ON CONFLICT (project_id, kind, uri) WHERE uri IS NOT NULL"
         " DO UPDATE SET name = EXCLUDED.name RETURNING id",
-        (project_id, kind, uri, name, json.dumps(config), actor_id))
+        (project_id, kind, uri, name, json.dumps(config), actor_id),
+        conn=conn)
     return str(row["id"])
 
 
@@ -273,25 +278,21 @@ async def upsert_source(project_id: str, kind: str, uri: str, name: str,
 
 async def enfileirar(actor: Principal, *, project_id: str, kind: str,
                      payload: dict[str, Any], source_id: str,
-                     ip: str | None) -> str:
+                     ip: str | None, conn: db.Conn) -> str:
     """Cria o job `queued` e o registra na auditoria, na mesma transação.
 
     Nasce `queued`, e não `running` como antes: quem o marca `running` é quem
     o reclama. Enquanto ninguém reclamou, ele está apenas esperando — e é isso
     que faz um deploy no meio deixar de matar a importação.
     """
-    async with db.connection() as conn:
-        async with conn.transaction():
-            job = await db.fetch_row(
-                "INSERT INTO job (project_id, type, payload, status,"
-                " created_by, data_source_id)"
-                " VALUES (%s,'import',%s::jsonb,'queued',%s,%s) RETURNING id",
-                (project_id, json.dumps(payload), actor.id, source_id),
-                conn=conn)
-            job_id = str(job["id"])
-            await audit(actor, "import.start", "job", job_id,
-                        project_id=project_id, after={"kind": kind},
-                        ip=ip, conn=conn)
+    job = await db.fetch_row(
+        "INSERT INTO job (project_id, type, payload, status, created_by,"
+        " data_source_id)"
+        " VALUES (%s,'import',%s::jsonb,'queued',%s,%s) RETURNING id",
+        (project_id, json.dumps(payload), actor.id, source_id), conn=conn)
+    job_id = str(job["id"])
+    await audit(actor, "import.start", "job", job_id, project_id=project_id,
+                after={"kind": kind}, ip=ip, conn=conn)
     return job_id
 
 
@@ -321,3 +322,98 @@ async def reclamar() -> dict[str, Any] | None:
                 " RETURNING id, project_id, payload, created_by,"
                 "           data_source_id")
             return await cur.fetchone()
+
+
+async def simular(project_slug: str, actor: Principal,
+                  payload: dict[str, Any]) -> dict[str, Any]:
+    """O relatório do que a importação faria, sem gravar nada.
+
+    É o modo default da rota de propósito: importar mexe no dado de todo mundo,
+    e o custo de conferir o mapeamento de classes antes é uma requisição.
+    """
+    from ..importers.runner import run_import
+
+    async with db.connection() as conn:
+        proj = await _projeto_ou_404(conn, project_slug)
+        ctx = await contexto_do_projeto(str(proj["id"]), conn=conn)
+    importador = construir_importador(payload)
+    report = ImportReport()
+    await run_import(project_id=ctx["project_id"], schema_id=ctx["schema_id"],
+                     schema_classes=ctx["classes"], importer=importador,
+                     actor_id=actor.id,
+                     class_overrides=payload.get("class_overrides"),
+                     source_id=None, dry_run=True, report=report)
+    return {"dry_run": True, "source": importador.describe(),
+            "source_classes": importador.classes(),
+            "schema_classes": ctx["classes"], "report": report.as_dict()}
+
+
+async def pedir(project_slug: str, actor: Principal, payload: dict[str, Any],
+                ip: str | None) -> dict[str, Any]:
+    """Registra a origem e enfileira. **Não executa** — quem executa é
+    `api/worker.py`, reclamando da fila.
+
+    O importador é construído aqui só para validar a entrada (caminho fora de
+    `import_root`, dump inexistente, bucket em branco) e descrever a origem na
+    resposta; quem o constrói de novo para rodar é o executor, a partir da
+    mesma linha de `job.payload`.
+    """
+    importador = construir_importador(payload)
+    async with db.connection() as conn, conn.transaction():
+        proj = await _projeto_ou_404(conn, project_slug)
+        gcs = payload["kind"] == "gcs_prefix"
+        uri = (f"gs://{payload['bucket'].strip('/')}"
+               f"/{payload.get('prefix', '').lstrip('/')}"
+               if gcs else payload["sqlite_path"])
+        source_id = await upsert_source(
+            str(proj["id"]), "gcs" if gcs else "import", uri,
+            importador.describe(), payload, actor.id, conn=conn)
+        job_id = await enfileirar(
+            actor, project_id=str(proj["id"]), kind=payload["kind"],
+            payload=payload, source_id=source_id, ip=ip, conn=conn)
+    # Devolve a origem criada/reaproveitada: quem chamou precisa vinculá-la a
+    # um dataset, e adivinhar "a mais recente" depois seria uma corrida.
+    return {"dry_run": False, "job_id": job_id, "status": "queued",
+            "source_id": source_id, "source": importador.describe()}
+
+
+# --------------------------------------------------------------------------- #
+# As telas de job do projeto
+# --------------------------------------------------------------------------- #
+
+async def listar_jobs(project_slug: str, tipo: str | None,
+                      limite: int) -> list[dict[str, Any]]:
+    """Jobs do projeto, do mais recente ao mais antigo.
+
+    Recolhe antes de listar: importação que parou de bater ponto ficaria em
+    `running` para sempre, e esta tela é onde ela é vista. É escrita num GET de
+    propósito — não há nada periódico no processo da API quando o laço embutido
+    está desligado, e numa instalação sem agente nem o reaper do claim roda.
+    """
+    await recolher_orfaos()
+    async with db.connection() as conn:
+        return await db.fetch_all(
+            "SELECT j.id, j.type, j.status, j.progress, j.result, j.error,"
+            "       j.created_at, j.finished_at, u.email AS created_by"
+            "  FROM job j JOIN project p ON p.id = j.project_id"
+            "  LEFT JOIN app_user u ON u.id = j.created_by"
+            " WHERE p.slug = %s AND (%s::text IS NULL OR j.type = %s)"
+            " ORDER BY j.created_at DESC LIMIT %s",
+            (project_slug, tipo, tipo, min(limite, 100)), conn=conn)
+
+
+async def detalhe_do_job(project_slug: str, job_id: UUID) -> dict[str, Any]:
+    async with db.connection() as conn:
+        job = await db.fetch_one(
+            "SELECT j.id, j.type, j.status, j.progress, j.result, j.error,"
+            "       j.created_at, j.started_at, j.finished_at"
+            "  FROM job j JOIN project p ON p.id = j.project_id"
+            " WHERE p.slug = %s AND j.id = %s", (project_slug, job_id),
+            conn=conn)
+        if job is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND,
+                                "job não encontrado")
+        eventos = await db.fetch_all(
+            "SELECT seq, at, level, message FROM job_event"
+            " WHERE job_id = %s ORDER BY seq", (job_id,), conn=conn)
+    return {**job, "events": eventos}
