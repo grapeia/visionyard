@@ -136,6 +136,28 @@ async def test_dois_owners_saindo_ao_mesmo_tempo_nao_esvaziam_o_projeto(
     assert await _owners(PROJ["slug"]) == 1
 
 
+async def test_admin_nao_remove_owner(admin, client, superuser):
+    """A guarda de rebaixar owner não pode ser contornável pela porta do lado.
+
+    `definir_membro` recusa que um admin rebaixe um owner. Sem a mesma guarda
+    em `remover_membro`, o admin chega ao mesmo estado com DELETE + PUT: remove
+    o owner e o recadastra como viewer. Com vários owners dá para fazer isso
+    até sobrar um, sem que nenhum owner precise concordar.
+    """
+    await admin.post("/v1/projects", json=PROJ)
+    async with novo_usuario(admin, client, "co-dono@teste.com") as (_, co):
+        await admin.put(f"/v1/projects/{PROJ['slug']}/members",
+                        json={"email": "co-dono@teste.com", "role": "owner"})
+        async with novo_usuario(admin, client, "gerente@teste.com") as (ger, _):
+            await admin.put(f"/v1/projects/{PROJ['slug']}/members",
+                            json={"email": "gerente@teste.com",
+                                  "role": "admin"})
+            # não é órfão: ainda haveria um owner — o que barra é o papel
+            r = await ger.delete(f"/v1/projects/{PROJ['slug']}/members/{co}")
+            assert r.status_code == 403, r.text
+        assert await _owners(PROJ["slug"]) == 2
+
+
 async def test_usuario_comum_nao_cria_projeto(admin, client):
     """Criar projeto torna o criador owner, e owner implica engineer.
 

@@ -268,6 +268,14 @@ async def issue_invite(user_id: str, purpose: str,
     if purpose not in ("invite", "password_reset"):
         raise ValueError(f"propósito inválido: {purpose}")
     token = new_token()
+    # Revogar-e-inserir é ler-modificar-escrever, e o `user_invite_live_idx`
+    # (parcial, um vivo por usuário/propósito) é quem de fato garante o
+    # invariante. Sem serializar, duas emissões simultâneas revogam cada uma só
+    # o que já estava comitado e a segunda estoura no índice: 500 na cara de
+    # quem clicou duas vezes, em vez do "emitir um novo invalida o anterior"
+    # que a rota promete.
+    await conn.execute("SELECT pg_advisory_xact_lock(hashtext(%s))",
+                       (f"invite:{user_id}",))
     await db.execute(
         "UPDATE user_invite SET revoked_at = now()"
         " WHERE user_id = %s AND purpose = %s"

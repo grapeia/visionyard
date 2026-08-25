@@ -830,3 +830,20 @@ valer para as duas rotas.
   acesso concedido sem rastro. `services/projects.py: projeto_ou_404` virou
   pública para os dois serviços usarem a mesma, e a varredura passou a conferir
   o módulo junto com o nome. Suíte: **227 testes passando** (eram 224).
+- **2026-08-24** — review do `users` (alto esforço). Três achados, os três
+  procedentes, os três corrigidos com teste antes. O grave estava ao lado do
+  que a migração tinha acabado de consertar: `remover_membro` não conferia
+  *quem* remove, só o que sobra. O 403 de `definir_membro` ("só um owner pode
+  rebaixar outro owner") era contornável em duas requisições — o admin apagava
+  o owner e o recadastrava como viewer, e com vários owners dava para ir
+  descendo até sobrar um, sem nenhum owner concordar. As duas portas passaram a
+  carregar as duas guardas.
+  Os outros dois são a mesma lição por caminhos diferentes: transação não faz
+  ler-e-inserir virar atômico. O cadastro de usuário lia o email e inseria — os
+  dois liam "não existe" e o segundo estourava no `app_user_email_key`, 500 em
+  vez de 409; virou `ON CONFLICT DO NOTHING RETURNING`, deixando a decisão com
+  o índice, que é o único que enxerga as duas transações. E `issue_invite`
+  revogava-e-inseria: o `user_invite_live_idx` de fato garante um vivo só (o
+  review supunha dois tokens válidos, e não é isso que acontece), mas garantia
+  por violação de unicidade é 500 em quem clicou duas vezes — passou a
+  serializar com lock consultivo. Suíte: **230 testes passando** (eram 227).

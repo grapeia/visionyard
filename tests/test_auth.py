@@ -280,3 +280,45 @@ async def test_token_nao_e_guardado_em_claro(admin):
     with psycopg.connect(TEST_DSN, autocommit=True) as conn:
         rows = conn.execute("SELECT token_sha256 FROM api_token").fetchall()
     assert all(token.encode() not in bytes(row[0]) for row in rows)
+
+
+async def test_mesmo_email_cadastrado_duas_vezes_ao_mesmo_tempo(admin):
+    """Ler-e-inserir não vira atômico por estar numa transação.
+
+    Em READ COMMITTED as duas requisições veem "não existe" e a segunda bate no
+    `app_user_email_key`. Sem tratar, a violação sobe pela rede de
+    `logs.correlacionar` e o usuário recebe 500 no lugar do 409 que o handler
+    pretendia dar.
+    """
+    import asyncio
+
+    corpo = {"email": "gemeo@teste.com", "display_name": "Gêmeo",
+             "password": "senha-de-teste-123"}
+    r1, r2 = await asyncio.gather(admin.post("/v1/users", json=corpo),
+                                 admin.post("/v1/users", json=corpo))
+    assert sorted([r1.status_code, r2.status_code]) == [201, 409], \
+        (r1.status_code, r1.text, r2.status_code, r2.text)
+
+
+async def test_dois_convites_ao_mesmo_tempo_deixam_um_vivo(admin):
+    """`revoga o anterior, insere o novo` é ler-modificar-escrever.
+
+    O índice parcial `user_invite_live_idx` garante que só um fique vivo — mas
+    garantir com violação de unicidade é 500 na cara de quem clicou duas vezes,
+    não o "emitir um novo invalida o anterior" que a rota promete.
+    """
+    import asyncio
+
+    r = await admin.post("/v1/users", json={"email": "convidado@teste.com",
+                                            "display_name": "Convidado"})
+    uid = r.json()["id"]
+    a, b = await asyncio.gather(admin.post(f"/v1/users/{uid}/invite"),
+                                admin.post(f"/v1/users/{uid}/invite"))
+    assert [a.status_code, b.status_code] == [201, 201], (a.text, b.text)
+
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        vivos = conn.execute(
+            "SELECT count(*) FROM user_invite"
+            " WHERE user_id = %s AND used_at IS NULL AND revoked_at IS NULL",
+            (uid,)).fetchone()[0]
+    assert vivos == 1

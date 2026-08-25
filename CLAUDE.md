@@ -175,14 +175,19 @@ pede.
 - **Anotação é por (imagem, autor).** Escrita mexe só na do próprio autor.
   Importação e pré-tag nunca sobrescrevem trabalho humano — o `WHERE` do
   `DO UPDATE` é o que garante, não a ordem das operações.
-- **O projeto nunca fica sem owner.** Sem owner ninguém arquiva o projeto nem
-  concede owner, e o papel máximo dele passa a ser `admin` — não há como sair
-  desse estado de dentro do produto. As duas portas são `services/users.py`:
-  remover o último owner e rebaixá-lo. Contar owners **dentro** da transação
-  não basta: em READ COMMITTED cada comando pega snapshot novo, então duas
-  remoções simultâneas leem 2 antes de qualquer uma gravar e as duas passam. O
-  que segura é `_travar_membros`, lock consultivo por projeto, no mesmo molde
-  do append de schema e do congelamento.
+- **Mexer no owner de um projeto tem duas guardas, e as duas portas carregam as
+  duas.** As portas são `services/users.py`: rebaixar (`definir_membro`) e
+  remover (`remover_membro`). As guardas são *quem pode* — só um owner mexe em
+  outro owner, senão um admin se promove ou expulsa quem o nomeou — e *o que
+  sobra*: o projeto nunca fica sem owner, porque sem owner ninguém arquiva nem
+  concede owner e o papel máximo vira `admin`, sem saída de dentro do produto.
+  Guarda só numa das portas não vale nada: com o `remover` desprotegido, o 403
+  do `rebaixar` se contorna com DELETE + PUT.
+  Contar owners **dentro** da transação também não basta: em READ COMMITTED
+  cada comando pega snapshot novo, então duas remoções simultâneas leem 2 antes
+  de qualquer uma gravar e as duas passam. O que segura é `_travar_membros`,
+  lock consultivo por projeto, no mesmo molde do append de schema e do
+  congelamento.
 - **RBAC é por projeto.** Rota com `{project_slug}` usa
   `Depends(require_role("papel"))`. Não-membro recebe 404, não 403: 403
   revelaria que o projeto existe. A dependência **não** garante que o projeto
@@ -235,6 +240,13 @@ pede.
 
 ## Armadilhas conhecidas
 
+- **Transação não faz ler-e-inserir virar atômico.** Em READ COMMITTED cada
+  comando pega snapshot novo, então `SELECT ... WHERE email = x` seguido de
+  `INSERT` deixa as duas requisições passarem e a segunda estoura no índice
+  único — 500 no lugar do 409 que o handler pretendia. Onde há índice que
+  decide, quem decide é ele: `ON CONFLICT ... DO NOTHING RETURNING` + 409 se
+  vier vazio (ver `services/users.py: criar`). Onde não há, é lock consultivo
+  (`_travar_membros`, `invite:`, `schema:`).
 - `db.fetch_one/fetch_all/execute` pegam **uma conexão cada** quando chamados
   sem `conn=`. Sequência que precisa ser atômica vai em
   `async with db.connection()` + `conn.transaction()`, e todo helper de dentro

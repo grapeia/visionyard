@@ -65,20 +65,23 @@ async def criar(admin: Principal, *, email: str, display_name: str,
                 ip: str | None) -> dict[str, Any]:
     """Sem senha o usuário nasce `invited` e a define no primeiro acesso."""
     async with db.connection() as conn, conn.transaction():
-        existe = await db.fetch_one(
-            "SELECT id FROM app_user WHERE lower(email) = %s",
-            (email.lower(),), conn=conn)
-        if existe:
-            raise HTTPException(status.HTTP_409_CONFLICT,
-                                "email já cadastrado")
-        row = await db.fetch_row(
+        # `ON CONFLICT` e não ler-antes-de-inserir: em READ COMMITTED dois
+        # cadastros simultâneos do mesmo email leem "não existe" os dois, e o
+        # segundo estoura no `app_user_email_key` — 500 no lugar do 409 que
+        # este handler existe para dar. Quem decide é o índice, que é o único
+        # que enxerga as duas transações.
+        row = await db.fetch_one(
             "INSERT INTO app_user (email, display_name, password_hash,"
             " status, is_superuser, created_by) VALUES (%s,%s,%s,%s,%s,%s)"
+            " ON CONFLICT (lower(email)) DO NOTHING"
             " RETURNING id, email, display_name, status, is_superuser",
             (email.lower(), display_name,
              hash_password(password) if password else None,
              "active" if password else "invited", is_superuser, admin.id),
             conn=conn)
+        if row is None:
+            raise HTTPException(status.HTTP_409_CONFLICT,
+                                "email já cadastrado")
         await audit(admin, "user.create", "app_user", str(row["id"]),
                     after={"email": row["email"], "superuser": is_superuser},
                     ip=ip, conn=conn)
@@ -172,9 +175,9 @@ async def definir_membro(project_slug: str, actor: Principal, *, email: str,
             " WHERE project_id = %s AND user_id = %s",
             (proj["id"], alvo["id"]), conn=conn)
 
-        # Rebaixar owner é tão sensível quanto removê-lo — e `remover_membro`
-        # já protegia o invariante "o projeto não fica sem owner". Sem esta
-        # guarda, um admin rebaixava o único owner para viewer e o projeto
+        # Rebaixar owner é tão sensível quanto removê-lo, e as duas portas
+        # carregam as mesmas duas guardas — quem pode, e o que sobra depois.
+        # Sem esta, um admin rebaixava o único owner para viewer e o projeto
         # ficava órfão: ninguém mais podia arquivá-lo nem conceder owner, e o
         # próprio admin passava a ser o papel máximo.
         if antes and antes["role"] == "owner" and role != "owner":
@@ -213,10 +216,17 @@ async def remover_membro(project_slug: str, actor: Principal, *,
         if row is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND,
                                 "membro não encontrado")
-        if (row["role"] == "owner"
-                and await _quantos_owners(conn, str(proj["id"])) <= 1):
-            raise HTTPException(status.HTTP_409_CONFLICT,
-                                "o projeto ficaria sem owner")
+        if row["role"] == "owner":
+            # A mesma guarda de `definir_membro`, e pela mesma razão. Sem ela
+            # aqui, o 403 de lá é contornável pela porta do lado: o admin
+            # remove o owner e o recadastra como viewer, chegando ao mesmo
+            # estado em duas requisições e sem owner nenhum concordar.
+            if await project_role(project_slug, actor, conn=conn) != "owner":
+                raise HTTPException(status.HTTP_403_FORBIDDEN,
+                                    "só um owner pode remover outro owner")
+            if await _quantos_owners(conn, str(proj["id"])) <= 1:
+                raise HTTPException(status.HTTP_409_CONFLICT,
+                                    "o projeto ficaria sem owner")
 
         await db.execute(
             "DELETE FROM project_member"
