@@ -517,9 +517,13 @@ correção que o review do `users` tinha acabado de ensinar, agora aplicada ante
 de alguém apontar: ler-e-inserir no cadastro de máquina, e contar-e-apagar na
 exclusão.
 
-Faltam os serviços de `agents`, `imports`, `models`, `samples` e `training`, e
-os routers que ainda não têm serviço nenhum (`auth`, `buckets`, `jobs`,
-`prelabel`).
+`prelabel`, `jobs` e `buckets` fecharam a fila de routers (2026-08-24). Falta
+só `auth`, e ele tem uma decisão de layout antes: a regra dele vai para
+`api/auth.py`, que já é o serviço desse domínio, e não para um `services/auth.py`
+que dividiria o mesmo assunto em dois arquivos.
+
+Faltam ainda os serviços que existiam antes desta forma e seguem alcançando o
+pool: `agents`, `imports`, `models`, `samples` e `training`.
 
 ### 16. Porta de storage — `feito` (2026-08-20)
 O acesso ao GCS está espalhado e sem porta. `routers/samples.py:63` faz
@@ -862,3 +866,15 @@ valer para as duas rotas.
   recusar com 500, em vez do 409 que explica desativar em lugar de excluir — a
   condição foi para dentro do `DELETE`, e a contagem só é feita depois, para a
   mensagem). Suíte: **231 testes passando** (eram 230).
+- **2026-08-24** — `prelabel`, `jobs` e `buckets` migrados; sobrou só `auth`.
+  O `prelabel` foi o único sem correção junto: ler-e-enfileirar não tem índice
+  nem invariante em jogo entre as duas coisas. O `jobs` teve: o cancelamento
+  lia o status, recusava com 409 se terminal, e atualizava noutro comando —
+  entre os dois cabe o job terminar, e aí o 409 não sai e o UPDATE marca
+  `cancel_requested` num job encerrado. A guarda foi para o `WHERE`, mesmo
+  desenho de `finalizar_job`. O `buckets` não tinha SQL nenhum e estava
+  listado errado no `CLAUDE.md`; o que ele carregava era a cerca da allowlist,
+  o `delimiter` da listagem e o erro do GCS que não pode vazar — virou o único
+  serviço que não importa `db`, e por isso fica fora da varredura de conexão.
+  Os routers somam **2.336 linhas** contra 2.771 só do `app.js` antes do item
+  6. Suíte: **231 testes passando**.
