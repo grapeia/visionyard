@@ -203,6 +203,13 @@ pede.
   de qualquer uma gravar e as duas passam. O que segura é `_travar_membros`,
   lock consultivo por projeto, no mesmo molde do append de schema e do
   congelamento.
+- **A lista de máquinas é da instalação, não do projeto.** `/train-devices` e
+  `/deploy-devices` respondem a qualquer usuário autenticado, e é escolha: o
+  engenheiro precisa escolher o alvo ao treinar ou implantar, e nome e estado
+  de máquina não são segredo dentro de uma instalação onde todo mundo tem
+  conta. O que é sensível fica de fora do `SELECT` — token e `capabilities`,
+  que é o que decide roteamento, só o superusuário vê, em `/devices`. Não
+  acrescente coluna a essas duas rotas sem refazer essa conta.
 - **RBAC é por projeto.** Rota com `{project_slug}` usa
   `Depends(require_role("papel"))`. Não-membro recebe 404, não 403: 403
   revelaria que o projeto existe. A dependência **não** garante que o projeto

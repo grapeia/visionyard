@@ -302,7 +302,7 @@ simultâneas se atropelam** (`DeadlockDetected` nas migrations, depois
 `AdminShutdown`). Se algum dia rodar suíte em paralelo, o nome do banco tem de
 sair de uma variável por processo.
 
-### 11. Achados do review dos itens 9 e 10 — `em curso`
+### 11. Achados do review dos itens 9 e 10 — `parado por escolha`
 Sobrou o que o review de 2026-08-11 confirmou e que não cabia nas correções. Os
 dois bugs pré-existentes estão corrigidos; o primeiro item continua aberto
 porque é decisão de modelo, não conserto.
@@ -526,19 +526,19 @@ levar junto todas as miniaturas. Eram cinco caminhos sem nenhuma afirmação.
 O cliente também passou a ser construído uma vez: a galeria construía um por
 carga de página, dentro do threadpool.
 
-### 17. `/train-devices` sem cerca de projeto — `pendente`
-Achado do review de 2026-08-24, e é decisão, não conserto. O `cab0590`
+### 17. `/train-devices` sem cerca de projeto — `feito` (2026-08-25)
+Achado do review de 2026-08-24, e sempre foi decisão, não conserto. `cab0590`
 corrigiu o 422 tirando o `require_role("engineer")` — papel é por projeto e a
-rota não tem projeto no caminho —, e o que ficou no lugar é `CurrentUser`: um
+rota não tem projeto no caminho — e o que ficou no lugar é `CurrentUser`: um
 `viewer`, ou um usuário que não é membro de projeto nenhum, lista o `slug`, o
-`name` e o `status` de toda máquina de treino da instalação. `/deploy-devices`
-já era assim, então isto é consistência, não novidade; mas é a instalação
-inteira visível a quem tem conta, e vale escolher de propósito.
+`name` e o `status` de toda máquina da instalação.
 
-Duas saídas: assumir que nome e estado de máquina não são segredo dentro da
-instalação (e escrever isso), ou exigir participação em ao menos um projeto —
-que é um conceito de RBAC que hoje não existe em lugar nenhum, e teria de
-valer para as duas rotas.
+**Decidido manter, e escrito no `CLAUDE.md` para não parecer descuido.** Nome e
+estado de máquina não são segredo dentro de uma instalação onde todo mundo tem
+conta: o que é sensível — token e `capabilities`, que é o que decide roteamento
+— fica com o superusuário, e a rota nunca os devolveu. Exigir participação em
+algum projeto seria um conceito de RBAC que não existe em lugar nenhum do
+sistema, criado para proteger o que não precisa.
 
 ## Registro
 
@@ -904,3 +904,13 @@ valer para as duas rotas.
   módulo existe para medir, e contá-la como `manual` onde houve correção
   falsearia a medida que diz se o ciclo virou autoconfirmação.
   Suíte: **252 testes passando** (eram 242).
+- **2026-08-25** — itens 17 e 11 decididos, e com eles a fila do plano fica
+  vazia. O 17 fechou como escolha registrada: `/train-devices` e
+  `/deploy-devices` seguem visíveis a qualquer autenticado, porque nome e
+  estado de máquina não são segredo dentro de uma instalação onde todo mundo
+  tem conta — e o que é sensível (token, `capabilities`) nunca esteve no
+  `SELECT`. Virou invariante no `CLAUDE.md`, para que acrescentar coluna ali
+  obrigue a refazer a conta. O 11 ficou `parado por escolha`: o caso de imagem
+  sem md5 nunca apareceu numa instalação de verdade, e as duas saídas custam
+  caro para um problema que não se viu. Fica registrado que é escolha, não
+  esquecimento, e qual é o sintoma se aparecer.
