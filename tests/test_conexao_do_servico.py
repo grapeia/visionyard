@@ -24,8 +24,10 @@ from pathlib import Path
 
 import pytest
 
-# Serviços já convertidos. Entra um nome aqui a cada migração.
-MIGRADOS = ["datasets", "devices", "projects", "users"]
+# Serviços já convertidos que falam com o banco. Entra um nome aqui a cada
+# migração — `buckets` fica de fora porque não tem uma linha de SQL: o que ele
+# guarda é a cerca da allowlist e o acesso ao GCS, que passa por `storage.py`.
+MIGRADOS = ["datasets", "devices", "jobs", "prelabel", "projects", "users"]
 
 # Acessos de `db.py`: só valem como `db.X(..., conn=...)`.
 ACESSOS_DB = {"fetch_one", "fetch_all", "fetch_row", "execute"}

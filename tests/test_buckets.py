@@ -60,7 +60,7 @@ async def test_allowlist_vazia_nega_tudo(admin, monkeypatch):
 
 async def test_erro_do_gcs_nao_vaza_detalhe(admin, monkeypatch):
     """Mensagem de erro do GCS cita projeto, conta de serviço e caminho."""
-    from api.routers import buckets as mod
+    from api.services import buckets as mod
 
     def explode(*a, **k):
         raise RuntimeError("403 conta-secreta@production-438011.iam "
