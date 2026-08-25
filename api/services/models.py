@@ -28,21 +28,23 @@ from ..auth import Principal
 ALIASES = {"champion", "challenger", "baseline"}
 
 
-async def buscar_modelo(project_slug: str, model_slug: str) -> dict:
+async def buscar_modelo(conn: db.Conn, project_slug: str,
+                        model_slug: str) -> dict:
     row = await db.fetch_one(
         "SELECT m.id, m.slug, m.name, m.task_type, m.created_at, p.id AS project_id"
         "  FROM model m JOIN project p ON p.id = m.project_id"
         " WHERE p.slug = %s AND m.slug = %s AND m.archived_at IS NULL",
-        (project_slug, model_slug))
+        (project_slug, model_slug), conn=conn)
     if row is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "modelo não encontrado")
     return row
 
 
-async def _versao(model_id: str, version: int) -> dict:
+async def _versao(conn: db.Conn, model_id: str, version: int) -> dict:
     mv = await db.fetch_one(
         "SELECT id, weights_uri, schema_id FROM model_version"
-        " WHERE model_id = %s AND version = %s", (model_id, version))
+        " WHERE model_id = %s AND version = %s", (model_id, version),
+        conn=conn)
     if mv is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND,
                             f"versão v{version} não existe")
@@ -50,7 +52,8 @@ async def _versao(model_id: str, version: int) -> dict:
 
 
 async def listar(project_slug: str) -> list[dict[str, Any]]:
-    return await db.fetch_all(
+    async with db.connection() as conn:
+        return await db.fetch_all(
         "SELECT m.slug, m.name, m.task_type, m.created_at,"
         "  (SELECT count(*) FROM model_version v WHERE v.model_id = m.id) AS versoes,"
         "  (SELECT max(version) FROM model_version v WHERE v.model_id = m.id)"
@@ -59,12 +62,17 @@ async def listar(project_slug: str) -> list[dict[str, Any]]:
         "     FROM model_alias a JOIN model_version mv ON mv.id = a.model_version_id"
         "    WHERE a.model_id = m.id) AS aliases"
         "  FROM model m JOIN project p ON p.id = m.project_id"
-        " WHERE p.slug = %s AND m.archived_at IS NULL ORDER BY m.name",
-        (project_slug,))
+            " WHERE p.slug = %s AND m.archived_at IS NULL ORDER BY m.name",
+            (project_slug,), conn=conn)
 
 
 async def detalhe(project_slug: str, model_slug: str) -> dict:
-    m = await buscar_modelo(project_slug, model_slug)
+    async with db.connection() as conn:
+        return await _detalhe(conn, project_slug, model_slug)
+
+
+async def _detalhe(conn: db.Conn, project_slug: str, model_slug: str) -> dict:
+    m = await buscar_modelo(conn, project_slug, model_slug)
     versoes = await db.fetch_all(
         "SELECT mv.id, mv.version, mv.metrics, mv.weights_uri, mv.bytes, mv.status,"
         "       mv.created_at, mv.run_id, e.slug AS experimento,"
@@ -74,14 +82,14 @@ async def detalhe(project_slug: str, model_slug: str) -> dict:
         "  LEFT JOIN experiment e ON e.id = r.experiment_id"
         "  LEFT JOIN dataset_version dv ON dv.id = r.dataset_version_id"
         "  LEFT JOIN dataset d ON d.id = dv.dataset_id"
-        " WHERE mv.model_id = %s ORDER BY mv.version DESC", (m["id"],))
+        " WHERE mv.model_id = %s ORDER BY mv.version DESC", (m["id"],), conn=conn)
     # builds (onnx/engine) por versão — o artefato implantável de cada uma
     builds = await db.fetch_all(
         "SELECT mv.version, mb.format, mb.target, mb.uri, mb.bytes, mb.bench,"
         "       mb.created_at, dev.slug AS built_on"
         "  FROM model_build mb JOIN model_version mv ON mv.id = mb.model_version_id"
         "  LEFT JOIN device dev ON dev.id = mb.built_on_device"
-        " WHERE mv.model_id = %s ORDER BY mb.created_at DESC", (m["id"],))
+        " WHERE mv.model_id = %s ORDER BY mb.created_at DESC", (m["id"],), conn=conn)
     por_versao: dict = {}
     for b in builds:
         por_versao.setdefault(b["version"], []).append(b)
@@ -91,7 +99,7 @@ async def detalhe(project_slug: str, model_slug: str) -> dict:
         "SELECT a.alias, mv.version, a.moved_at, u.display_name AS por"
         "  FROM model_alias a JOIN model_version mv ON mv.id = a.model_version_id"
         "  LEFT JOIN app_user u ON u.id = a.moved_by"
-        " WHERE a.model_id = %s ORDER BY a.alias", (m["id"],))
+        " WHERE a.model_id = %s ORDER BY a.alias", (m["id"],), conn=conn)
     # avaliações: a mais recente por (versão, benchmark, ARTEFATO). O artefato é
     # o formato do build (pt quando não há build), então pt/onnx/engine/DLA
     # aparecem como linhas distintas — é o que permite a comparação.
@@ -107,7 +115,7 @@ async def detalhe(project_slug: str, model_slug: str) -> dict:
         "  LEFT JOIN model_build mb ON mb.id = ev.model_build_id"
         " WHERE mv.model_id = %s"
         " ORDER BY mv.version, d.slug, dv.version, COALESCE(mb.format,'pt'),"
-        "          ev.model_build_id, ev.created_at DESC", (m["id"],))
+        "          ev.model_build_id, ev.created_at DESC", (m["id"],), conn=conn)
     for v in versoes:
         v["avaliacoes"] = [a for a in avals if a["version"] == v["version"]]
     return {**m, "versoes": versoes, "aliases": aliases}
@@ -122,32 +130,30 @@ async def enfileirar_export(project_slug: str, model_slug: str, version: int,
     ONNX é portátil; o engine TensorRT é específico do dispositivo (JetPack/TRT),
     por isso a compilação roda NA máquina-alvo (capacidade `infer`) e o build
     guarda em qual device e com que alvo foi gerado."""
-    m = await buscar_modelo(project_slug, model_slug)
-    mv = await _versao(m["id"], version)
-
-    payload = jobs.Export(
-        model_version_id=str(mv["id"]), weights_uri=mv["weights_uri"],
-        model_slug=model_slug, project_slug=project_slug, version=version,
-        format=formato, imgsz=imgsz, precision=precision, dla=dla,
-        dynamic=dynamic)
-    async with db.connection() as conn:
-        async with conn.transaction():
-            job = await db.fetch_row(
-                "INSERT INTO job (project_id, type, payload, requires,"
-                " created_by)"
-                " VALUES (%s,'export',%s::jsonb,%s::jsonb,%s) RETURNING id",
-                (m["project_id"], json.dumps(payload.como_dict()),
-                 json.dumps({"infer": True}), actor.id), conn=conn)
-            await audit(actor, "model.export", "model_version", str(mv["id"]),
-                        project_id=str(m["project_id"]),
-                        after={"format": formato, "precision": precision,
-                               "imgsz": imgsz, "dynamic": dynamic},
-                        ip=ip, conn=conn)
+    async with db.connection() as conn, conn.transaction():
+        m = await buscar_modelo(conn, project_slug, model_slug)
+        mv = await _versao(conn, m["id"], version)
+        payload = jobs.Export(
+            model_version_id=str(mv["id"]), weights_uri=mv["weights_uri"],
+            model_slug=model_slug, project_slug=project_slug, version=version,
+            format=formato, imgsz=imgsz, precision=precision, dla=dla,
+            dynamic=dynamic)
+        job = await db.fetch_row(
+            "INSERT INTO job (project_id, type, payload, requires, created_by)"
+            " VALUES (%s,'export',%s::jsonb,%s::jsonb,%s) RETURNING id",
+            (m["project_id"], json.dumps(payload.como_dict()),
+             json.dumps({"infer": True}), actor.id), conn=conn)
+        await audit(actor, "model.export", "model_version", str(mv["id"]),
+                    project_id=str(m["project_id"]),
+                    after={"format": formato, "precision": precision,
+                           "imgsz": imgsz, "dynamic": dynamic},
+                    ip=ip, conn=conn)
     return {"job_id": str(job["id"]), "version": version, "status": "queued"}
 
 
-async def _artefato_para_avaliar(model_id: str, version: int, weights_uri: str,
-                                 formato: str, precision: str | None,
+async def _artefato_para_avaliar(conn: db.Conn, model_id: str, version: int,
+                                 weights_uri: str, formato: str,
+                                 precision: str | None,
                                  dla: bool | None) -> tuple[str, str | None, str]:
     """Resolve o artefato a medir → (uri, model_build_id, rótulo). 'pt' usa o
     peso; os demais resolvem o build compilado, com a variante certa."""
@@ -160,7 +166,8 @@ async def _artefato_para_avaliar(model_id: str, version: int, weights_uri: str,
         "   AND (%(p)s::text IS NULL OR mb.target->>'precision' = %(p)s)"
         "   AND (%(d)s::bool IS NULL OR (mb.target->>'dla')::bool = %(d)s)"
         " ORDER BY mb.created_at DESC LIMIT 1",
-        {"m": model_id, "v": version, "f": formato, "p": precision, "d": dla})
+        {"m": model_id, "v": version, "f": formato, "p": precision,
+         "d": dla}, conn=conn)
     if build is None:
         raise HTTPException(
             status.HTTP_404_NOT_FOUND,
@@ -180,36 +187,37 @@ async def enfileirar_avaliacao(project_slug: str, model_slug: str, version: int,
     """Enfileira a medição de um ARTEFATO (peso ou build) contra uma versão de
     dataset (o benchmark). Além do mAP, mede pré/inferência/pós no alvo — é o
     que permite comparar pt × engine × DLA. Roda numa máquina `infer`."""
-    m = await buscar_modelo(project_slug, model_slug)
-    mv = await _versao(m["id"], version)
-    dv = await db.fetch_one(
-        "SELECT v.id FROM dataset_version v JOIN dataset d ON d.id = v.dataset_id"
-        " WHERE d.project_id = %s AND d.slug = %s AND v.version = %s",
-        (m["project_id"], dataset_slug, dataset_version))
-    if dv is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND,
-                            "versão de benchmark não encontrada — congele antes")
-    uri, build_id, rotulo = await _artefato_para_avaliar(
-        m["id"], version, mv["weights_uri"], formato, precision, dla)
+    async with db.connection() as conn, conn.transaction():
+        m = await buscar_modelo(conn, project_slug, model_slug)
+        mv = await _versao(conn, m["id"], version)
+        dv = await db.fetch_one(
+            "SELECT v.id FROM dataset_version v"
+            "  JOIN dataset d ON d.id = v.dataset_id"
+            " WHERE d.project_id = %s AND d.slug = %s AND v.version = %s",
+            (m["project_id"], dataset_slug, dataset_version), conn=conn)
+        if dv is None:
+            raise HTTPException(
+                status.HTTP_404_NOT_FOUND,
+                "versão de benchmark não encontrada — congele antes")
+        uri, build_id, rotulo = await _artefato_para_avaliar(
+            conn, m["id"], version, mv["weights_uri"], formato, precision, dla)
 
-    payload = jobs.Evaluate(
-        model_version_id=str(mv["id"]), artifact_uri=uri,
-        schema_id=str(mv["schema_id"]), dataset_version_id=str(dv["id"]),
-        dataset_slug=dataset_slug, project_slug=project_slug, format=formato,
-        rotulo=rotulo, imgsz=imgsz, model_build_id=build_id)
-    async with db.connection() as conn:
-        async with conn.transaction():
-            job = await db.fetch_row(
-                "INSERT INTO job (project_id, type, payload, requires,"
-                " created_by)"
-                " VALUES (%s,'evaluate',%s::jsonb,%s::jsonb,%s) RETURNING id",
-                (m["project_id"], json.dumps(payload.como_dict()),
-                 json.dumps({"infer": True}), actor.id), conn=conn)
-            await audit(actor, "model.evaluate", "model_version",
-                        str(mv["id"]), project_id=str(m["project_id"]),
-                        after={"benchmark": dataset_slug, "artefato": rotulo,
-                               "benchmark_version": dataset_version},
-                        ip=ip, conn=conn)
+        payload = jobs.Evaluate(
+            model_version_id=str(mv["id"]), artifact_uri=uri,
+            schema_id=str(mv["schema_id"]), dataset_version_id=str(dv["id"]),
+            dataset_slug=dataset_slug, project_slug=project_slug,
+            format=formato, rotulo=rotulo, imgsz=imgsz,
+            model_build_id=build_id)
+        job = await db.fetch_row(
+            "INSERT INTO job (project_id, type, payload, requires, created_by)"
+            " VALUES (%s,'evaluate',%s::jsonb,%s::jsonb,%s) RETURNING id",
+            (m["project_id"], json.dumps(payload.como_dict()),
+             json.dumps({"infer": True}), actor.id), conn=conn)
+        await audit(actor, "model.evaluate", "model_version", str(mv["id"]),
+                    project_id=str(m["project_id"]),
+                    after={"benchmark": dataset_slug, "artefato": rotulo,
+                           "benchmark_version": dataset_version},
+                    ip=ip, conn=conn)
     return {"job_id": str(job["id"]), "version": version, "artefato": rotulo,
             "status": "queued"}
 
@@ -220,47 +228,50 @@ async def implantar(project_slug: str, model_slug: str, actor: Principal, *,
     """Marca um build para ser implantado num dispositivo. O agente daquele
     device puxa o artefato e ativa; a troca do modelo em produção é do coletor,
     que lê o artefato do caminho conhecido."""
-    m = await buscar_modelo(project_slug, model_slug)
-    build = await db.fetch_one(
-        "SELECT mb.id, mb.target FROM model_build mb JOIN model_version mv"
-        "  ON mv.id = mb.model_version_id"
-        " WHERE mv.model_id = %s AND mv.version = %s AND mb.format = %s"
-        " ORDER BY mb.created_at DESC LIMIT 1", (m["id"], version, formato))
-    if build is None:
-        raise HTTPException(
-            status.HTTP_404_NOT_FOUND,
-            f"não há build {formato} da v{version} — compile antes")
-    dev = await db.fetch_one("SELECT id, device_class FROM device WHERE slug = %s",
-                             (device_slug,))
-    if dev is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "device não encontrado")
-    # engine TensorRT é específico da classe do dispositivo que o compilou:
-    # implantar num alvo de outra classe cria um pending que a máquina não
-    # consegue carregar. ONNX é portátil, então não trava.
-    alvo_classe = (build["target"] or {}).get("device_class")
-    if formato == "engine" and alvo_classe and alvo_classe != dev["device_class"]:
-        raise HTTPException(
-            status.HTTP_409_CONFLICT,
-            f"o build engine é para '{alvo_classe}', mas a máquina é "
-            f"'{dev['device_class']}' — compile para essa classe")
-    async with db.connection() as conn:
-        async with conn.transaction():
-            dep = await db.fetch_row(
-                "INSERT INTO deployment (device_id, model_build_id, state,"
-                " requested_by) VALUES (%s,%s,'pending',%s) RETURNING id",
-                (dev["id"], build["id"], actor.id), conn=conn)
-            await audit(actor, "model.deploy", "deployment", str(dep["id"]),
-                        project_id=str(m["project_id"]),
-                        after={"device": device_slug, "versao": version,
-                               "format": formato},
-                        ip=ip, conn=conn)
+    async with db.connection() as conn, conn.transaction():
+        m = await buscar_modelo(conn, project_slug, model_slug)
+        build = await db.fetch_one(
+            "SELECT mb.id, mb.target FROM model_build mb"
+            "  JOIN model_version mv ON mv.id = mb.model_version_id"
+            " WHERE mv.model_id = %s AND mv.version = %s AND mb.format = %s"
+            " ORDER BY mb.created_at DESC LIMIT 1",
+            (m["id"], version, formato), conn=conn)
+        if build is None:
+            raise HTTPException(
+                status.HTTP_404_NOT_FOUND,
+                f"não há build {formato} da v{version} — compile antes")
+        dev = await db.fetch_one(
+            "SELECT id, device_class FROM device WHERE slug = %s",
+            (device_slug,), conn=conn)
+        if dev is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND,
+                                "device não encontrado")
+        # engine TensorRT é específico da classe do dispositivo que o compilou:
+        # implantar num alvo de outra classe cria um pending que a máquina não
+        # consegue carregar. ONNX é portátil, então não trava.
+        alvo_classe = (build["target"] or {}).get("device_class")
+        if (formato == "engine" and alvo_classe
+                and alvo_classe != dev["device_class"]):
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                f"o build engine é para '{alvo_classe}', mas a máquina é "
+                f"'{dev['device_class']}' — compile para essa classe")
+        dep = await db.fetch_row(
+            "INSERT INTO deployment (device_id, model_build_id, state,"
+            " requested_by) VALUES (%s,%s,'pending',%s) RETURNING id",
+            (dev["id"], build["id"], actor.id), conn=conn)
+        await audit(actor, "model.deploy", "deployment", str(dep["id"]),
+                    project_id=str(m["project_id"]),
+                    after={"device": device_slug, "versao": version,
+                           "format": formato}, ip=ip, conn=conn)
     return {"deployment_id": str(dep["id"]), "device": device_slug,
             "state": "pending"}
 
 
 async def listar_deployments(project_slug: str) -> list[dict[str, Any]]:
     """Implantações do projeto, com device, build e estado."""
-    return await db.fetch_all(
+    async with db.connection() as conn:
+        return await db.fetch_all(
         "SELECT dep.id, dev.slug AS device, dep.state, dep.requested_at,"
         "       dep.activated_at, dep.error, m.slug AS model_slug, mv.version,"
         "       mb.format, mb.target"
@@ -271,7 +282,7 @@ async def listar_deployments(project_slug: str) -> list[dict[str, Any]]:
         "  JOIN model m ON m.id = mv.model_id"
         " WHERE m.project_id = (SELECT id FROM project WHERE slug = %s)"
         "   AND dep.state IN ('pending','active','failed')"
-        " ORDER BY dep.requested_at DESC", (project_slug,))
+            " ORDER BY dep.requested_at DESC", (project_slug,), conn=conn)
 
 
 async def definir_alias(project_slug: str, model_slug: str, alias: str,
@@ -283,42 +294,40 @@ async def definir_alias(project_slug: str, model_slug: str, alias: str,
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_ENTITY,
             f"apelido '{alias}' inválido ({', '.join(sorted(ALIASES))})")
-    m = await buscar_modelo(project_slug, model_slug)
-    mv = await _versao(m["id"], version)
-    before = await db.fetch_one(
-        "SELECT mv.version FROM model_alias a"
-        "  JOIN model_version mv ON mv.id = a.model_version_id"
-        " WHERE a.model_id = %s AND a.alias = %s", (m["id"], alias))
-    async with db.connection() as conn:
-        async with conn.transaction():
-            await db.execute(
-                "INSERT INTO model_alias (model_id, alias, model_version_id,"
-                " moved_by) VALUES (%s,%s,%s,%s)"
-                " ON CONFLICT (model_id, alias) DO UPDATE"
-                "   SET model_version_id = EXCLUDED.model_version_id,"
-                "       moved_by = EXCLUDED.moved_by, moved_at = now()",
-                (m["id"], alias, mv["id"], actor.id), conn=conn)
-            await audit(actor, "model.alias", "model", str(m["id"]),
-                        project_id=str(m["project_id"]),
-                        before={"alias": alias,
-                                "version": before["version"] if before
-                                else None},
-                        after={"alias": alias, "version": version},
-                        ip=ip, conn=conn)
+    async with db.connection() as conn, conn.transaction():
+        m = await buscar_modelo(conn, project_slug, model_slug)
+        mv = await _versao(conn, m["id"], version)
+        antes = await db.fetch_one(
+            "SELECT mv.version FROM model_alias a"
+            "  JOIN model_version mv ON mv.id = a.model_version_id"
+            " WHERE a.model_id = %s AND a.alias = %s", (m["id"], alias),
+            conn=conn)
+        await db.execute(
+            "INSERT INTO model_alias (model_id, alias, model_version_id,"
+            " moved_by) VALUES (%s,%s,%s,%s)"
+            " ON CONFLICT (model_id, alias) DO UPDATE"
+            "   SET model_version_id = EXCLUDED.model_version_id,"
+            "       moved_by = EXCLUDED.moved_by, moved_at = now()",
+            (m["id"], alias, mv["id"], actor.id), conn=conn)
+        await audit(actor, "model.alias", "model", str(m["id"]),
+                    project_id=str(m["project_id"]),
+                    before={"alias": alias,
+                            "version": antes["version"] if antes else None},
+                    after={"alias": alias, "version": version},
+                    ip=ip, conn=conn)
     return {"alias": alias, "version": version}
 
 
 async def remover_alias(project_slug: str, model_slug: str, alias: str,
                         actor: Principal, *, ip: str | None) -> None:
-    m = await buscar_modelo(project_slug, model_slug)
-    async with db.connection() as conn:
-        async with conn.transaction():
-            row = await db.fetch_one(
-                "DELETE FROM model_alias WHERE model_id = %s AND alias = %s"
-                " RETURNING alias", (m["id"], alias), conn=conn)
-            if row is None:
-                raise HTTPException(status.HTTP_404_NOT_FOUND,
-                                    "apelido não definido")
-            await audit(actor, "model.alias.remove", "model", str(m["id"]),
-                        project_id=str(m["project_id"]),
-                        before={"alias": alias}, ip=ip, conn=conn)
+    async with db.connection() as conn, conn.transaction():
+        m = await buscar_modelo(conn, project_slug, model_slug)
+        row = await db.fetch_one(
+            "DELETE FROM model_alias WHERE model_id = %s AND alias = %s"
+            " RETURNING alias", (m["id"], alias), conn=conn)
+        if row is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND,
+                                "apelido não definido")
+        await audit(actor, "model.alias.remove", "model", str(m["id"]),
+                    project_id=str(m["project_id"]),
+                    before={"alias": alias}, ip=ip, conn=conn)

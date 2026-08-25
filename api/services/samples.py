@@ -70,26 +70,34 @@ async def listar(project_id: str, user_id: str, *, pagina: int = 0,
     # a grade mostra. Custa ordenar o conjunto filtrado inteiro em vez de parar
     # nos 60 da página — trabalho que a contagem à parte já fazia de qualquer
     # forma, agora feito uma vez.
-    linhas = await db.fetch_all(
-        f"""SELECT s.id, s.uri, s.width, s.height, s.metadata,
-                   a.id AS annotation_id, a.status, a.origin,
-                   jsonb_array_length(COALESCE(a.boxes,'[]'::jsonb)) AS n_caixas,
-                   count(*) OVER () AS total
-              {_de_onde(MINHA, escopo, cond)}
-             ORDER BY s.imported_at, s.id
-             LIMIT %(lim)s OFFSET %(off)s""", params)
+    async with db.connection() as conn:
+        linhas = await db.fetch_all(
+            f"""SELECT s.id, s.uri, s.width, s.height, s.metadata,
+                       a.id AS annotation_id, a.status, a.origin,
+                       jsonb_array_length(COALESCE(a.boxes,'[]'::jsonb))
+                           AS n_caixas,
+                       count(*) OVER () AS total
+                  {_de_onde(MINHA, escopo, cond)}
+                 ORDER BY s.imported_at, s.id
+                 LIMIT %(lim)s OFFSET %(off)s""", params, conn=conn)
 
-    if linhas:
-        total = linhas[0]["total"]
-    else:
-        # Página vazia não tem de onde tirar a janela, e "0 imagens" sobre uma
-        # grade vazia esconderia que basta voltar uma página. Aqui a junção com
-        # `annotation` só entra se o filtro falar dela: com `filtro=todas`, que
-        # é o padrão da aba, ela era trabalho jogado fora em toda carga.
-        total = (await db.fetch_row(
-            f"SELECT count(*) AS n {_de_onde(MINHA if cond else '', escopo, cond)}",
-            params))["n"]
+        if linhas:
+            total = linhas[0]["total"]
+        else:
+            # Página vazia não tem de onde tirar a janela, e "0 imagens" sobre
+            # uma grade vazia esconderia que basta voltar uma página. Aqui a
+            # junção com `annotation` só entra se o filtro falar dela: com
+            # `filtro=todas`, que é o padrão da aba, ela era trabalho jogado
+            # fora em toda carga.
+            total = (await db.fetch_row(
+                f"SELECT count(*) AS n"
+                f" {_de_onde(MINHA if cond else '', escopo, cond)}",
+                params, conn=conn))["n"]
 
+    # Assinar fala com o GCS, e é por isso que acontece com a conexão já
+    # devolvida: uma ida à rede com transação aberta deixa a sessão
+    # `idle in transaction` e prende uma das dez vagas do pool esperando o
+    # Google responder.
     assinadas = await run_in_threadpool(
         storage.assinar, [r["uri"] for r in linhas], MINIATURA_MIN)
     itens = [{**r, "url": assinadas.get(r["uri"])} for r in linhas]
@@ -130,61 +138,68 @@ async def salvar_anotacao(project_slug: str, sample_id: UUID, user_id: str,
                           caixas: list[dict[str, Any]],
                           estado: str) -> dict[str, Any]:
     """Grava a anotação de UM autor. A de outro rotulador não é tocada."""
-    ctx = await db.fetch_one(
-        "SELECT s.id, p.id AS project_id,"
-        "  (SELECT id FROM label_schema WHERE project_id = p.id"
-        "    ORDER BY version DESC LIMIT 1) AS schema_id,"
-        "  (SELECT classes FROM label_schema WHERE project_id = p.id"
-        "    ORDER BY version DESC LIMIT 1) AS classes"
-        "  FROM sample s JOIN project p ON p.id = s.project_id"
-        " WHERE p.slug = %s AND s.id = %s", (project_slug, sample_id))
-    if ctx is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "imagem não encontrada")
+    async with db.connection() as conn, conn.transaction():
+        ctx = await db.fetch_one(
+            "SELECT s.id, p.id AS project_id,"
+            "  (SELECT id FROM label_schema WHERE project_id = p.id"
+            "    ORDER BY version DESC LIMIT 1) AS schema_id,"
+            "  (SELECT classes FROM label_schema WHERE project_id = p.id"
+            "    ORDER BY version DESC LIMIT 1) AS classes"
+            "  FROM sample s JOIN project p ON p.id = s.project_id"
+            " WHERE p.slug = %s AND s.id = %s", (project_slug, sample_id),
+            conn=conn)
+        if ctx is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND,
+                                "imagem não encontrada")
 
-    n_classes = len(ctx["classes"])
-    fora = [b["cls"] for b in caixas if b["cls"] >= n_classes]
-    if fora:
-        raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_ENTITY,
-            f"classe {fora[0]} não existe neste projeto ({n_classes} classes)")
+        n_classes = len(ctx["classes"])
+        fora = [b["cls"] for b in caixas if b["cls"] >= n_classes]
+        if fora:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                f"classe {fora[0]} não existe neste projeto "
+                f"({n_classes} classes)")
 
-    async with db.connection() as conn:
-        async with conn.transaction():
-            cur = await conn.execute(
-                "SELECT id, boxes, origin FROM annotation"
-                " WHERE sample_id = %s AND author_id = %s",
-                (sample_id, user_id))
-            antes = await cur.fetchone()
-            # Corrigir uma pré-rotulagem é 'correction', não 'manual': a
-            # diferença é o que permite medir depois quanto o humano mudou do
-            # que o modelo sugeriu. Se essa taxa cair muito, o ciclo virou
-            # autoconfirmação — o modelo treinando na própria saída.
-            # 'correction' está na tupla porque a procedência é do trabalho,
-            # não do último clique: sem ela o segundo save da mesma imagem a
-            # rebaixava para 'manual' e a taxa zerava justo onde o humano mais
-            # mexeu.
-            origem = ("correction"
-                      if antes and antes["origin"] in ("prelabel", "import",
-                                                       "correction")
-                      else "manual")
-            nova = await db.fetch_row(
-                "INSERT INTO annotation (sample_id, schema_id, boxes, origin,"
-                " status, author_id, updated_by)"
-                " VALUES (%s,%s,%s::jsonb,%s,%s,%s,%s)"
-                " ON CONFLICT (sample_id, author_id) DO UPDATE"
-                "    SET boxes = EXCLUDED.boxes, status = EXCLUDED.status,"
-                "        origin = EXCLUDED.origin, updated_at = now(),"
-                "        updated_by = EXCLUDED.updated_by"
-                " RETURNING id, status",
-                (sample_id, ctx["schema_id"], json.dumps(caixas), origem,
-                 estado, user_id, user_id), conn=conn)
-            await conn.execute(
-                "INSERT INTO annotation_history (annotation_id, sample_id,"
-                " actor_id, action, boxes_before, boxes_after)"
-                " VALUES (%s,%s,%s,%s,%s::jsonb,%s::jsonb)",
-                (nova["id"], sample_id, user_id,
-                 "update" if antes else "create",
-                 json.dumps(antes["boxes"]) if antes else None,
-                 json.dumps(caixas)))
+        # Lido para o histórico (`boxes_before`) e para saber se é create ou
+        # update. A ORIGEM não sai daqui: ela é decidida no `DO UPDATE`, sobre
+        # a linha que o próprio comando está travando.
+        antes = await db.fetch_one(
+            "SELECT boxes FROM annotation"
+            " WHERE sample_id = %s AND author_id = %s", (sample_id, user_id),
+            conn=conn)
+
+        # Corrigir uma pré-rotulagem é 'correction', não 'manual': a diferença
+        # é o que permite medir depois quanto o humano mudou do que o modelo
+        # sugeriu. Se essa taxa cair muito, o ciclo virou autoconfirmação — o
+        # modelo treinando na própria saída. 'correction' está na tupla porque
+        # a procedência é do trabalho, não do último clique: sem ela o segundo
+        # save da mesma imagem a rebaixava para 'manual' e a taxa zerava justo
+        # onde o humano mais mexeu.
+        #
+        # O `CASE` lê `annotation.origin` — a linha existente, dentro do mesmo
+        # comando. Decidir isso em Python, a partir de uma leitura anterior,
+        # deixava a janela em que um pré-tag chega entre a leitura e a escrita:
+        # a taxa contaria 'manual' onde houve correção, e é justamente ela que
+        # o módulo existe para medir.
+        nova = await db.fetch_row(
+            "INSERT INTO annotation (sample_id, schema_id, boxes, origin,"
+            " status, author_id, updated_by)"
+            " VALUES (%s,%s,%s::jsonb,'manual',%s,%s,%s)"
+            " ON CONFLICT (sample_id, author_id) DO UPDATE"
+            "    SET boxes = EXCLUDED.boxes, status = EXCLUDED.status,"
+            "        origin = CASE WHEN annotation.origin"
+            "                        IN ('prelabel','import','correction')"
+            "                      THEN 'correction' ELSE 'manual' END,"
+            "        updated_at = now(), updated_by = EXCLUDED.updated_by"
+            " RETURNING id, status, origin",
+            (sample_id, ctx["schema_id"], json.dumps(caixas), estado, user_id,
+             user_id), conn=conn)
+        await db.execute(
+            "INSERT INTO annotation_history (annotation_id, sample_id,"
+            " actor_id, action, boxes_before, boxes_after)"
+            " VALUES (%s,%s,%s,%s,%s::jsonb,%s::jsonb)",
+            (nova["id"], sample_id, user_id, "update" if antes else "create",
+             json.dumps(antes["boxes"]) if antes else None,
+             json.dumps(caixas)), conn=conn)
     return {"id": nova["id"], "status": nova["status"],
-            "origin": origem, "caixas": len(caixas)}
+            "origin": nova["origin"], "caixas": len(caixas)}

@@ -87,12 +87,15 @@ da sua lista `MIGRADOS` — entra um nome ali a cada migração — e reprova
 `db.fetch_*`/`db.execute` sem `conn=`, o acesso importado solto e o auxiliar
 que alcança o pool sozinho (`deps.projeto_ou_404`).
 
-A lista é dos módulos que adotaram a disciplina **inteira**. Ficam de fora os
-que têm escrita de comando único por natureza e que não pode esperar transação
-de ninguém — o ponto da importação, o contador de tentativa de login, o toque
-de `last_seen_at` da sessão. Nesses (`imports`, `auth`, e os serviços de
-`agents`, `models`, `samples`, `training`, ainda por converter) a regra vale
-onde há sequência leia-decida-escreva, e é revisão que confere.
+**Todo serviço está na lista**, menos `buckets` — que não tem SQL. Isso vale
+inclusive para a escrita de comando único (o ponto da importação, o heartbeat
+do agente): ela abre a conexão explicitamente, mesmo sem sequência a proteger.
+O ganho não é atomicidade, é que "nenhuma função alcança o pool sozinha" vira
+propriedade conferível — e quem acrescentar um segundo comando ali não o faz
+noutra conexão sem perceber.
+
+`api/auth.py` fica de fora da varredura por não morar em `services/`, mas segue
+a mesma forma.
 
 **`conn.transaction()` vai no mesmo `async with` que abre a conexão.** O
 psycopg decide o que o bloco é pelo estado da conexão: ociosa, abre transação;

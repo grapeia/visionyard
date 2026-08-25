@@ -464,71 +464,43 @@ Fica em aberto: o `CLAUDE.md` dizia que não havia camada onde renomear chave de
 JSON. Agora há — o modelo de saída. Renomear segue custando mexer no `app.js`,
 mas o lugar existe.
 
-### 15. Conexão como parâmetro do serviço — `em curso`
-O `CLAUDE.md` explica que cada `fetch_*` pega uma conexão própria e que
+### 15. Conexão como parâmetro do serviço — `feito` (2026-08-25)
+O `CLAUDE.md` explicava que cada `fetch_*` pega uma conexão própria e que
 sequência atômica pede `db.connection()` + `conn.transaction()`. Era convenção
 conferida por quem revisa: nada no tipo impedia um serviço de fazer
 leia-decida-escreva com três conexões diferentes.
 
-**A forma ficou definida com `datasets`** (2026-08-24), a primeira migração a
-carregá-la: toda função do módulo que fala com o banco recebe `conn: db.Conn`,
-e quem **abre** a conexão — e, quando escreve, a transação — é a função pública
-do serviço.
+**A forma:** toda função de serviço que fala com o banco recebe `conn: db.Conn`,
+e quem **abre** a conexão — e, quando escreve, a transação — é a função pública.
+Vale para todo serviço menos `buckets`, que não tem SQL; `api/auth.py` segue a
+mesma forma sem estar em `services/`.
 
-A decisão que o item não previa foi *quem* segura a conexão. A leitura literal
-("o serviço recebe `conn`") põe o `async with db.connection()` no router, e aí
-é o router que decide onde a transação começa e termina — regra de domínio, que
-passaria a ser descrita em dois lugares. Segurar na função pública do serviço
-mantém o router em uma linha e dá a mesma garantia onde ela importa: nenhum
-auxiliar do congelamento consegue alcançar o pool por conta própria.
+Três decisões que o item não previa, e que só apareceram fazendo:
 
-Como o `db.fetch_*` precisa seguir com `conn=None` opcional para os serviços
-ainda não migrados, o que confere não é o tipo: é
-`tests/test_datasets.py: test_servico_de_dataset_nunca_alcanca_o_pool_sozinho`,
-que varre o módulo por AST e reprova chamada sem `conn=` (conferido quebrando
-de propósito). Vale por módulo, conforme cada um for convertido.
+- **Quem segura a conexão.** A leitura literal ("o serviço recebe `conn`") põe o
+  `async with db.connection()` no router, e aí é o router que decide onde a
+  transação começa e termina — regra de domínio descrita em dois lugares.
+  Segurar na função pública do serviço mantém o router em uma linha e dá a
+  garantia onde ela importa.
+- **`conn.transaction()` vai no MESMO `async with` da conexão.** O psycopg abre
+  transação de verdade só se a conexão estiver ociosa; depois de qualquer
+  leitura ela está `INTRANS` e o bloco vira `SAVEPOINT`, com o commit
+  acontecendo quando o pool devolve a conexão. A regra é sintática justamente
+  para ser conferível.
+- **Conexão aberta é transação aberta**, então trabalho pesado que não fala com
+  o banco não pode ter uma na mão — o `congelar` virou três fases e a
+  assinatura de URL do `samples` acontece com a conexão já devolvida.
 
-**Segurar a conexão trouxe dois efeitos que a forma tem de prever**, os dois
-achados no review da primeira migração e os dois de psycopg, não de desenho:
+Como `db.fetch_*` precisa manter o `conn=None` opcional (o `worker`, o `deps` e
+o `audit` chamam de fora de serviço), o que confere não é o tipo: é
+`tests/test_conexao_do_servico.py`, parametrizado por serviço, que varre por AST
+as duas regras — e também o acesso importado solto, o módulo apelidado e o
+`deps.projeto_ou_404`, que alcança o pool. Os dois guardas foram conferidos
+quebrando de propósito em mais de um módulo.
 
-- `conn.transaction()` só abre transação de verdade se a conexão estiver
-  ociosa. Depois de qualquer leitura ela está `INTRANS` e o bloco vira um
-  `SAVEPOINT`, com o commit acontecendo quando o pool devolve a conexão. Como o
-  serviço migrado lê antes de escrever quase sempre, a forma passou a ser abrir
-  as duas no mesmo `async with` — e há varredura por AST para isso também.
-- conexão aberta é transação aberta, então trabalho pesado que não fala com o
-  banco não pode ter uma na mão. O `congelar` virou três fases (ler, montar,
-  gravar) com a do meio sem conexão nenhuma; o teste afirma isso olhando o
-  `pg_stat_activity` de fora, no momento em que o manifesto é montado.
-
-`projects` veio em seguida (2026-08-24) e a forma se sustentou sem ajuste — o
-único caso novo foi o papel do usuário, que entra na resposta do detalhe:
-`deps.project_role` ganhou `conn=` opcional, como os helpers de `db.py`, e a
-varredura passou a cobri-la.
-
-`users` foi o terceiro (2026-08-24), e o primeiro em que a disciplina pagou em
-correção e não só em arrumação: a guarda "o projeto ficaria sem owner" lia numa
-conexão à parte, e duas remoções simultâneas a atravessavam. Ficou registrado
-ali o que a migração sozinha **não** resolveria — contar dentro da transação
-continua vendo 2 em READ COMMITTED; o que resolve é lock consultivo.
-
-`devices` foi o quarto (2026-08-24) e não trouxe forma nova — trouxe a mesma
-correção que o review do `users` tinha acabado de ensinar, agora aplicada antes
-de alguém apontar: ler-e-inserir no cadastro de máquina, e contar-e-apagar na
-exclusão.
-
-**A fila de routers fechou em 2026-08-24**: nenhum tem mais uma linha de SQL.
-O `auth` foi o último, e a regra dele foi para `api/auth.py` — que já era o
-serviço desse domínio — e não para um `services/auth.py` que dividiria o mesmo
-assunto em dois arquivos.
-
-O que sobra do item 15 não é router, é serviço: `agents`, `models`, `samples` e
-`training` foram escritos antes desta forma e ainda alcançam o pool. `imports` e
-`auth` estão no meio do caminho de propósito — as sequências leia-decida-escreva
-deles já recebem `conn`, mas as escritas de comando único (o ponto da
-importação, o contador de tentativa de login, o toque de `last_seen_at`) não
-podem esperar transação de ninguém, e por isso os dois ficam fora da lista
-`MIGRADOS` da varredura.
+O que a disciplina pagou, além de forma: sete corridas de leia-decida-escreva
+que ela tornou visíveis. A do owner (`users`) quebrava um invariante de acesso;
+as outras seis viravam 500 no lugar do 409 ou do 204 que o handler pretendia.
 
 ### 16. Porta de storage — `feito` (2026-08-20)
 O acesso ao GCS está espalhado e sem porta. `routers/samples.py:63` faz
@@ -918,3 +890,17 @@ valer para as duas rotas.
   o `UNIQUE (user_id, name)` de `api_token` cobria linha revogada, e a listagem
   não, então revogar um token fazia o nome sumir da tela e seguir bloqueando.
   Suíte: **242 testes passando** (eram 238).
+- **2026-08-25** — item 15 fechado. Os quatro serviços que faltavam (`agents`,
+  `models`, `samples`, `training`) mais o `imports` passaram à forma; só
+  `buckets` fica de fora, por não ter SQL. Duas correções vieram junto, as duas
+  da mesma família que a série inteira vinha achando. `training.cancelar_run`
+  tinha o mesmo defeito que eu havia corrigido em `jobs.cancelar` dias antes:
+  lia o status, recusava com 409 se terminal, e atualizava noutro comando —
+  entre os dois cabe o treino terminar, e aí o 409 não sai e o UPDATE marca
+  `cancel_requested` num run encerrado. E `samples.salvar_anotacao` decidia em
+  Python se a origem é `manual` ou `correction`, a partir de uma leitura
+  anterior: agora o `CASE` do `DO UPDATE` lê a linha existente dentro do mesmo
+  comando. Essa é a que mais importa — a taxa de correção é justamente o que o
+  módulo existe para medir, e contá-la como `manual` onde houve correção
+  falsearia a medida que diz se o ciclo virou autoconfirmação.
+  Suíte: **252 testes passando** (eram 242).

@@ -77,36 +77,35 @@ async def recolher_orfaos() -> int:
     A prova é da instalação, e não do projeto, de propósito: o executor é um só
     para todos os projetos, então é a liveness dele que se está medindo.
     """
-    async with db.connection() as conn:
-        async with conn.transaction():
-            mortas = await db.fetch_all(
-                "UPDATE job SET status = 'failed', finished_at = now(),"
-                "               error = %(erro)s"
-                " WHERE type = 'import' AND status = 'running'"
-                "   AND COALESCE(heartbeat_at, started_at, created_at)"
-                "       < now() - make_interval(secs => %(s)s)"
-                " RETURNING id",
-                {"erro": MOTIVO_ORFAO,
-                 "s": settings.import_job_stale_seconds}, conn=conn)
+    async with db.connection() as conn, conn.transaction():
+        mortas = await db.fetch_all(
+            "UPDATE job SET status = 'failed', finished_at = now(),"
+            "               error = %(erro)s"
+            " WHERE type = 'import' AND status = 'running'"
+            "   AND COALESCE(heartbeat_at, started_at, created_at)"
+            "       < now() - make_interval(secs => %(s)s)"
+            " RETURNING id",
+            {"erro": MOTIVO_ORFAO,
+             "s": settings.import_job_stale_seconds}, conn=conn)
 
-            paradas = await db.fetch_all(
-                "UPDATE job SET status = 'failed', finished_at = now(),"
-                "               error = %(erro)s"
-                " WHERE type = 'import' AND status = 'queued'"
-                "   AND created_at < now() - make_interval(secs => %(s)s)"
-                "   AND NOT EXISTS (SELECT 1 FROM job f"
-                "                    WHERE f.type = 'import'"
-                "                      AND (f.status = 'running'"
-                "                           OR f.finished_at > now()"
-                "                              - make_interval(secs => %(s)s)))"
-                " RETURNING id",
-                {"erro": MOTIVO_SEM_EXECUTOR,
-                 "s": settings.import_job_stale_seconds}, conn=conn)
+        paradas = await db.fetch_all(
+            "UPDATE job SET status = 'failed', finished_at = now(),"
+            "               error = %(erro)s"
+            " WHERE type = 'import' AND status = 'queued'"
+            "   AND created_at < now() - make_interval(secs => %(s)s)"
+            "   AND NOT EXISTS (SELECT 1 FROM job f"
+            "                    WHERE f.type = 'import'"
+            "                      AND (f.status = 'running'"
+            "                           OR f.finished_at > now()"
+            "                              - make_interval(secs => %(s)s)))"
+            " RETURNING id",
+            {"erro": MOTIVO_SEM_EXECUTOR,
+             "s": settings.import_job_stale_seconds}, conn=conn)
 
-            for job_id, motivo in ([(m["id"], MOTIVO_ORFAO) for m in mortas]
-                                   + [(q["id"], MOTIVO_SEM_EXECUTOR)
-                                      for q in paradas]):
-                await registrar_evento(str(job_id), motivo, "error", conn=conn)
+        for job_id, motivo in ([(m["id"], MOTIVO_ORFAO) for m in mortas]
+                               + [(q["id"], MOTIVO_SEM_EXECUTOR)
+                                  for q in paradas]):
+            await registrar_evento(str(job_id), motivo, "error", conn=conn)
     return len(mortas) + len(paradas)
 
 
@@ -133,10 +132,11 @@ async def registrar_evento(job_id: str, mensagem: str, nivel: str = "info",
 async def registrar_progresso(job_id: str, lidos: int) -> None:
     """Progresso e ponto na mesma escrita: o progresso já ia ao banco a cada
     lote, e é ele que prova que a importação continua viva."""
-    await db.execute(
-        "UPDATE job SET progress = %s::jsonb, heartbeat_at = now()"
-        " WHERE id = %s AND status = 'running'",
-        (json.dumps({"lidos": lidos}), job_id))
+    async with db.connection() as conn:
+        await db.execute(
+            "UPDATE job SET progress = %s::jsonb, heartbeat_at = now()"
+            " WHERE id = %s AND status = 'running'",
+            (json.dumps({"lidos": lidos}), job_id), conn=conn)
 
 
 async def concluir_job(job_id: str, resultado: dict[str, Any]) -> None:
@@ -148,21 +148,23 @@ async def concluir_job(job_id: str, resultado: dict[str, Any]) -> None:
     `succeeded` um job que a tela já mostrou como interrompido — a mesma
     invariante do relato atrasado do agente.
     """
-    await db.execute(
-        "UPDATE job SET status = 'succeeded', finished_at = now(),"
-        "               result = %s::jsonb"
-        " WHERE id = %s AND status = 'running'",
-        (json.dumps(resultado), job_id))
+    async with db.connection() as conn:
+        await db.execute(
+            "UPDATE job SET status = 'succeeded', finished_at = now(),"
+            "               result = %s::jsonb"
+            " WHERE id = %s AND status = 'running'",
+            (json.dumps(resultado), job_id), conn=conn)
 
 
 async def falhar_job(job_id: str, erro: str,
                      resultado: dict[str, Any]) -> None:
     """Fecha com falha, com a mesma guarda de `concluir_job`."""
-    await db.execute(
-        "UPDATE job SET status = 'failed', finished_at = now(), error = %s,"
-        "               result = %s::jsonb"
-        " WHERE id = %s AND status = 'running'",
-        (erro, json.dumps(resultado), job_id))
+    async with db.connection() as conn:
+        await db.execute(
+            "UPDATE job SET status = 'failed', finished_at = now(),"
+            "               error = %s, result = %s::jsonb"
+            " WHERE id = %s AND status = 'running'",
+            (erro, json.dumps(resultado), job_id), conn=conn)
 
 
 # --------------------------------------------------------------------------- #
@@ -309,19 +311,18 @@ async def reclamar() -> dict[str, Any] | None:
     é o mesmo desfecho de antes, e mantê-lo aqui é o que impede esta mudança
     de virar também uma mudança de política de retentativa.
     """
-    async with db.connection() as conn:
-        async with conn.transaction():
-            cur = await conn.execute(
-                "UPDATE job SET status = 'running', started_at = now(),"
-                "               heartbeat_at = now(), attempts = attempts + 1"
-                " WHERE id = (SELECT id FROM job"
-                "              WHERE type = 'import' AND status = 'queued'"
-                "                AND NOT cancel_requested"
-                "              ORDER BY priority, created_at"
-                "              FOR UPDATE SKIP LOCKED LIMIT 1)"
-                " RETURNING id, project_id, payload, created_by,"
-                "           data_source_id")
-            return await cur.fetchone()
+    async with db.connection() as conn, conn.transaction():
+        cur = await conn.execute(
+            "UPDATE job SET status = 'running', started_at = now(),"
+            "               heartbeat_at = now(), attempts = attempts + 1"
+            " WHERE id = (SELECT id FROM job"
+            "              WHERE type = 'import' AND status = 'queued'"
+            "                AND NOT cancel_requested"
+            "              ORDER BY priority, created_at"
+            "              FOR UPDATE SKIP LOCKED LIMIT 1)"
+            " RETURNING id, project_id, payload, created_by,"
+            "           data_source_id")
+        return await cur.fetchone()
 
 
 async def simular(project_slug: str, actor: Principal,
