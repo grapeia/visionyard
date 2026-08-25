@@ -61,14 +61,13 @@ Duas escolhas dentro dessa divisão, feitas para não criar cerimônia: o servi�
 uma segunda descrição do mesmo erro) e o serviço **não conhece pydantic** —
 recebe escalares e `dict`/`list[dict]`, e é o router que valida e converte.
 
-`agents`, `datasets`, `models`, `projects`, `samples` e `training` já estão
-assim: o router não tem uma linha de SQL. `imports` está quase:
+`agents`, `datasets`, `models`, `projects`, `samples`, `training` e `users` já
+estão assim: o router não tem uma linha de SQL. `imports` está quase:
 `services/imports.py` tem a fila inteira (enfileirar, reclamar, ponto,
 progresso, desfecho, recolhimento), a cerca de caminho, o importador e o upsert
 de origem; sobrou inline a listagem de jobs do projeto. Os demais (`auth`,
-`buckets`, `devices`, `jobs`, `prelabel`, `users`) carregam o SQL inline por
-inteiro. Quando um deles for mexido a sério, a regra vai junto para
-`services/`.
+`buckets`, `devices`, `jobs`, `prelabel`) carregam o SQL inline por inteiro.
+Quando um deles for mexido a sério, a regra vai junto para `services/`.
 
 **Serviço migrado recebe `conn`.** É a forma que o item 15 do PLANO tomou, e
 `services/datasets.py` é onde ela já vale: toda função do módulo que fala com o
@@ -176,6 +175,14 @@ pede.
 - **Anotação é por (imagem, autor).** Escrita mexe só na do próprio autor.
   Importação e pré-tag nunca sobrescrevem trabalho humano — o `WHERE` do
   `DO UPDATE` é o que garante, não a ordem das operações.
+- **O projeto nunca fica sem owner.** Sem owner ninguém arquiva o projeto nem
+  concede owner, e o papel máximo dele passa a ser `admin` — não há como sair
+  desse estado de dentro do produto. As duas portas são `services/users.py`:
+  remover o último owner e rebaixá-lo. Contar owners **dentro** da transação
+  não basta: em READ COMMITTED cada comando pega snapshot novo, então duas
+  remoções simultâneas leem 2 antes de qualquer uma gravar e as duas passam. O
+  que segura é `_travar_membros`, lock consultivo por projeto, no mesmo molde
+  do append de schema e do congelamento.
 - **RBAC é por projeto.** Rota com `{project_slug}` usa
   `Depends(require_role("papel"))`. Não-membro recebe 404, não 403: 403
   revelaria que o projeto existe. A dependência **não** garante que o projeto

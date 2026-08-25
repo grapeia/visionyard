@@ -25,7 +25,7 @@ from pathlib import Path
 import pytest
 
 # Serviços já convertidos. Entra um nome aqui a cada migração.
-MIGRADOS = ["datasets", "projects"]
+MIGRADOS = ["datasets", "projects", "users"]
 
 # Acessos de `db.py`: só valem como `db.X(..., conn=...)`.
 ACESSOS_DB = {"fetch_one", "fetch_all", "fetch_row", "execute"}
@@ -33,7 +33,10 @@ ACESSOS_DB = {"fetch_one", "fetch_all", "fetch_row", "execute"}
 # Auxiliares de fora de `db.py` que também alcançam o pool e aceitam `conn=`.
 ACESSOS_VIZINHOS = {"project_role"}
 
-# Auxiliares que alcançam o pool e NÃO aceitam `conn=`: importar é o vazamento.
+# Auxiliares de `deps` que alcançam o pool e NÃO aceitam `conn=`: importá-los é
+# o vazamento. O nome é conferido junto com o módulo — `services/projects.py`
+# exporta uma `projeto_ou_404` própria, essa com `conn`, e é dela que os outros
+# serviços se servem.
 SEM_CONEXAO = {"projeto_ou_404"}
 
 
@@ -73,10 +76,12 @@ def test_servico_nunca_alcanca_o_pool_sozinho(servico: str):
     importados = {(a.name, a.asname) for no in ast.walk(arvore)
                   if isinstance(no, ast.ImportFrom) for a in no.names}
     nomes = {n for n, _ in importados}
-    vazando = SEM_CONEXAO & nomes
+    vazando = {a.name for no in ast.walk(arvore)
+               if isinstance(no, ast.ImportFrom) and no.module == "deps"
+               for a in no.names if a.name in SEM_CONEXAO}
     assert not vazando, (
-        f"{sorted(vazando)} alcança(m) o pool por conta própria — escreva o "
-        f"equivalente com `conn` dentro do serviço")
+        f"`deps.{sorted(vazando)[0]}` alcança o pool por conta própria — use a "
+        f"versão com `conn` de `services/`")
     # As duas formas que fariam a varredura de cima olhar para o lado:
     # importar o acesso solto, ou apelidar o módulo.
     assert not (ACESSOS_DB & nomes), (

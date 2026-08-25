@@ -506,9 +506,15 @@ achados no review da primeira migração e os dois de psycopg, não de desenho:
 `deps.project_role` ganhou `conn=` opcional, como os helpers de `db.py`, e a
 varredura passou a cobri-la.
 
+`users` foi o terceiro (2026-08-24), e o primeiro em que a disciplina pagou em
+correção e não só em arrumação: a guarda "o projeto ficaria sem owner" lia numa
+conexão à parte, e duas remoções simultâneas a atravessavam. Ficou registrado
+ali o que a migração sozinha **não** resolveria — contar dentro da transação
+continua vendo 2 em READ COMMITTED; o que resolve é lock consultivo.
+
 Faltam os serviços de `agents`, `imports`, `models`, `samples` e `training`, e
 os routers que ainda não têm serviço nenhum (`auth`, `buckets`, `devices`,
-`jobs`, `prelabel`, `users`).
+`jobs`, `prelabel`).
 
 ### 16. Porta de storage — `feito` (2026-08-20)
 O acesso ao GCS está espalhado e sem porta. `routers/samples.py:63` faz
@@ -810,3 +816,17 @@ valer para as duas rotas.
   `tests/test_conexao_do_servico.py`, parametrizados pela lista de serviços
   migrados (conferidos quebrando de propósito nos dois). Suíte: **224 testes
   passando** (eram 222).
+- **2026-08-24** — `users` virou router + serviço, e a migração desenterrou um
+  invariante quebrado. A guarda "o projeto ficaria sem owner" contava numa
+  conexão à parte: duas remoções simultâneas liam 2 antes de qualquer uma
+  gravar, as duas passavam, e o projeto ficava órfão — sem owner ninguém
+  arquiva nem concede owner, e o papel máximo vira `admin`, sem saída de dentro
+  do produto. O teste que fixa isso reprovava com `[204, 204]`. Pôr a leitura
+  na transação **não** conserta (READ COMMITTED dá snapshot novo a cada
+  comando); o que conserta é `_travar_membros`, lock consultivo por projeto, no
+  molde do append de schema. Junto foi `auth.issue_invite`, que abria transação
+  própria e deixava o convite existir mesmo quando a auditoria falhava — passou
+  a exigir `conn`, porque convite é acesso concedido e convite sem registro é
+  acesso concedido sem rastro. `services/projects.py: projeto_ou_404` virou
+  pública para os dois serviços usarem a mesma, e a varredura passou a conferir
+  o módulo junto com o nome. Suíte: **227 testes passando** (eram 224).

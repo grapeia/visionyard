@@ -98,6 +98,44 @@ async def test_nao_deixa_projeto_sem_owner(admin, superuser):
     assert "sem owner" in r.json()["detail"]
 
 
+async def _owners(project_slug: str) -> int:
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        return conn.execute(
+            "SELECT count(*) FROM project_member m JOIN project p"
+            "  ON p.id = m.project_id"
+            " WHERE p.slug = %s AND m.role = 'owner'",
+            (project_slug,)).fetchone()[0]
+
+
+async def test_dois_owners_saindo_ao_mesmo_tempo_nao_esvaziam_o_projeto(
+        admin, client, superuser):
+    """A guarda "o projeto ficaria sem owner" contava numa conexão à parte.
+
+    Duas remoções simultâneas liam 2 antes de qualquer uma gravar, as duas
+    passavam pela guarda e o projeto ficava órfão: sem owner, ninguém mais
+    arquiva nem concede owner, e o papel máximo do projeto vira `admin`. Contar
+    dentro da transação não bastaria — em READ COMMITTED cada comando pega
+    snapshot novo, e as duas continuariam vendo 2. O que serializa é o lock
+    consultivo por projeto, como no append de schema e no congelamento.
+    """
+    import asyncio
+
+    await admin.post("/v1/projects", json=PROJ)
+    async with novo_usuario(admin, client, "co-dono@teste.com") as (_, outro):
+        await admin.put(f"/v1/projects/{PROJ['slug']}/members",
+                        json={"email": "co-dono@teste.com", "role": "owner"})
+        assert await _owners(PROJ["slug"]) == 2
+
+        base = f"/v1/projects/{PROJ['slug']}/members"
+        respostas = await asyncio.gather(
+            admin.delete(f"{base}/{superuser['id']}"),
+            admin.delete(f"{base}/{outro}"))
+
+    codigos = sorted(r.status_code for r in respostas)
+    assert codigos == [204, 409], codigos
+    assert await _owners(PROJ["slug"]) == 1
+
+
 async def test_usuario_comum_nao_cria_projeto(admin, client):
     """Criar projeto torna o criador owner, e owner implica engineer.
 

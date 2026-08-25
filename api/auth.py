@@ -257,24 +257,28 @@ async def resolve_device_token(token: str) -> DevicePrincipal:
 # --------------------------------------------------------------------------- #
 
 async def issue_invite(user_id: str, purpose: str,
-                       created_by: str | None) -> str:
-    """Emite convite de uso único e invalida o anterior do mesmo propósito."""
+                       created_by: str | None, *, conn: db.Conn) -> str:
+    """Emite convite de uso único e invalida o anterior do mesmo propósito.
+
+    `conn` é obrigatório: as duas escritas precisam ser atômicas, e quem chama
+    já está numa transação — a emissão e o seu registro de auditoria têm de
+    comitar juntos, porque um convite é acesso concedido e um convite sem
+    registro é acesso concedido sem rastro.
+    """
     if purpose not in ("invite", "password_reset"):
         raise ValueError(f"propósito inválido: {purpose}")
     token = new_token()
-    async with db.connection() as conn:
-        async with conn.transaction():
-            await conn.execute(
-                "UPDATE user_invite SET revoked_at = now()"
-                " WHERE user_id = %s AND purpose = %s"
-                "   AND used_at IS NULL AND revoked_at IS NULL",
-                (user_id, purpose))
-            await conn.execute(
-                "INSERT INTO user_invite (user_id, purpose, token_sha256,"
-                " expires_at, created_by) VALUES (%s,%s,%s,%s,%s)",
-                (user_id, purpose, token_digest(token),
-                 _now() + timedelta(hours=settings.invite_ttl_hours),
-                 created_by))
+    await db.execute(
+        "UPDATE user_invite SET revoked_at = now()"
+        " WHERE user_id = %s AND purpose = %s"
+        "   AND used_at IS NULL AND revoked_at IS NULL",
+        (user_id, purpose), conn=conn)
+    await db.execute(
+        "INSERT INTO user_invite (user_id, purpose, token_sha256,"
+        " expires_at, created_by) VALUES (%s,%s,%s,%s,%s)",
+        (user_id, purpose, token_digest(token),
+         _now() + timedelta(hours=settings.invite_ttl_hours), created_by),
+        conn=conn)
     return token
 
 

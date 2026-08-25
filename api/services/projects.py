@@ -27,7 +27,7 @@ from ..auth import Principal
 from ..deps import project_role
 
 
-async def _projeto_ou_404(conn: db.Conn, project_slug: str,
+async def projeto_ou_404(conn: db.Conn, project_slug: str,
                           colunas: str = "id") -> dict[str, Any]:
     """O projeto da rota, ou 404.
 
@@ -36,6 +36,10 @@ async def _projeto_ou_404(conn: db.Conn, project_slug: str,
     dependência e viraria 500 no primeiro `proj["id"]`.
 
     `colunas` é SQL literal escrito aqui — nunca valor de requisição.
+
+    Pública porque `services/users.py` também precisa dela: é a mesma pergunta,
+    e ter duas cópias faria a segunda envelhecer sozinha. É a versão com `conn`
+    da `deps.projeto_ou_404`, que alcança o pool.
     """
     row = await db.fetch_one(
         f"SELECT {colunas} FROM project WHERE slug = %s", (project_slug,),
@@ -96,7 +100,7 @@ async def criar(user: Principal, *, slug: str, name: str, task_type: str,
 
 async def detalhe(project_slug: str, user: Principal) -> dict[str, Any]:
     async with db.connection() as conn:
-        proj = await _projeto_ou_404(
+        proj = await projeto_ou_404(
             conn, project_slug,
             "id, slug, name, task_type, description, created_at, archived_at")
         schema = await db.fetch_one(
@@ -132,7 +136,7 @@ async def alterar(project_slug: str, actor: Principal, *,
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "nada a alterar")
     sets = ", ".join(f"{k} = %({k})s" for k in campos)
     async with db.connection() as conn, conn.transaction():
-        antes = await _projeto_ou_404(conn, project_slug,
+        antes = await projeto_ou_404(conn, project_slug,
                                       "id, name, description")
         # `fetch_row` e não `fetch_one`: o 404 já saiu acima, e agora a leitura
         # e o UPDATE estão na mesma transação — a linha existe, e vir vazia
@@ -160,7 +164,7 @@ async def acrescentar_classes(project_slug: str, actor: Principal, *,
     operação para um caminho próprio, com as devidas travas.
     """
     async with db.connection() as conn, conn.transaction():
-        proj = await _projeto_ou_404(conn, project_slug)
+        proj = await projeto_ou_404(conn, project_slug)
         # Serializa por projeto: dois appends simultâneos calculariam a mesma
         # versão e colidiriam no UNIQUE(project_id, version).
         await conn.execute("SELECT pg_advisory_xact_lock(hashtext(%s))",
@@ -203,7 +207,7 @@ async def arquivar(project_slug: str, actor: Principal, *,
         # arquivado": sem isto, um slug digitado errado respondia 409 "projeto
         # já arquivado" e um script que trata 409 como "já feito" dava por
         # concluído um projeto que nunca existiu.
-        await _projeto_ou_404(conn, project_slug)
+        await projeto_ou_404(conn, project_slug)
         row = await db.fetch_one(
             "UPDATE project SET archived_at = now()"
             " WHERE slug = %s AND archived_at IS NULL RETURNING id",
