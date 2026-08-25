@@ -80,6 +80,24 @@ concorrência. `tests/test_datasets.py` varre o módulo por AST e reprova
 `db.fetch_*`/`db.execute` sem `conn=`. Os serviços ainda não migrados seguem
 alcançando o pool; a regra vale por módulo, conforme cada um é convertido.
 
+**`conn.transaction()` vai no mesmo `async with` que abre a conexão.** O
+psycopg decide o que o bloco é pelo estado da conexão: ociosa, abre transação;
+já `INTRANS` — e uma leitura basta para isso —, abre um `SAVEPOINT`. No segundo
+caso o código não muda de aparência, mas o commit passa a acontecer quando o
+pool devolve a conexão, e as leituras de antes do bloco entram na mesma
+transação que as escritas de dentro. Escrevendo
+`async with db.connection() as conn, conn.transaction():` a linha é a fronteira
+que aparenta ser; a mesma varredura por AST reprova o bloco separado.
+
+**Conexão aberta é transação aberta.** Fora de `autocommit`, a primeira query
+já deixa a sessão `INTRANS`, e ela só volta a `IDLE` quando o pool a recebe de
+volta. Então trabalho pesado que não fala com o banco não pode acontecer com
+uma conexão na mão: a sessão fica `idle in transaction` o tempo todo, um
+`idle_in_transaction_session_timeout` derruba o backend no meio, o horizonte de
+xmin trava o vacuum, e uma das dez vagas do pool fica presa esperando CPU. O
+`congelar` de `services/datasets.py` é o exemplo: ler, montar o manifesto sem
+conexão nenhuma, gravar.
+
 **Toda rota declara o que devolve.** O `response_model` do router é o contrato
 de saída; sem ele a linha do banco *é* o DTO, e coluna acrescentada a um
 `SELECT` viaja para o navegador sem ninguém decidir.

@@ -29,6 +29,21 @@ que gravar — é o lugar do repositório onde isso doeria mais.
 Quem **abre** a conexão e a transação é a função pública deste módulo, não o
 router: onde a transação começa e termina é decisão de domínio, e deixá-la no
 router faria a mesma regra ser descrita em dois lugares.
+
+E abre as duas no MESMO `async with`:
+
+    async with db.connection() as conn, conn.transaction():
+
+`conn.transaction()` do psycopg só abre transação de verdade se a conexão
+estiver ociosa; depois de qualquer leitura ela já está `INTRANS`, e o bloco
+vira um `SAVEPOINT`. O código continua parecendo o mesmo e o commit passa a
+acontecer longe dali, quando o pool devolve a conexão — com as leituras de
+antes do bloco dentro da mesma transação que as escritas de dentro, sem nada
+escrito dizendo isso. Escrever as duas juntas é o que faz a linha ser a
+fronteira que ela aparenta ser.
+
+Pelo mesmo motivo, trabalho pesado que não fala com o banco fica fora de
+qualquer `db.connection()` — ver as três fases de `congelar`.
 """
 from __future__ import annotations
 
@@ -327,7 +342,7 @@ async def listar(project_slug: str) -> list[dict[str, Any]]:
 
 async def criar(project_slug: str, actor: Principal, *, slug: str, name: str,
                 kind: str, roi: dict | None, ip: str | None) -> dict[str, Any]:
-    async with db.connection() as conn:
+    async with db.connection() as conn, conn.transaction():
         project_id = await _projeto_id(conn, project_slug)
         dup = await db.fetch_one(
             "SELECT id FROM dataset WHERE project_id = %s AND slug = %s",
@@ -335,16 +350,15 @@ async def criar(project_slug: str, actor: Principal, *, slug: str, name: str,
         if dup:
             raise HTTPException(status.HTTP_409_CONFLICT,
                                 f"já existe dataset '{slug}'")
-        async with conn.transaction():
-            row = await db.fetch_row(
-                "INSERT INTO dataset (project_id, slug, name, kind, roi,"
-                " created_by) VALUES (%s,%s,%s,%s,%s::jsonb,%s)"
-                " RETURNING id, slug, name, kind, roi, created_at",
-                (project_id, slug, name, kind,
-                 json.dumps(roi) if roi else None, actor.id), conn=conn)
-            await audit(actor, "dataset.create", "dataset", str(row["id"]),
-                        project_id=project_id, after={"slug": slug},
-                        ip=ip, conn=conn)
+        row = await db.fetch_row(
+            "INSERT INTO dataset (project_id, slug, name, kind, roi,"
+            " created_by) VALUES (%s,%s,%s,%s,%s::jsonb,%s)"
+            " RETURNING id, slug, name, kind, roi, created_at",
+            (project_id, slug, name, kind,
+             json.dumps(roi) if roi else None, actor.id), conn=conn)
+        await audit(actor, "dataset.create", "dataset", str(row["id"]),
+                    project_id=project_id, after={"slug": slug},
+                    ip=ip, conn=conn)
     return row
 
 
@@ -355,16 +369,15 @@ async def definir_roi(project_slug: str, dataset_slug: str, actor: Principal,
     Só afeta as PRÓXIMAS versões congeladas — as já existentes carregam a ROI
     com que foram congeladas (imutável) e seguem reproduzíveis.
     """
-    async with db.connection() as conn:
+    async with db.connection() as conn, conn.transaction():
         ds = await _dataset_ou_404(conn, project_slug, dataset_slug)
-        async with conn.transaction():
-            await db.execute(
-                "UPDATE dataset SET roi = %s::jsonb WHERE id = %s",
-                (json.dumps(roi) if roi else None, ds["id"]), conn=conn)
-            await audit(actor, "dataset.roi", "dataset", str(ds["id"]),
-                        project_id=str(ds["project_id"]),
-                        before={"roi": ds["roi"]}, after={"roi": roi},
-                        ip=ip, conn=conn)
+        await db.execute(
+            "UPDATE dataset SET roi = %s::jsonb WHERE id = %s",
+            (json.dumps(roi) if roi else None, ds["id"]), conn=conn)
+        await audit(actor, "dataset.roi", "dataset", str(ds["id"]),
+                    project_id=str(ds["project_id"]),
+                    before={"roi": ds["roi"]}, after={"roi": roi},
+                    ip=ip, conn=conn)
     return {"slug": ds["slug"], "roi": roi}
 
 
@@ -403,7 +416,7 @@ async def detalhe(project_slug: str, dataset_slug: str) -> dict[str, Any]:
 async def vincular_origem(project_slug: str, dataset_slug: str,
                           actor: Principal, *, source_id: str,
                           ip: str | None) -> None:
-    async with db.connection() as conn:
+    async with db.connection() as conn, conn.transaction():
         ds = await _dataset_ou_404(conn, project_slug, dataset_slug)
         src = await db.fetch_one(
             "SELECT id FROM data_source WHERE id = %s AND project_id = %s",
@@ -411,14 +424,13 @@ async def vincular_origem(project_slug: str, dataset_slug: str,
         if src is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND,
                                 "origem não encontrada")
-        async with conn.transaction():
-            await db.execute(
-                "INSERT INTO dataset_source (dataset_id, data_source_id,"
-                " added_by) VALUES (%s,%s,%s) ON CONFLICT DO NOTHING",
-                (ds["id"], source_id, actor.id), conn=conn)
-            await audit(actor, "dataset.origin.add", "dataset", str(ds["id"]),
-                        project_id=str(ds["project_id"]),
-                        after={"source": source_id}, ip=ip, conn=conn)
+        await db.execute(
+            "INSERT INTO dataset_source (dataset_id, data_source_id,"
+            " added_by) VALUES (%s,%s,%s) ON CONFLICT DO NOTHING",
+            (ds["id"], source_id, actor.id), conn=conn)
+        await audit(actor, "dataset.origin.add", "dataset", str(ds["id"]),
+                    project_id=str(ds["project_id"]),
+                    after={"source": source_id}, ip=ip, conn=conn)
 
 
 async def desvincular_origem(project_slug: str, dataset_slug: str,
@@ -430,16 +442,15 @@ async def desvincular_origem(project_slug: str, dataset_slug: str,
     continuam treináveis e reproduzíveis. Só as próximas versões deixarão de
     incluir essas imagens.
     """
-    async with db.connection() as conn:
+    async with db.connection() as conn, conn.transaction():
         ds = await _dataset_ou_404(conn, project_slug, dataset_slug)
-        async with conn.transaction():
-            await db.execute(
-                "DELETE FROM dataset_source"
-                " WHERE dataset_id=%s AND data_source_id=%s",
-                (ds["id"], source_id), conn=conn)
-            await audit(actor, "dataset.origin.remove", "dataset",
-                        str(ds["id"]), project_id=str(ds["project_id"]),
-                        before={"source": source_id}, ip=ip, conn=conn)
+        await db.execute(
+            "DELETE FROM dataset_source"
+            " WHERE dataset_id=%s AND data_source_id=%s",
+            (ds["id"], source_id), conn=conn)
+        await audit(actor, "dataset.origin.remove", "dataset",
+                    str(ds["id"]), project_id=str(ds["project_id"]),
+                    before={"source": source_id}, ip=ip, conn=conn)
 
 
 async def previa(project_slug: str, dataset_slug: str,
@@ -506,130 +517,140 @@ async def congelar(project_slug: str, dataset_slug: str, actor: Principal, *,
                    ip: str | None) -> dict[str, Any]:
     """Sela uma versão: resolve as origens, sorteia o split e grava o manifesto.
 
-    A parte cara (resolver as origens, montar o items.jsonl) fica **fora** da
-    transação de propósito: ela é leitura e CPU, e segurá-la sob o lock
-    consultivo faria um congelamento grande bloquear todos os outros do mesmo
-    dataset pelo tempo inteiro. O que vale é o que se relê sob o lock.
+    São três fases, e a divisão entre elas é o ponto: **ler**, **montar** e
+    **gravar**. A do meio é CPU pura — uma linha de JSON por imagem, e o
+    manifesto passa de 100 MB em centenas de milhares delas — e roda **sem
+    conexão nenhuma na mão**. Segurar a conexão ali deixa a sessão `idle in
+    transaction` por todo o tempo do trabalho: um
+    `idle_in_transaction_session_timeout` (padrão em Postgres gerenciado)
+    derruba o backend e o INSERT falha depois de tudo pronto, o horizonte de
+    xmin trava o vacuum de `sample`/`annotation`, e uma das dez vagas do pool
+    fica presa esperando CPU.
     """
+    # ---- 1. ler -----------------------------------------------------------
     async with db.connection() as conn:
         ds = await _dataset_ou_404(conn, project_slug, dataset_slug)
         schema = await db.fetch_row(
             "SELECT id, classes FROM label_schema WHERE project_id = %s"
             " ORDER BY version DESC LIMIT 1", (ds["project_id"],), conn=conn)
-        classes = [c["name"] for c in schema["classes"]]
-
         compativeis = await schemas_compativeis(conn, ds["project_id"])
         itens = await resolve_items(conn, ds["id"],
                                     only_annotated=only_annotated,
                                     schema_ids=compativeis)
-        if not itens:
-            raise HTTPException(
-                status.HTTP_409_CONFLICT,
-                "nada a congelar — nenhuma imagem anotada nas origens do "
-                "dataset")
-
-        policy: dict[str, Any] = {"method": split_method, "seed": seed,
-                                  "val_ratio": val_ratio}
-        if split_method == "by_group":
-            policy["group_by"] = group_by
-        try:
-            assign_splits(itens, policy)
-        except ValueError as e:
-            raise HTTPException(status.HTTP_409_CONFLICT, str(e)) from e
-
         origens = await db.fetch_all(
             "SELECT s.uri FROM dataset_source ds"
             "  JOIN data_source s ON s.id = ds.data_source_id"
             " WHERE ds.dataset_id = %s ORDER BY s.uri", (ds["id"],), conn=conn)
         # Provisória, só para o rascunho do meta.json: quem manda é a versão
-        # relida sob o lock, logo abaixo.
+        # relida sob o lock, na fase 3.
         ultima = await db.fetch_one(
             "SELECT version FROM dataset_version WHERE dataset_id = %s"
             " ORDER BY version DESC LIMIT 1", (ds["id"],), conn=conn)
-        version = (ultima["version"] + 1) if ultima else 1
 
-        # `build_manifest` levanta a HTTPException por conta própria (é a
-        # convenção do repositório): um `except ValueError` aqui pegaria também
-        # o `float()` das caixas e devolveria erro interno em inglês como se
-        # fosse conflito.
-        items_jsonl, meta = build_manifest(
-            itens, classes, [o["uri"] for o in origens], version, descricao,
-            policy, project_slug, dataset_slug, roi=ds["roi"])
-        items_hash = hashlib.sha256(items_jsonl.encode()).digest()
+    # ---- 2. montar, sem conexão na mão ------------------------------------
+    classes = [c["name"] for c in schema["classes"]]
+    if not itens:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "nada a congelar — nenhuma imagem anotada nas origens do dataset")
 
-        # Identidade da versão = items + ROI. Com a MESMA lista de imagens,
-        # ROIs diferentes materializam recortes diferentes e treinam modelos
-        # diferentes, então a ROI entra no content_hash (que tem unique
-        # (dataset_id, content_hash)) — senão congelar de novo só para trocar a
-        # ROI colidiria com a versão antiga. `items_hash` puro segue sendo a
-        # integridade do items.jsonl (vai no meta.json e no retorno).
-        roi_json = json.dumps(ds["roi"]) if ds["roi"] else None
-        content_hash = hashlib.sha256(
-            items_jsonl.encode() + b"\x00roi:"
-            + (json.dumps(ds["roi"], sort_keys=True)
-               if ds["roi"] else "").encode()).digest()
+    policy: dict[str, Any] = {"method": split_method, "seed": seed,
+                              "val_ratio": val_ratio}
+    if split_method == "by_group":
+        policy["group_by"] = group_by
+    try:
+        assign_splits(itens, policy)
+    except ValueError as e:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(e)) from e
 
-        raiz = Path(settings.manifest_root)
-        # Congelar é: pegar o lock do dataset, gravar o banco, e só então
-        # publicar o manifesto no lugar definitivo.
-        #
-        # Antes o manifesto era escrito ANTES do INSERT e o número da versão
-        # era lido sem lock. Dois congelamentos simultâneos calculavam a mesma
-        # versão, escreviam no mesmo diretório (o segundo sobrescrevia o
-        # primeiro) e só um INSERT vencia — deixando no banco um `content_hash`
-        # que não correspondia ao arquivo em disco. O split treinado não era o
-        # split registrado, e nada detectava, porque ninguém confere o hash na
-        # leitura.
-        async with conn.transaction():
-            # Serializa por dataset; solta sozinho no fim da transação.
-            await conn.execute("SELECT pg_advisory_xact_lock(hashtext(%s))",
-                               (str(ds["id"]),))
+    # `build_manifest` levanta a HTTPException por conta própria (é a convenção
+    # do repositório): um `except ValueError` aqui pegaria também o `float()`
+    # das caixas e devolveria erro interno em inglês como se fosse conflito.
+    items_jsonl, meta = build_manifest(
+        itens, classes, [o["uri"] for o in origens],
+        (ultima["version"] + 1) if ultima else 1, descricao, policy,
+        project_slug, dataset_slug, roi=ds["roi"])
+    items_hash = hashlib.sha256(items_jsonl.encode()).digest()
 
-            # Sob o lock, reler: outro congelamento pode ter entrado entre a
-            # leitura lá em cima e agora.
-            atual = await db.fetch_one(
-                "SELECT version FROM dataset_version"
-                " WHERE dataset_id = %s ORDER BY version DESC LIMIT 1",
-                (ds["id"],), conn=conn)
-            version = (atual["version"] + 1) if atual else 1
-            meta["version"] = version
+    # Identidade da versão = items + ROI. Com a MESMA lista de imagens, ROIs
+    # diferentes materializam recortes diferentes e treinam modelos diferentes,
+    # então a ROI entra no content_hash (que tem unique (dataset_id,
+    # content_hash)) — senão congelar de novo só para trocar a ROI colidiria
+    # com a versão antiga. `items_hash` puro segue sendo a integridade do
+    # items.jsonl (vai no meta.json e no retorno).
+    roi_json = json.dumps(ds["roi"]) if ds["roi"] else None
+    content_hash = hashlib.sha256(
+        items_jsonl.encode() + b"\x00roi:"
+        + (json.dumps(ds["roi"], sort_keys=True)
+           if ds["roi"] else "").encode()).digest()
 
-            igual = await db.fetch_one(
-                "SELECT version FROM dataset_version"
-                " WHERE dataset_id = %s AND content_hash = %s",
-                (ds["id"], content_hash), conn=conn)
-            if igual:
-                raise HTTPException(
-                    status.HTTP_409_CONFLICT,
-                    f"conteúdo idêntico à v{igual['version']} (mesma ROI) — "
-                    f"nada mudou desde ela")
+    # ---- 3. gravar --------------------------------------------------------
+    # Congelar é: pegar o lock do dataset, gravar o banco, e só então publicar
+    # o manifesto no lugar definitivo.
+    #
+    # Antes o manifesto era escrito ANTES do INSERT e o número da versão era
+    # lido sem lock. Dois congelamentos simultâneos calculavam a mesma versão,
+    # escreviam no mesmo diretório (o segundo sobrescrevia o primeiro) e só um
+    # INSERT vencia — deixando no banco um `content_hash` que não correspondia
+    # ao arquivo em disco. O split treinado não era o split registrado, e nada
+    # detectava, porque ninguém confere o hash na leitura.
+    #
+    # A transação é aberta no MESMO `async with` da conexão de propósito: o
+    # `conn.transaction()` do psycopg só abre transação de verdade se a conexão
+    # estiver ociosa. Depois de qualquer leitura ela já está `INTRANS`, e o
+    # bloco viraria um SAVEPOINT — com o commit acontecendo lá longe, quando o
+    # pool devolvesse a conexão.
+    raiz = Path(settings.manifest_root)
+    async with db.connection() as conn, conn.transaction():
+        # Serializa por dataset; solta sozinho no fim da transação.
+        await conn.execute("SELECT pg_advisory_xact_lock(hashtext(%s))",
+                           (str(ds["id"]),))
 
-            destino = raiz / project_slug / dataset_slug / f"v{version}"
-            dv = await db.fetch_row(
-                "INSERT INTO dataset_version (dataset_id, version, schema_id,"
-                " manifest_uri, content_hash, split_policy, stats, roi, notes,"
-                " created_by)"
-                " VALUES (%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s::jsonb,%s,%s)"
-                " RETURNING id",
-                (ds["id"], version, schema["id"], str(destino), content_hash,
-                 json.dumps(policy), json.dumps(meta["stats"]), roi_json,
-                 descricao, actor.id), conn=conn)
-            # Índice consultável: permite diff e contagem sem abrir o manifesto.
-            for it in itens:
-                await db.execute(
-                    "INSERT INTO dataset_version_item (dataset_version_id,"
-                    " sample_id, annotation_id, split) VALUES (%s,%s,%s,%s)",
-                    (dv["id"], it["sample_id"], it["annotation_id"],
-                     it["split"]), conn=conn)
+        # Sob o lock, reler: outro congelamento pode ter entrado entre a
+        # leitura da fase 1 e agora.
+        atual = await db.fetch_one(
+            "SELECT version FROM dataset_version"
+            " WHERE dataset_id = %s ORDER BY version DESC LIMIT 1",
+            (ds["id"],), conn=conn)
+        version = (atual["version"] + 1) if atual else 1
+        meta["version"] = version
 
-            # Ainda dentro do lock: ninguém mais escreve neste diretório.
-            out, _ = write_manifest(raiz, project_slug, dataset_slug, version,
-                                    items_jsonl, meta)
+        igual = await db.fetch_one(
+            "SELECT version FROM dataset_version"
+            " WHERE dataset_id = %s AND content_hash = %s",
+            (ds["id"], content_hash), conn=conn)
+        if igual:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                f"conteúdo idêntico à v{igual['version']} (mesma ROI) — "
+                f"nada mudou desde ela")
 
-            await audit(actor, "dataset.freeze", "dataset_version",
-                        str(dv["id"]), project_id=str(ds["project_id"]),
-                        after={"version": version, "stats": meta["stats"]},
-                        ip=ip, conn=conn)
+        destino = raiz / project_slug / dataset_slug / f"v{version}"
+        dv = await db.fetch_row(
+            "INSERT INTO dataset_version (dataset_id, version, schema_id,"
+            " manifest_uri, content_hash, split_policy, stats, roi, notes,"
+            " created_by)"
+            " VALUES (%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s::jsonb,%s,%s)"
+            " RETURNING id",
+            (ds["id"], version, schema["id"], str(destino), content_hash,
+             json.dumps(policy), json.dumps(meta["stats"]), roi_json,
+             descricao, actor.id), conn=conn)
+        # Índice consultável: permite diff e contagem sem abrir o manifesto.
+        for it in itens:
+            await db.execute(
+                "INSERT INTO dataset_version_item (dataset_version_id,"
+                " sample_id, annotation_id, split) VALUES (%s,%s,%s,%s)",
+                (dv["id"], it["sample_id"], it["annotation_id"], it["split"]),
+                conn=conn)
+
+        # Ainda dentro do lock: ninguém mais escreve neste diretório.
+        out, _ = write_manifest(raiz, project_slug, dataset_slug, version,
+                                items_jsonl, meta)
+
+        await audit(actor, "dataset.freeze", "dataset_version", str(dv["id"]),
+                    project_id=str(ds["project_id"]),
+                    after={"version": version, "stats": meta["stats"]},
+                    ip=ip, conn=conn)
     return {"version": version, "manifest_uri": str(out),
             "items_sha256": items_hash.hex(), "stats": meta["stats"],
             "split_policy": policy}

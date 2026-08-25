@@ -488,6 +488,19 @@ ainda não migrados, o que confere não é o tipo: é
 que varre o módulo por AST e reprova chamada sem `conn=` (conferido quebrando
 de propósito). Vale por módulo, conforme cada um for convertido.
 
+**Segurar a conexão trouxe dois efeitos que a forma tem de prever**, os dois
+achados no review da primeira migração e os dois de psycopg, não de desenho:
+
+- `conn.transaction()` só abre transação de verdade se a conexão estiver
+  ociosa. Depois de qualquer leitura ela está `INTRANS` e o bloco vira um
+  `SAVEPOINT`, com o commit acontecendo quando o pool devolve a conexão. Como o
+  serviço migrado lê antes de escrever quase sempre, a forma passou a ser abrir
+  as duas no mesmo `async with` — e há varredura por AST para isso também.
+- conexão aberta é transação aberta, então trabalho pesado que não fala com o
+  banco não pode ter uma na mão. O `congelar` virou três fases (ler, montar,
+  gravar) com a do meio sem conexão nenhuma; o teste afirma isso olhando o
+  `pg_stat_activity` de fora, no momento em que o manifesto é montado.
+
 Faltam os serviços de `agents`, `imports`, `models`, `samples` e `training`, e
 os routers que ainda não têm serviço nenhum.
 
@@ -760,3 +773,18 @@ valer para as duas rotas.
   fora de propósito — quem barra escrita em projeto arquivado é o
   `require_role`, com 409 e antes do handler, e repetir a regra no serviço a
   descreveria duas vezes. Suíte: **220 testes passando** (eram 219).
+- **2026-08-24** — review da migração de `datasets` (alto esforço). A parte
+  mecânica saiu limpa: o revisor extraiu todo literal SQL de antes e de depois
+  e comparou — todas as consultas atravessaram idênticas. O que mudou sem eu
+  querer foi a vida da conexão, e são as duas coisas que agora estão escritas
+  na forma do item 15: `conn.transaction()` depois de uma leitura é
+  `SAVEPOINT`, não transação (conferido no psycopg 3.3.4 instalado: `outer =
+  False`, conexão segue `INTRANS` depois do bloco); e o `congelar` passou a
+  montar o manifesto — CPU pura, o trecho mais demorado — com transação aberta,
+  o que um `idle_in_transaction_session_timeout` mata no meio. Os dois testes
+  novos afirmam as duas coisas e falhavam antes: um varre o módulo por AST
+  atrás de `transaction()` longe do `connection()`, o outro espia o
+  `pg_stat_activity` de fora enquanto o manifesto é montado. A varredura do
+  `conn=` também apertou — deixava passar `from ..db import fetch_one` e o
+  módulo apelidado — sem passar a acusar `conn.execute`, que é justamente a
+  forma certa. Suíte: **222 testes passando** (eram 220).

@@ -529,14 +529,135 @@ def test_servico_de_dataset_nunca_alcanca_o_pool_sozinho():
 
     fonte = (_P(__file__).resolve().parents[1]
              / "api" / "services" / "datasets.py").read_text()
-    soltas = [
-        f"linha {no.lineno}: db.{no.func.attr}(...)"
-        for no in ast.walk(ast.parse(fonte))
-        if isinstance(no, ast.Call)
-        and isinstance(no.func, ast.Attribute)
-        and isinstance(no.func.value, ast.Name)
-        and no.func.value.id == "db"
-        and no.func.attr in {"fetch_one", "fetch_all", "fetch_row", "execute"}
-        and not any(k.arg == "conn" for k in no.keywords)
-    ]
+    arvore = ast.parse(fonte)
+    ACESSOS = {"fetch_one", "fetch_all", "fetch_row", "execute"}
+
+    def nome_chamado(no: ast.Call) -> str | None:
+        """`db.fetch_one(...)` e `fetch_one(...)`.
+
+        `conn.execute(...)` fica de fora: ali a conexão é o próprio objeto
+        chamado, que é justamente o que se quer. O que se procura é o acesso
+        que vai buscar conexão sozinho.
+        """
+        if (isinstance(no.func, ast.Attribute) and no.func.attr in ACESSOS
+                and isinstance(no.func.value, ast.Name)
+                and no.func.value.id == "db"):
+            return f"db.{no.func.attr}"
+        if isinstance(no.func, ast.Name) and no.func.id in ACESSOS:
+            return no.func.id
+        return None
+
+    soltas = [f"linha {no.lineno}: {nome}(...)"
+              for no in ast.walk(arvore)
+              if isinstance(no, ast.Call) and (nome := nome_chamado(no))
+              and not any(k.arg == "conn" for k in no.keywords)]
     assert not soltas, "sem conn=, cada uma pega a sua conexão: " + "; ".join(soltas)
+
+    # O outro jeito de o pool voltar: importar um auxiliar que o alcança
+    # sozinho. `deps.projeto_ou_404` é o caso concreto — `_projeto_id` existe
+    # para substituí-lo, e reimportá-lo devolveria o vazamento sem que a
+    # varredura acima notasse.
+    importados = {(a.name, a.asname) for no in ast.walk(arvore)
+                  if isinstance(no, ast.ImportFrom) for a in no.names}
+    nomes = {n for n, _ in importados}
+    assert "projeto_ou_404" not in nomes, (
+        "`deps.projeto_ou_404` alcança o pool por conta própria — use "
+        "`_projeto_id(conn, ...)`")
+    # As duas formas que fariam a varredura de cima olhar para o lado:
+    # importar o acesso solto, ou apelidar o módulo.
+    assert not (ACESSOS & nomes), (
+        f"importe o módulo `db`, não {sorted(ACESSOS & nomes)} — solto, o "
+        f"acesso deixa de ser reconhecível na varredura")
+    assert ("db", None) in importados, "o módulo `db` tem de entrar sem apelido"
+
+
+def _sessoes_ociosas_em_transacao() -> int:
+    """Conexões deste banco paradas com transação aberta, vistas de fora.
+
+    É o sintoma que um `idle_in_transaction_session_timeout` — padrão em
+    Postgres gerenciado — mata.
+    """
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        return conn.execute(
+            "SELECT count(*) FROM pg_stat_activity"
+            " WHERE datname = current_database()"
+            "   AND pid <> pg_backend_pid()"
+            "   AND state = 'idle in transaction'").fetchone()[0]
+
+
+async def test_congelar_nao_segura_transacao_enquanto_monta_o_manifesto(
+        admin, tmp_path, monkeypatch):
+    """Montar o items.jsonl é CPU pura, e não pode acontecer com transação aberta.
+
+    O manifesto tem uma linha por imagem: em centenas de milhares, é o trecho
+    mais demorado do congelamento e nenhuma parte dele fala com o banco. Com a
+    transação aberta ali, a sessão fica `idle in transaction` o tempo todo —
+    um `idle_in_transaction_session_timeout` derruba a conexão e o INSERT
+    seguinte falha depois de todo o trabalho feito, o horizonte de xmin trava o
+    vacuum de `sample`/`annotation`, e uma das 10 vagas do pool fica presa.
+    """
+    from api.services import datasets as svc
+
+    await _projeto_com_dados(admin, tmp_path)
+    await admin.post(f"/v1/projects/{PROJ['slug']}/datasets", json=DS)
+    src = await _source_id(PROJ["slug"])
+    await admin.put(
+        f"/v1/projects/{PROJ['slug']}/datasets/{DS['slug']}/sources/{src}")
+
+    visto = {}
+    original = svc.build_manifest
+
+    def espiao(*a, **kw):
+        visto["ociosas"] = _sessoes_ociosas_em_transacao()
+        return original(*a, **kw)
+
+    monkeypatch.setattr(svc, "build_manifest", espiao)
+    r = await admin.post(
+        f"/v1/projects/{PROJ['slug']}/datasets/{DS['slug']}/freeze",
+        json={"descricao": "base inicial"})
+    assert r.status_code == 201, r.text
+    assert visto["ociosas"] == 0, (
+        "o congelamento montou o manifesto com transação aberta")
+
+
+def test_transacao_do_servico_nunca_e_savepoint():
+    """`conn.transaction()` depois de uma leitura na mesma conexão abre um
+    SAVEPOINT, não uma transação.
+
+    O psycopg decide pelo estado da conexão: `_outer_transaction` só é `True`
+    se ela estiver `IDLE`, e qualquer `SELECT` anterior já a deixou `INTRANS`.
+    O bloco então vira `SAVEPOINT`/`RELEASE`, o commit de verdade acontece só
+    quando o pool devolve a conexão, e as leituras de antes do bloco estão na
+    mesma transação que as escritas de dentro — sem nada no código dizendo
+    isso. Quem confia no `async with conn.transaction()` como marca da
+    fronteira lê errado o que roda.
+
+    A regra que fecha isso é sintática: `conn.transaction()` só aparece no
+    MESMO `async with` que abre a conexão.
+    """
+    import ast
+    from pathlib import Path as _P
+
+    caminho = (_P(__file__).resolve().parents[1]
+               / "api" / "services" / "datasets.py")
+    arvore = ast.parse(caminho.read_text())
+
+    def abre_conexao(item) -> bool:
+        c = item.context_expr
+        return (isinstance(c, ast.Call) and isinstance(c.func, ast.Attribute)
+                and c.func.attr == "connection")
+
+    def abre_transacao(item) -> bool:
+        c = item.context_expr
+        return (isinstance(c, ast.Call) and isinstance(c.func, ast.Attribute)
+                and c.func.attr == "transaction")
+
+    soltas = [
+        f"linha {no.lineno}"
+        for no in ast.walk(arvore)
+        if isinstance(no, ast.AsyncWith)
+        and any(abre_transacao(i) for i in no.items)
+        and not any(abre_conexao(i) for i in no.items)
+    ]
+    assert not soltas, (
+        "transaction() longe do connection() vira savepoint: " + "; ".join(soltas))
