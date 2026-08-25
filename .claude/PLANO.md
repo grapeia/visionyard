@@ -914,3 +914,31 @@ sistema, criado para proteger o que não precisa.
   sem md5 nunca apareceu numa instalação de verdade, e as duas saídas custam
   caro para um problema que não se viu. Fica registrado que é escolha, não
   esquecimento, e qual é o sintoma se aparecer.
+- **2026-08-25** — review do fecho do item 15 (alto esforço). Quatro achados,
+  os quatro procedentes, os quatro corrigidos. O de mais peso é meu, do commit
+  anterior: `samples.salvar_anotacao` passou a decidir a origem dentro do
+  comando, mas a **ação** do `annotation_history` continuou saindo da leitura
+  anterior — numa corrida com o pré-tag, o histórico registraria `create` onde
+  houve sobrescrita. Agora ela vem do `xmax`, do próprio comando;
+  `boxes_before` segue da leitura e está escrito por quê (não há como o
+  `RETURNING` devolver o valor antigo de uma coluna que ele acabou de
+  sobrescrever) e o que isso significa — é trilha, não invariante.
+  Também meu: mover `recolher_orfaos` para dentro da transação do claim
+  prendeu, até o commit, os locks de um UPDATE sem `SKIP LOCKED` sobre todo job
+  com ponto velho — uma frota batendo em `/claim` passaria a serializar. Voltou
+  a comitar sozinho, agora com o motivo escrito. E o 409 de `cancelar_run`
+  interpolava o status lido ANTES do UPDATE: na corrida que a guarda existe
+  para pegar, dizia "job já terminou (running)".
+  O quarto era uma afirmação falsa que eu tinha escrito no `CLAUDE.md` — que
+  `api/auth.py` "segue a mesma forma". Não seguia: 15 acessos sem `conn`, com
+  `resolve_session` lendo a sessão numa conexão e tocando `last_seen_at`
+  noutra, em toda requisição autenticada. Em vez de enfraquecer a frase, o
+  módulo foi convertido junto com `deps.py`, e a varredura passou a ser por
+  módulo e não por pasta.
+  Converter o login desenterrou uma armadilha que virou regra escrita:
+  `record_attempt` **precisa** de conexão própria, porque o caminho de falha
+  sai por exceção e o pool faz `ROLLBACK` — na conexão do chamador, toda
+  tentativa errada era desfeita junto com o erro e o teto por IP nunca
+  disparava. A suíte pegou na hora (três testes de throttle), o que é o
+  argumento a favor de eles existirem. Suíte: **256 testes passando** (eram
+  252).

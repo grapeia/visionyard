@@ -50,7 +50,7 @@ async def connection() -> AsyncIterator[Conn]:
 
 
 @asynccontextmanager
-async def _usar(conn: Conn | None) -> AsyncIterator[Conn]:
+async def conexao_ou(conn: Conn | None) -> AsyncIterator[Conn]:
     """Reaproveita a conexão recebida, ou pega uma do pool quando não há.
 
     É o que permite uma escrita e a sua auditoria caírem na mesma transação:
@@ -66,7 +66,7 @@ async def _usar(conn: Conn | None) -> AsyncIterator[Conn]:
 
 async def fetch_one(sql: str, params: Params = (), *,
                     conn: Conn | None = None) -> dict[str, Any] | None:
-    async with _usar(conn) as c:
+    async with conexao_ou(conn) as c:
         cur = await c.execute(sql, params)
         return await cur.fetchone()
 
@@ -92,12 +92,12 @@ async def fetch_row(sql: str, params: Params = (), *,
 
 async def fetch_all(sql: str, params: Params = (), *,
                     conn: Conn | None = None) -> list[dict[str, Any]]:
-    async with _usar(conn) as c:
+    async with conexao_ou(conn) as c:
         cur = await c.execute(sql, params)
         return await cur.fetchall()
 
 
 async def execute(sql: str, params: Params = (), *,
                   conn: Conn | None = None) -> None:
-    async with _usar(conn) as c:
+    async with conexao_ou(conn) as c:
         await c.execute(sql, params)

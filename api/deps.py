@@ -44,11 +44,12 @@ async def project_role(project_slug: str, user: Principal,
     """
     if user.is_superuser:
         return "owner"
-    row = await db.fetch_one(
-        "SELECT m.role FROM project_member m"
-        "  JOIN project p ON p.id = m.project_id"
-        " WHERE p.slug = %s AND m.user_id = %s", (project_slug, user.id),
-        conn=conn)
+    async with db.conexao_ou(conn) as c:
+        row = await db.fetch_one(
+            "SELECT m.role FROM project_member m"
+            "  JOIN project p ON p.id = m.project_id"
+            " WHERE p.slug = %s AND m.user_id = %s", (project_slug, user.id),
+            conn=c)
     return row["role"] if row else None
 
 
@@ -71,9 +72,10 @@ def require_role(minimum: str):
         # congelar versão e trocar papéis num projeto encerrado. Leitura
         # continua permitida — é o ponto de arquivar em vez de apagar.
         if ROLE_RANK[minimum] > ROLE_RANK["viewer"]:
-            arq = await db.fetch_one(
-                "SELECT archived_at FROM project WHERE slug = %s",
-                (project_slug,))
+            async with db.connection() as conn:
+                arq = await db.fetch_one(
+                    "SELECT archived_at FROM project WHERE slug = %s",
+                    (project_slug,), conn=conn)
             if arq and arq["archived_at"] is not None:
                 raise HTTPException(status.HTTP_409_CONFLICT,
                                     "projeto arquivado — só leitura")
@@ -97,8 +99,10 @@ async def projeto_ou_404(project_slug: str, colunas: str = "id") -> dict[str, An
 
     `colunas` é SQL literal escrito no handler — nunca valor de requisição.
     """
-    row = await db.fetch_one(
-        f"SELECT {colunas} FROM project WHERE slug = %s", (project_slug,))
+    async with db.connection() as conn:
+        row = await db.fetch_one(
+            f"SELECT {colunas} FROM project WHERE slug = %s", (project_slug,),
+            conn=conn)
     if row is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "projeto não encontrado")
     return row

@@ -160,9 +160,14 @@ async def salvar_anotacao(project_slug: str, sample_id: UUID, user_id: str,
                 f"classe {fora[0]} não existe neste projeto "
                 f"({n_classes} classes)")
 
-        # Lido para o histórico (`boxes_before`) e para saber se é create ou
-        # update. A ORIGEM não sai daqui: ela é decidida no `DO UPDATE`, sobre
-        # a linha que o próprio comando está travando.
+        # Lido só para `boxes_before`. Nem a origem nem a ação saem daqui:
+        # a origem é decidida no `DO UPDATE` e a ação vem do `xmax`, os dois
+        # sobre a linha que o próprio comando trava. `boxes_before` fica sem
+        # essa garantia de propósito — não há como o `RETURNING` devolver o
+        # valor ANTIGO de uma coluna que ele acabou de sobrescrever —, então
+        # numa corrida com o pré-tag ele pode vir nulo num update. É trilha,
+        # não invariante: perder a caixa anterior é ruim, dizer "create" onde
+        # houve sobrescrita é mentira.
         antes = await db.fetch_one(
             "SELECT boxes FROM annotation"
             " WHERE sample_id = %s AND author_id = %s", (sample_id, user_id),
@@ -191,14 +196,15 @@ async def salvar_anotacao(project_slug: str, sample_id: UUID, user_id: str,
             "                        IN ('prelabel','import','correction')"
             "                      THEN 'correction' ELSE 'manual' END,"
             "        updated_at = now(), updated_by = EXCLUDED.updated_by"
-            " RETURNING id, status, origin",
+            " RETURNING id, status, origin, (xmax = 0) AS novo",
             (sample_id, ctx["schema_id"], json.dumps(caixas), estado, user_id,
              user_id), conn=conn)
         await db.execute(
             "INSERT INTO annotation_history (annotation_id, sample_id,"
             " actor_id, action, boxes_before, boxes_after)"
             " VALUES (%s,%s,%s,%s,%s::jsonb,%s::jsonb)",
-            (nova["id"], sample_id, user_id, "update" if antes else "create",
+            (nova["id"], sample_id, user_id,
+             "create" if nova["novo"] else "update",
              json.dumps(antes["boxes"]) if antes else None,
              json.dumps(caixas)), conn=conn)
     return {"id": nova["id"], "status": nova["status"],

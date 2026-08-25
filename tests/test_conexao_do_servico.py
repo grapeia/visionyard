@@ -24,15 +24,22 @@ from pathlib import Path
 
 import pytest
 
-# Todo serviço que fala com o banco. `buckets` é o único de fora, e por não ter
-# uma linha de SQL: o que ele guarda é a cerca da allowlist e o acesso ao GCS,
-# que passa por `storage.py`. Serviço novo entra aqui.
-MIGRADOS = ["agents", "datasets", "devices", "imports", "jobs",
-            "models", "prelabel", "projects", "samples", "training",
-            "users"]
+# Todo módulo que fala com o banco, e não só os de `services/`: `auth.py` é o
+# serviço do domínio de autenticação e `deps.py` resolve papel e projeto, os
+# dois com SQL próprio. Fora da lista fica `services/buckets.py`, por não ter
+# uma linha de SQL — o que ele guarda é a cerca da allowlist, e o acesso ao GCS
+# passa por `storage.py`. Módulo novo com SQL entra aqui.
+MODULOS = ["auth.py", "deps.py",
+           "services/agents.py", "services/datasets.py",
+           "services/devices.py", "services/imports.py", "services/jobs.py",
+           "services/models.py", "services/prelabel.py",
+           "services/projects.py", "services/samples.py",
+           "services/training.py", "services/users.py"]
 
 # Acessos de `db.py`: só valem como `db.X(..., conn=...)`.
 ACESSOS_DB = {"fetch_one", "fetch_all", "fetch_row", "execute"}
+
+# `db.py` é o próprio dono dos acessos: varrê-lo se acusaria a si mesmo.
 
 # Auxiliares de fora de `db.py` que também alcançam o pool e aceitam `conn=`.
 ACESSOS_VIZINHOS = {"project_role"}
@@ -44,13 +51,23 @@ ACESSOS_VIZINHOS = {"project_role"}
 SEM_CONEXAO = {"projeto_ou_404"}
 
 
-def _arvore(servico: str) -> ast.Module:
-    caminho = (Path(__file__).resolve().parents[1]
-               / "api" / "services" / f"{servico}.py")
+def _arvore(modulo: str) -> ast.Module:
+    caminho = Path(__file__).resolve().parents[1] / "api" / modulo
     return ast.parse(caminho.read_text())
 
 
-def _nome_chamado(no: ast.Call) -> str | None:
+def _definidas(arvore: ast.Module) -> set[str]:
+    """Funções que o próprio módulo define.
+
+    Quem é dono do acesso não é cobrado por ele: `deps.py` define
+    `project_role`, e é lá que ela é chamada sem `conn` — pela dependência do
+    FastAPI, que é justamente quem não tem conexão nenhuma na mão.
+    """
+    return {no.name for no in ast.walk(arvore)
+            if isinstance(no, ast.AsyncFunctionDef | ast.FunctionDef)}
+
+
+def _nome_chamado(no: ast.Call, proprias: set[str]) -> str | None:
     """`db.fetch_one(...)`, `fetch_one(...)`, `project_role(...)`.
 
     `conn.execute(...)` fica de fora: ali a conexão é o próprio objeto chamado,
@@ -62,17 +79,19 @@ def _nome_chamado(no: ast.Call) -> str | None:
             and no.func.value.id == "db"):
         return f"db.{no.func.attr}"
     if (isinstance(no.func, ast.Name)
-            and no.func.id in ACESSOS_DB | ACESSOS_VIZINHOS):
+            and no.func.id in (ACESSOS_DB | ACESSOS_VIZINHOS) - proprias):
         return no.func.id
     return None
 
 
-@pytest.mark.parametrize("servico", MIGRADOS)
-def test_servico_nunca_alcanca_o_pool_sozinho(servico: str):
-    arvore = _arvore(servico)
+@pytest.mark.parametrize("modulo", MODULOS)
+def test_modulo_nunca_alcanca_o_pool_sozinho(modulo: str):
+    arvore = _arvore(modulo)
+    proprias = _definidas(arvore)
     soltas = [f"linha {no.lineno}: {nome}(...)"
               for no in ast.walk(arvore)
-              if isinstance(no, ast.Call) and (nome := _nome_chamado(no))
+              if isinstance(no, ast.Call)
+              and (nome := _nome_chamado(no, proprias))
               and not any(k.arg == "conn" for k in no.keywords)]
     assert not soltas, ("sem conn=, cada uma pega a sua conexão: "
                         + "; ".join(soltas))
@@ -94,15 +113,15 @@ def test_servico_nunca_alcanca_o_pool_sozinho(servico: str):
     assert ("db", None) in importados, "o módulo `db` tem de entrar sem apelido"
 
 
-@pytest.mark.parametrize("servico", MIGRADOS)
-def test_transacao_do_servico_nunca_e_savepoint(servico: str):
+@pytest.mark.parametrize("modulo", MODULOS)
+def test_transacao_do_servico_nunca_e_savepoint(modulo: str):
     def abre(item: ast.withitem, nome: str) -> bool:
         c = item.context_expr
         return (isinstance(c, ast.Call) and isinstance(c.func, ast.Attribute)
                 and c.func.attr == nome)
 
     soltas = [f"linha {no.lineno}"
-              for no in ast.walk(_arvore(servico))
+              for no in ast.walk(_arvore(modulo))
               if isinstance(no, ast.AsyncWith)
               and any(abre(i, "transaction") for i in no.items)
               and not any(abre(i, "connection") for i in no.items)]

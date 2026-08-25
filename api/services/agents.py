@@ -121,11 +121,20 @@ async def reclamar_job(device_id: str) -> dict | None:
     máquina. `draining`/`disabled` não reclamam — só terminam o que já pegaram,
     para o dispositivo de produção poder sair do pool sem largar um job no
     meio."""
-    async with db.connection() as conn, conn.transaction():
+    async with db.connection() as conn:
         d = await _device_do_token(conn, device_id)
-        if d["status"] in ("draining", "disabled"):
-            return None
+    if d["status"] in ("draining", "disabled"):
+        return None
+
+    # O recolhimento comita sozinho, ANTES da transação do claim. Ele é um
+    # UPDATE sem `SKIP LOCKED` sobre todo job com ponto velho: dentro da
+    # transação do claim, os locks dele ficariam presos até o commit, e uma
+    # frota inteira batendo em `/claim` passaria a serializar uma na outra —
+    # com o `atualizar_progresso` de quem estivesse rodando esperando junto.
+    async with db.connection() as conn:
         await recolher_orfaos(conn)
+
+    async with db.connection() as conn, conn.transaction():
         cur = await conn.execute(
             """
             UPDATE job SET status = 'claimed', device_id = %(dev)s,

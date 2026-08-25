@@ -233,8 +233,14 @@ async def cancelar_run(project_slug: str, run_id: UUID, actor: Principal, *,
             " WHERE id = %s AND status <> ALL(%s::text[]) RETURNING status",
             (run["job_id"], list(TERMINAIS)), conn=conn)
         if j is None:
+            # Relê para a mensagem: `run["job_status"]` é de antes do UPDATE, e
+            # justamente na corrida que a guarda pega ele ainda diz `running` —
+            # "job já terminou (running)" se contradiz na cara de quem lê.
+            atual = await db.fetch_row(
+                "SELECT status FROM job WHERE id = %s", (run["job_id"],),
+                conn=conn)
             raise HTTPException(status.HTTP_409_CONFLICT,
-                                f"job já terminou ({run['job_status']})")
+                                f"job já terminou ({atual['status']})")
         if j["status"] == "canceled":
             await db.execute(
                 "UPDATE training_run SET status = 'stopped',"

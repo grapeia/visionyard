@@ -87,15 +87,21 @@ da sua lista `MIGRADOS` — entra um nome ali a cada migração — e reprova
 `db.fetch_*`/`db.execute` sem `conn=`, o acesso importado solto e o auxiliar
 que alcança o pool sozinho (`deps.projeto_ou_404`).
 
-**Todo serviço está na lista**, menos `buckets` — que não tem SQL. Isso vale
-inclusive para a escrita de comando único (o ponto da importação, o heartbeat
-do agente): ela abre a conexão explicitamente, mesmo sem sequência a proteger.
-O ganho não é atomicidade, é que "nenhuma função alcança o pool sozinha" vira
-propriedade conferível — e quem acrescentar um segundo comando ali não o faz
-noutra conexão sem perceber.
+**Todo módulo com SQL está na lista** — inclusive `auth.py` e `deps.py`, que
+não moram em `services/`. O único de fora é `services/buckets.py`, por não ter
+uma linha de SQL. Vale também para a escrita de comando único (o ponto da
+importação, o heartbeat do agente): ela abre a conexão explicitamente, mesmo
+sem sequência a proteger. O ganho ali não é atomicidade, é que "nenhuma função
+alcança o pool sozinha" vira propriedade conferível — e quem acrescentar um
+segundo comando não o faz noutra conexão sem perceber.
 
-`api/auth.py` fica de fora da varredura por não morar em `services/`, mas segue
-a mesma forma.
+**A exceção que prova a regra é `auth.record_attempt`**, que abre conexão
+própria de propósito e tem isso escrito na docstring: o caminho de falha do
+login sai por exceção, e o pool faz `ROLLBACK` ao vê-la subir. Registrar a
+tentativa na conexão de quem chama desfazia o registro junto com o erro — o
+contador do throttle ficava em zero e o teto por IP nunca disparava. Escrita
+que precisa sobreviver ao fracasso de quem a pediu não entra na transação
+dele.
 
 **`conn.transaction()` vai no mesmo `async with` que abre a conexão.** O
 psycopg decide o que o bloco é pelo estado da conexão: ociosa, abre transação;

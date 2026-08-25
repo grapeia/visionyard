@@ -88,7 +88,8 @@ def _now() -> datetime:
 # Login
 # --------------------------------------------------------------------------- #
 
-async def check_throttle(email: str, ip: str | None) -> None:
+async def check_throttle(conn: db.Conn, email: str,
+                         ip: str | None) -> None:
     """Teto duro por IP; por email, só backoff progressivo.
 
     Bloquear por email com trava dura protegeria contra força bruta mas criaria
@@ -103,7 +104,8 @@ async def check_throttle(email: str, ip: str | None) -> None:
     if ip:
         row = await db.fetch_row(
             "SELECT count(*) AS n FROM login_attempt"
-            " WHERE NOT successful AND at > %s AND ip = %s", (since, ip))
+            " WHERE NOT successful AND at > %s AND ip = %s", (since, ip),
+            conn=conn)
         if row["n"] >= settings.login_max_attempts:
             raise ThrottledError(
                 f"tentativas demais deste endereço — aguarde "
@@ -111,7 +113,8 @@ async def check_throttle(email: str, ip: str | None) -> None:
 
     row = await db.fetch_row(
         "SELECT count(*) AS n, max(at) AS last FROM login_attempt"
-        " WHERE NOT successful AND at > %s AND email = %s", (since, email))
+        " WHERE NOT successful AND at > %s AND email = %s", (since, email),
+        conn=conn)
     n = row["n"]
     if n < settings.login_backoff_after:
         return
@@ -124,43 +127,60 @@ async def check_throttle(email: str, ip: str | None) -> None:
 
 
 async def record_attempt(email: str, ip: str | None, ok: bool) -> None:
-    await db.execute(
-        "INSERT INTO login_attempt (email, ip, successful) VALUES (%s,%s,%s)",
-        (email, ip, ok))
+    """Conexão PRÓPRIA, e não a de quem chama — isto tem de comitar mesmo
+    quando o login falha.
+
+    O caminho de falha sai de `authenticate` por exceção, e o pool faz
+    `ROLLBACK` na conexão ao ver a exceção subir. Registrando na conexão do
+    chamador, toda tentativa errada era desfeita junto com o erro: o contador
+    do throttle ficava sempre em zero e o teto por IP nunca disparava — o
+    controle de força bruta desligado sem nada acusar.
+    """
+    async with db.connection() as conn:
+        await db.execute(
+            "INSERT INTO login_attempt (email, ip, successful)"
+            " VALUES (%s,%s,%s)", (email, ip, ok), conn=conn)
 
 
 async def authenticate(email: str, password: str, ip: str | None) -> dict:
     """Valida credencial. Erro é sempre o mesmo texto — não revela se o email
     existe, se está desativado ou se a senha está errada."""
     email = email.strip().lower()
-    await check_throttle(email, ip)
+    # Uma conexão para o login inteiro: eram até seis idas ao pool por
+    # tentativa — throttle, busca, registro da tentativa, rehash, ponto — e
+    # login é a rota que mais leva ataque em volume.
+    async with db.connection() as conn:
+        await check_throttle(conn, email, ip)
 
-    user = await db.fetch_one(
-        "SELECT id, email, display_name, password_hash, status, is_superuser"
-        " FROM app_user WHERE lower(email) = %s", (email,))
+        user = await db.fetch_one(
+            "SELECT id, email, display_name, password_hash, status,"
+            "       is_superuser"
+            " FROM app_user WHERE lower(email) = %s", (email,), conn=conn)
 
-    if user is None:
-        dummy_verify()                      # equaliza o tempo de resposta
-        await record_attempt(email, ip, False)
-        raise AuthError("email ou senha inválidos")
+        if user is None:
+            dummy_verify()                  # equaliza o tempo de resposta
+            await record_attempt(email, ip, False)
+            raise AuthError("email ou senha inválidos")
 
-    if not verify_password(password, user["password_hash"]):
-        await record_attempt(email, ip, False)
-        raise AuthError("email ou senha inválidos")
+        if not verify_password(password, user["password_hash"]):
+            await record_attempt(email, ip, False)
+            raise AuthError("email ou senha inválidos")
 
-    if user["status"] != "active":
-        await record_attempt(email, ip, False)
-        raise AuthError("email ou senha inválidos")
+        if user["status"] != "active":
+            await record_attempt(email, ip, False)
+            raise AuthError("email ou senha inválidos")
 
-    # Custo do argon2 pode ter subido desde o cadastro: aproveita que a senha
-    # em claro está em mãos e re-hasheia com os parâmetros atuais.
-    if needs_rehash(user["password_hash"]):
-        await db.execute("UPDATE app_user SET password_hash = %s WHERE id = %s",
-                         (hash_password(password), user["id"]))
+        # Custo do argon2 pode ter subido desde o cadastro: aproveita que a
+        # senha em claro está em mãos e re-hasheia com os parâmetros atuais.
+        if needs_rehash(user["password_hash"]):
+            await db.execute(
+                "UPDATE app_user SET password_hash = %s WHERE id = %s",
+                (hash_password(password), user["id"]), conn=conn)
 
-    await record_attempt(email, ip, True)
-    await db.execute("UPDATE app_user SET last_login_at = now() WHERE id = %s",
-                     (user["id"],))
+        await record_attempt(email, ip, True)
+        await db.execute(
+            "UPDATE app_user SET last_login_at = now() WHERE id = %s",
+            (user["id"],), conn=conn)
     return user
 
 
@@ -172,37 +192,47 @@ async def create_session(user_id: str, ip: str | None,
                          user_agent: str | None) -> str:
     """Cria a sessão e devolve o token em claro — única vez que ele existe."""
     token = new_token()
-    await db.execute(
-        "INSERT INTO user_session (user_id, token_sha256, expires_at, ip,"
-        " user_agent) VALUES (%s, %s, %s, %s, %s)",
-        (user_id, token_digest(token),
-         _now() + timedelta(days=settings.session_max_days), ip,
-         (user_agent or "")[:500]))
+    async with db.connection() as conn:
+        await db.execute(
+            "INSERT INTO user_session (user_id, token_sha256, expires_at, ip,"
+            " user_agent) VALUES (%s, %s, %s, %s, %s)",
+            (user_id, token_digest(token),
+             _now() + timedelta(days=settings.session_max_days), ip,
+             (user_agent or "")[:500]), conn=conn)
     return token
 
 
 async def resolve_session(token: str) -> Principal:
-    row = await db.fetch_one(
-        "SELECT s.id AS session_id, s.user_id, s.expires_at, s.last_seen_at,"
-        "       u.email, u.display_name, u.status, u.is_superuser"
-        "  FROM user_session s JOIN app_user u ON u.id = s.user_id"
-        " WHERE s.token_sha256 = %s AND s.revoked_at IS NULL",
-        (token_digest(token),))
-    if row is None:
-        raise AuthError("sessão inválida")
+    # Uma conexão só: esta função roda em TODA requisição autenticada, e ler a
+    # sessão numa e tocar o `last_seen_at` noutra dobrava a pressão sobre um
+    # pool de dez.
+    async with db.connection() as conn:
+        row = await db.fetch_one(
+            "SELECT s.id AS session_id, s.user_id, s.expires_at,"
+            "       s.last_seen_at, u.email, u.display_name, u.status,"
+            "       u.is_superuser"
+            "  FROM user_session s JOIN app_user u ON u.id = s.user_id"
+            " WHERE s.token_sha256 = %s AND s.revoked_at IS NULL",
+            (token_digest(token),), conn=conn)
+        if row is None:
+            raise AuthError("sessão inválida")
 
-    now = _now()
-    if row["expires_at"] <= now:
-        raise AuthError("sessão expirada")
-    # Expiração por inatividade, além do teto absoluto.
-    if row["last_seen_at"] + timedelta(hours=settings.session_idle_hours) <= now:
-        await revoke_session(row["session_id"])
-        raise AuthError("sessão expirada por inatividade")
-    if row["status"] != "active":
-        raise AuthError("usuário desativado")
+        now = _now()
+        if row["expires_at"] <= now:
+            raise AuthError("sessão expirada")
+        # Expiração por inatividade, além do teto absoluto.
+        if (row["last_seen_at"]
+                + timedelta(hours=settings.session_idle_hours) <= now):
+            await db.execute(
+                "UPDATE user_session SET revoked_at = now()"
+                " WHERE id = %s AND revoked_at IS NULL",
+                (row["session_id"],), conn=conn)
+            raise AuthError("sessão expirada por inatividade")
+        if row["status"] != "active":
+            raise AuthError("usuário desativado")
 
-    await db.execute("UPDATE user_session SET last_seen_at = now()"
-                     " WHERE id = %s", (row["session_id"],))
+        await db.execute("UPDATE user_session SET last_seen_at = now()"
+                         " WHERE id = %s", (row["session_id"],), conn=conn)
     return Principal(kind="user", id=str(row["user_id"]), email=row["email"],
                      display_name=row["display_name"],
                      is_superuser=row["is_superuser"],
@@ -210,8 +240,10 @@ async def resolve_session(token: str) -> Principal:
 
 
 async def revoke_session(session_id: str) -> None:
-    await db.execute("UPDATE user_session SET revoked_at = now()"
-                     " WHERE id = %s AND revoked_at IS NULL", (session_id,))
+    async with db.connection() as conn:
+        await db.execute("UPDATE user_session SET revoked_at = now()"
+                         " WHERE id = %s AND revoked_at IS NULL",
+                         (session_id,), conn=conn)
 
 
 async def revoke_all_sessions(user_id: str, *,
@@ -258,10 +290,11 @@ async def revogar_sessao(user: Principal, session_id: UUID) -> None:
     que trata 404 como "alguém apagou por baixo" agiria sobre informação falsa.
     O `now()` a mais numa sessão já revogada não muda nada.
     """
-    row = await db.fetch_one(
-        "UPDATE user_session SET revoked_at = COALESCE(revoked_at, now())"
-        " WHERE id = %s AND user_id = %s RETURNING id",
-        (session_id, user.id))
+    async with db.connection() as conn:
+        row = await db.fetch_one(
+            "UPDATE user_session SET revoked_at = COALESCE(revoked_at, now())"
+            " WHERE id = %s AND user_id = %s RETURNING id",
+            (session_id, user.id), conn=conn)
     if row is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "sessão não encontrada")
 
@@ -355,20 +388,22 @@ async def revogar_token(user: Principal, token_id: UUID,
 
 
 async def resolve_api_token(token: str) -> Principal:
-    row = await db.fetch_one(
-        "SELECT t.id, t.user_id, t.expires_at, u.email, u.display_name,"
-        "       u.status, u.is_superuser"
-        "  FROM api_token t JOIN app_user u ON u.id = t.user_id"
-        " WHERE t.token_sha256 = %s AND t.revoked_at IS NULL",
-        (token_digest(token),))
-    if row is None:
-        raise AuthError("token inválido")
-    if row["expires_at"] is not None and row["expires_at"] <= _now():
-        raise AuthError("token expirado")
-    if row["status"] != "active":
-        raise AuthError("usuário desativado")
-    await db.execute("UPDATE api_token SET last_used_at = now() WHERE id = %s",
-                     (row["id"],))
+    async with db.connection() as conn:
+        row = await db.fetch_one(
+            "SELECT t.id, t.user_id, t.expires_at, u.email, u.display_name,"
+            "       u.status, u.is_superuser"
+            "  FROM api_token t JOIN app_user u ON u.id = t.user_id"
+            " WHERE t.token_sha256 = %s AND t.revoked_at IS NULL",
+            (token_digest(token),), conn=conn)
+        if row is None:
+            raise AuthError("token inválido")
+        if row["expires_at"] is not None and row["expires_at"] <= _now():
+            raise AuthError("token expirado")
+        if row["status"] != "active":
+            raise AuthError("usuário desativado")
+        await db.execute(
+            "UPDATE api_token SET last_used_at = now() WHERE id = %s",
+            (row["id"],), conn=conn)
     return Principal(kind="user", id=str(row["user_id"]), email=row["email"],
                      display_name=row["display_name"],
                      is_superuser=row["is_superuser"], via="api_token")
@@ -381,9 +416,10 @@ async def resolve_api_token(token: str) -> Principal:
 async def resolve_device_token(token: str) -> DevicePrincipal:
     """Identifica o agente pelo token. O banco guarda só o sha256, como em
     qualquer segredo daqui — dump vazado não vira credencial de device."""
-    row = await db.fetch_one(
-        "SELECT id, slug, name, capabilities, status FROM device"
-        " WHERE token_sha256 = %s", (token_digest(token),))
+    async with db.connection() as conn:
+        row = await db.fetch_one(
+            "SELECT id, slug, name, capabilities, status FROM device"
+            " WHERE token_sha256 = %s", (token_digest(token),), conn=conn)
     if row is None:
         raise AuthError("token de device inválido")
     if row["status"] == "disabled":
@@ -443,37 +479,36 @@ async def accept_invite(token: str, password: str, *,
             f"senha precisa de ao menos {settings.password_min_length} "
             f"caracteres")
 
-    async with db.connection() as conn:
-        async with conn.transaction():
-            # FOR UPDATE: dois POSTs simultâneos com o mesmo token não podem
-            # ambos consumir o convite.
-            cur = await conn.execute(
-                "SELECT i.id, i.user_id, i.expires_at, u.email, u.display_name"
-                "  FROM user_invite i JOIN app_user u ON u.id = i.user_id"
-                " WHERE i.token_sha256 = %s AND i.used_at IS NULL"
-                "   AND i.revoked_at IS NULL FOR UPDATE OF i",
-                (token_digest(token),))
-            row = await cur.fetchone()
-            if row is None:
-                raise AuthError("convite inválido ou já utilizado")
-            if row["expires_at"] <= _now():
-                raise AuthError("convite expirado")
+    async with db.connection() as conn, conn.transaction():
+        # FOR UPDATE: dois POSTs simultâneos com o mesmo token não podem
+        # ambos consumir o convite.
+        cur = await conn.execute(
+            "SELECT i.id, i.user_id, i.expires_at, u.email, u.display_name"
+            "  FROM user_invite i JOIN app_user u ON u.id = i.user_id"
+            " WHERE i.token_sha256 = %s AND i.used_at IS NULL"
+            "   AND i.revoked_at IS NULL FOR UPDATE OF i",
+            (token_digest(token),))
+        row = await cur.fetchone()
+        if row is None:
+            raise AuthError("convite inválido ou já utilizado")
+        if row["expires_at"] <= _now():
+            raise AuthError("convite expirado")
 
-            await conn.execute(
-                "UPDATE app_user SET password_hash = %s, status = 'active'"
-                " WHERE id = %s", (hash_password(password), row["user_id"]))
-            await conn.execute(
-                "UPDATE user_invite SET used_at = now() WHERE id = %s",
-                (row["id"],))
-            # Redefinir senha derruba sessões antigas — se o convite era
-            # 'password_reset' por suspeita de vazamento, é o ponto principal.
-            await conn.execute(
-                "UPDATE user_session SET revoked_at = now()"
-                " WHERE user_id = %s AND revoked_at IS NULL", (row["user_id"],))
-            # actor=None: quem aceita ainda não é um principal autenticado.
-            await audit(None, "user.invite.accept", "app_user",
-                        str(row["user_id"]), ip=ip, note="via convite",
-                        conn=conn)
+        await conn.execute(
+            "UPDATE app_user SET password_hash = %s, status = 'active'"
+            " WHERE id = %s", (hash_password(password), row["user_id"]))
+        await conn.execute(
+            "UPDATE user_invite SET used_at = now() WHERE id = %s",
+            (row["id"],))
+        # Redefinir senha derruba sessões antigas — se o convite era
+        # 'password_reset' por suspeita de vazamento, é o ponto principal.
+        await conn.execute(
+            "UPDATE user_session SET revoked_at = now()"
+            " WHERE user_id = %s AND revoked_at IS NULL", (row["user_id"],))
+        # actor=None: quem aceita ainda não é um principal autenticado.
+        await audit(None, "user.invite.accept", "app_user",
+                    str(row["user_id"]), ip=ip, note="via convite",
+                    conn=conn)
     return {"id": str(row["user_id"]), "email": row["email"],
             "display_name": row["display_name"]}
 
