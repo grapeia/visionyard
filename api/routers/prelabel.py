@@ -1,29 +1,22 @@
 """Pré-tagueamento em lote: rodar um modelo sobre as imagens e devolver caixas
 que o humano corrige.
 
-Enfileira um job `prelabel` (executado por uma máquina com capacidade
-`prelabel`). As caixas voltam como anotação `origin='prelabel'`, atribuídas a
-quem disparou — que as vê como rascunho e corrige; corrigir vira `correction`,
-e é essa taxa que mede o quanto o humano mudou do que o modelo sugeriu.
-
-Regra de ouro: pré-tag NUNCA sobrescreve trabalho humano. Só grava onde não há
-anotação daquele autor, ou onde a que existe é ela mesma um prelabel anterior.
+Só HTTP: o corpo, o `response_model`, o RBAC e o código de status. A regra —
+resolver a versão do modelo, conferir o escopo e enfileirar — mora em
+`services/prelabel.py`.
 """
 from __future__ import annotations
 
-import json
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Request, status
+from fastapi import APIRouter, Depends, Path, Request, status
 from pydantic import BaseModel, Field
 
-from contracts import jobs
-
-from .. import auth, db
-from ..audit import audit
+from .. import auth
 from ..auth import Principal
-from ..deps import projeto_ou_404, require_role
+from ..deps import require_role
+from ..services import prelabel as svc
 
 router = APIRouter(tags=["prelabel"])
 
@@ -43,39 +36,6 @@ class PrelabelIn(BaseModel):
     only_missing: bool = True           # pula quem já tem anotação minha
 
 
-async def _resolver_versao(project_id: str, body: PrelabelIn) -> dict:
-    m = await db.fetch_one(
-        "SELECT id FROM model WHERE project_id = %s AND slug = %s",
-        (project_id, body.model_slug))
-    if m is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "modelo não encontrado")
-    if body.version is not None:
-        mv = await db.fetch_one(
-            "SELECT id, version, weights_uri, schema_id FROM model_version"
-            " WHERE model_id = %s AND version = %s", (m["id"], body.version))
-    else:
-        alias = body.alias or "champion"
-        mv = await db.fetch_one(
-            "SELECT mv.id, mv.version, mv.weights_uri, mv.schema_id"
-            "  FROM model_alias a JOIN model_version mv ON mv.id = a.model_version_id"
-            " WHERE a.model_id = %s AND a.alias = %s", (m["id"], alias))
-        # Apelido pedido de propósito é exigência, não sugestão: cair calado
-        # para a última versão pré-tagearia com um modelo que ninguém escolheu
-        # — e o relatório ainda diria que foi o apelido pedido. O fallback vale
-        # só para o 'champion' implícito, que é o padrão, não uma escolha.
-        if mv is None and body.alias:
-            raise HTTPException(status.HTTP_404_NOT_FOUND,
-                                f"apelido '{body.alias}' não existe neste modelo")
-        if mv is None:      # sem champion: cai para a última versão
-            mv = await db.fetch_one(
-                "SELECT id, version, weights_uri, schema_id FROM model_version"
-                " WHERE model_id = %s ORDER BY version DESC LIMIT 1", (m["id"],))
-    if mv is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND,
-                            "nenhuma versão do modelo para usar")
-    return mv
-
-
 class PrelabelEnfileirado(BaseModel):
     job_id: UUID
     model_version: int
@@ -93,58 +53,11 @@ async def enfileirar_prelabel(
         body: PrelabelIn, project_slug: Annotated[str, Path()],
         request: Request,
         actor: Annotated[Principal, Depends(require_role("engineer"))]):
-    ids = list(dict.fromkeys(body.sample_ids or []))   # dedup, preserva ordem
-    if sum([bool(body.dataset_slug), bool(body.sample_id), bool(ids)]) != 1:
-        raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_ENTITY,
-            "informe exatamente um escopo: dataset_slug, sample_id OU sample_ids")
-    proj = await projeto_ou_404(project_slug)
-    if body.dataset_slug:
-        alvo = await db.fetch_one(
-            "SELECT id FROM dataset WHERE project_id = %s AND slug = %s"
-            "   AND archived_at IS NULL", (proj["id"], body.dataset_slug))
-        erro = "dataset não encontrado"
-    elif body.sample_id:
-        alvo = await db.fetch_one(
-            "SELECT id FROM sample WHERE project_id = %s AND id = %s",
-            (proj["id"], body.sample_id))
-        erro = "imagem não encontrada"
-    else:
-        achados = await db.fetch_row(
-            "SELECT count(*) AS n FROM sample"
-            " WHERE project_id = %s AND id = ANY(%s::uuid[])", (proj["id"], ids))
-        alvo = achados if achados["n"] == len(ids) else None
-        erro = "alguma imagem não pertence a este projeto"
-    if alvo is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, erro)
-    mv = await _resolver_versao(proj["id"], body)
-
-    # str() nos ids: o payload é JSON e quem o lê do outro lado é o agente,
-    # que não tem pydantic para desserializar UUID de volta.
-    payload = jobs.Prelabel(
-        model_version_id=str(mv["id"]), weights_uri=mv["weights_uri"],
-        schema_id=str(mv["schema_id"]), project_slug=project_slug,
-        conf=body.conf, only_missing=body.only_missing,
-        dataset_slug=body.dataset_slug,
-        sample_id=str(body.sample_id) if body.sample_id else None,
-        sample_ids=[str(i) for i in ids] or None)
-    async with db.connection() as conn:
-        async with conn.transaction():
-            job = await db.fetch_row(
-                "INSERT INTO job (project_id, type, payload, requires,"
-                " created_by)"
-                " VALUES (%s,'prelabel',%s::jsonb,%s::jsonb,%s) RETURNING id",
-                (proj["id"], json.dumps(payload.como_dict()),
-                 json.dumps({"prelabel": True}), actor.id), conn=conn)
-            await audit(actor, "prelabel.enqueue", "job", str(job["id"]),
-                        project_id=str(proj["id"]),
-                        after={"modelo": body.model_slug,
-                               "versao": mv["version"],
-                               "dataset": body.dataset_slug,
-                               "conf": body.conf},
-                        ip=auth.client_ip(request), conn=conn)
-    return {"job_id": str(job["id"]), "model_version": mv["version"],
-            "status": "queued"}
+    return await svc.enfileirar(
+        project_slug, actor, model_slug=body.model_slug, version=body.version,
+        alias=body.alias, dataset_slug=body.dataset_slug,
+        sample_id=body.sample_id, sample_ids=body.sample_ids, conf=body.conf,
+        only_missing=body.only_missing, ip=auth.client_ip(request))
 
 
 @router.post("/projects/{project_slug}/datasets/{dataset_slug}/prelabel/discard",
@@ -158,30 +71,5 @@ async def descartar_prelabels(
     `status='draft'`): anotação humana e pré-tag já corrigido (`correction`) ou
     revisado ficam intactos. Reverte as imagens para 'sem anotação'. Sem volta.
     """
-    ds = await db.fetch_one(
-        "SELECT d.id, p.id AS project_id FROM dataset d"
-        "  JOIN project p ON p.id = d.project_id"
-        " WHERE p.slug = %s AND d.slug = %s AND d.archived_at IS NULL",
-        (project_slug, dataset_slug))
-    if ds is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "dataset não encontrado")
-    # DELETE só de rascunhos de prelabel: nenhum está em versão congelada (o
-    # freeze só pega reviewed/submitted), então não há FK de dataset_version_item
-    # apontando para eles. annotation_review cascateia; annotation_history
-    # sobrevive (perdeu a FK na migração 009) — o log de auditoria fica.
-    async with db.connection() as conn:
-        async with conn.transaction():
-            rows = await db.fetch_all(
-                "DELETE FROM annotation a"
-                " WHERE a.origin = 'prelabel' AND a.status = 'draft'"
-                "   AND a.sample_id IN (SELECT ss.sample_id FROM sample_source ss"
-                "     JOIN dataset_source dsrc"
-                "       ON dsrc.data_source_id = ss.data_source_id"
-                "    WHERE dsrc.dataset_id = %s) RETURNING a.id",
-                (ds["id"],), conn=conn)
-            n = len(rows)
-            await audit(actor, "prelabel.discard", "dataset", str(ds["id"]),
-                        project_id=str(ds["project_id"]),
-                        after={"removidos": n},
-                        ip=auth.client_ip(request), conn=conn)
-    return {"removidos": n}
+    return await svc.descartar(project_slug, dataset_slug, actor,
+                               auth.client_ip(request))
