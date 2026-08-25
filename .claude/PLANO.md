@@ -464,22 +464,32 @@ Fica em aberto: o `CLAUDE.md` dizia que não havia camada onde renomear chave de
 JSON. Agora há — o modelo de saída. Renomear segue custando mexer no `app.js`,
 mas o lugar existe.
 
-### 15. Conexão como parâmetro do serviço — `pendente`
+### 15. Conexão como parâmetro do serviço — `em curso`
 O `CLAUDE.md` explica que cada `fetch_*` pega uma conexão própria e que
-sequência atômica pede `db.connection()` + `conn.transaction()`. É convenção
-conferida por quem revisa: nada no tipo impede um serviço de fazer
-leia-decida-escreva com três conexões diferentes. O primeiro item do 12 (a
-contagem e a página em snapshots distintos) é uma instância da classe, não um
-caso isolado.
+sequência atômica pede `db.connection()` + `conn.transaction()`. Era convenção
+conferida por quem revisa: nada no tipo impedia um serviço de fazer
+leia-decida-escreva com três conexões diferentes.
 
-O primeiro item do 12 acabou fechado por outro caminho (uma consulta só, com
-`count(*) OVER ()`), mas a classe continua: `services/samples.py: detalhe` faz
-três leituras e só não diverge porque nada escreve entre elas.
+**A forma ficou definida com `datasets`** (2026-08-24), a primeira migração a
+carregá-la: toda função do módulo que fala com o banco recebe `conn: db.Conn`,
+e quem **abre** a conexão — e, quando escreve, a transação — é a função pública
+do serviço.
 
-A resposta estrutural é o serviço **receber** `conn: db.Conn` em vez de alcançar
-o pool: com a conexão como parâmetro, esquecer a transação vira erro de tipo em
-vez de achado de review. Cabe fazer serviço a serviço, junto com a migração de
-cada router para `services/` — não é uma passada só.
+A decisão que o item não previa foi *quem* segura a conexão. A leitura literal
+("o serviço recebe `conn`") põe o `async with db.connection()` no router, e aí
+é o router que decide onde a transação começa e termina — regra de domínio, que
+passaria a ser descrita em dois lugares. Segurar na função pública do serviço
+mantém o router em uma linha e dá a mesma garantia onde ela importa: nenhum
+auxiliar do congelamento consegue alcançar o pool por conta própria.
+
+Como o `db.fetch_*` precisa seguir com `conn=None` opcional para os serviços
+ainda não migrados, o que confere não é o tipo: é
+`tests/test_datasets.py: test_servico_de_dataset_nunca_alcanca_o_pool_sozinho`,
+que varre o módulo por AST e reprova chamada sem `conn=` (conferido quebrando
+de propósito). Vale por módulo, conforme cada um for convertido.
+
+Faltam os serviços de `agents`, `imports`, `models`, `samples` e `training`, e
+os routers que ainda não têm serviço nenhum.
 
 ### 16. Porta de storage — `feito` (2026-08-20)
 O acesso ao GCS está espalhado e sem porta. `routers/samples.py:63` faz
@@ -736,3 +746,17 @@ valer para as duas rotas.
   alcançável, um device reclamando enquanto uma importação está `queued` (o
   `TIPOS_LOCAIS` já a barrava, mas nada afirmava isso). Suíte: **219 testes
   passando** (eram 214).
+- **2026-08-24** — `datasets` virou router + serviço, e o item 15 ganhou forma.
+  As 20 consultas e a regra inteira saíram de `routers/datasets.py` (524 → 275
+  linhas), incluindo o `freeze` com o lock consultivo; o router ficou só com
+  corpo, `response_model`, RBAC e status. Junto foi a primeira aplicação do
+  item 15: toda função de `services/datasets.py` que fala com o banco recebe
+  `conn`, e quem abre a conexão é a função pública do serviço — a decisão que o
+  item não previa, e que evita o router passar a descrever a transação. O que
+  confere é um teste por AST, porque `db.fetch_*` precisa seguir com `conn=`
+  opcional para os serviços ainda não migrados.
+  Nenhuma mudança de comportamento pretendida, e nenhuma feita: a única
+  candidata era o `AND archived_at IS NULL` do lookup de projeto, que ficou de
+  fora de propósito — quem barra escrita em projeto arquivado é o
+  `require_role`, com 409 e antes do handler, e repetir a regra no serviço a
+  descreveria duas vezes. Suíte: **220 testes passando** (eram 219).

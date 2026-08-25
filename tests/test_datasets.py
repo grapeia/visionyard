@@ -510,3 +510,33 @@ def test_split_nunca_esvazia_treino():
     dois = [{"sample_id": f"s{i}", "metadata": {}} for i in range(2)]
     assign_splits(dois, {"method": "random", "seed": 1, "val_ratio": 0.9})
     assert {i["split"] for i in dois} == {"train", "val"}
+
+
+def test_servico_de_dataset_nunca_alcanca_o_pool_sozinho():
+    """Item 15 do PLANO, conferido onde ele foi aplicado.
+
+    `db.fetch_*`/`db.execute` sem `conn=` pegam uma conexão cada. Num módulo
+    que faz leia-decida-escreva — o congelamento relê a versão sob lock
+    consultivo justamente para decidir o que gravar —, uma chamada solta
+    escaparia da transação sem que nada acusasse: o tipo aceita, o lint aceita
+    e a suíte passa, porque o resultado só diverge sob concorrência.
+
+    Quem abre a conexão são as funções públicas deste módulo; todo o resto a
+    recebe.
+    """
+    import ast
+    from pathlib import Path as _P
+
+    fonte = (_P(__file__).resolve().parents[1]
+             / "api" / "services" / "datasets.py").read_text()
+    soltas = [
+        f"linha {no.lineno}: db.{no.func.attr}(...)"
+        for no in ast.walk(ast.parse(fonte))
+        if isinstance(no, ast.Call)
+        and isinstance(no.func, ast.Attribute)
+        and isinstance(no.func.value, ast.Name)
+        and no.func.value.id == "db"
+        and no.func.attr in {"fetch_one", "fetch_all", "fetch_row", "execute"}
+        and not any(k.arg == "conn" for k in no.keywords)
+    ]
+    assert not soltas, "sem conn=, cada uma pega a sua conexão: " + "; ".join(soltas)

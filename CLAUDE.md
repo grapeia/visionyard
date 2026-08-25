@@ -61,16 +61,24 @@ Duas escolhas dentro dessa divisão, feitas para não criar cerimônia: o servi�
 uma segunda descrição do mesmo erro) e o serviço **não conhece pydantic** —
 recebe escalares e `dict`/`list[dict]`, e é o router que valida e converte.
 
-`agents`, `models`, `samples` e `training` já estão assim: o router não tem uma
-linha de SQL. `datasets` está pela metade — `services/datasets.py` tem os
-auxiliares do congelamento (resolve → split → manifesto), mas a regra de
-versionamento e as 21 consultas seguem no `freeze` de `routers/datasets.py`.
-`imports` está quase: `services/imports.py` tem a fila inteira (enfileirar,
-reclamar, ponto, progresso, desfecho, recolhimento), a cerca de caminho, o
-importador e o upsert de origem; sobrou inline a listagem de jobs do projeto. Os demais (`auth`, `buckets`,
-`devices`, `jobs`, `prelabel`, `projects`, `users`) carregam o SQL inline por
-inteiro. Quando um deles for mexido a sério, a regra vai junto para
-`services/`.
+`agents`, `datasets`, `models`, `samples` e `training` já estão assim: o router
+não tem uma linha de SQL. `imports` está quase: `services/imports.py` tem a
+fila inteira (enfileirar, reclamar, ponto, progresso, desfecho, recolhimento),
+a cerca de caminho, o importador e o upsert de origem; sobrou inline a listagem
+de jobs do projeto. Os demais (`auth`, `buckets`, `devices`, `jobs`,
+`prelabel`, `projects`, `users`) carregam o SQL inline por inteiro. Quando um
+deles for mexido a sério, a regra vai junto para `services/`.
+
+**Serviço migrado recebe `conn`.** É a forma que o item 15 do PLANO tomou, e
+`services/datasets.py` é onde ela já vale: toda função do módulo que fala com o
+banco tem `conn: db.Conn` como parâmetro, e quem **abre** a conexão (e, quando
+escreve, a transação) é a função pública do serviço — não o router, porque onde
+a transação começa e termina é decisão de domínio. Sem isso nada no tipo impede
+uma sequência leia-decida-escreva de acontecer em três conexões diferentes: o
+tipo aceita, o lint aceita e a suíte passa, porque o resultado só diverge sob
+concorrência. `tests/test_datasets.py` varre o módulo por AST e reprova
+`db.fetch_*`/`db.execute` sem `conn=`. Os serviços ainda não migrados seguem
+alcançando o pool; a regra vale por módulo, conforme cada um é convertido.
 
 **Toda rota declara o que devolve.** O `response_model` do router é o contrato
 de saída; sem ele a linha do banco *é* o DTO, e coluna acrescentada a um
