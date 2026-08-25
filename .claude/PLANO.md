@@ -501,8 +501,14 @@ achados no review da primeira migração e os dois de psycopg, não de desenho:
   gravar) com a do meio sem conexão nenhuma; o teste afirma isso olhando o
   `pg_stat_activity` de fora, no momento em que o manifesto é montado.
 
+`projects` veio em seguida (2026-08-24) e a forma se sustentou sem ajuste — o
+único caso novo foi o papel do usuário, que entra na resposta do detalhe:
+`deps.project_role` ganhou `conn=` opcional, como os helpers de `db.py`, e a
+varredura passou a cobri-la.
+
 Faltam os serviços de `agents`, `imports`, `models`, `samples` e `training`, e
-os routers que ainda não têm serviço nenhum.
+os routers que ainda não têm serviço nenhum (`auth`, `buckets`, `devices`,
+`jobs`, `prelabel`, `users`).
 
 ### 16. Porta de storage — `feito` (2026-08-20)
 O acesso ao GCS está espalhado e sem porta. `routers/samples.py:63` faz
@@ -788,3 +794,19 @@ valer para as duas rotas.
   `conn=` também apertou — deixava passar `from ..db import fetch_one` e o
   módulo apelidado — sem passar a acusar `conn.execute`, que é justamente a
   forma certa. Suíte: **222 testes passando** (eram 220).
+- **2026-08-24** — `projects` virou router + serviço, com a forma do item 15 já
+  corrigida pelo review anterior. 346 → 218 linhas no router e nenhuma consulta
+  inline; `services/projects.py` leva a criação (projeto + owner + schema v1 na
+  mesma transação) e o append de classes sob lock consultivo. Um caso novo:
+  o papel do usuário entra na resposta do detalhe, e `deps.project_role`
+  alcançava o pool — ganhou `conn=` opcional, como os helpers de `db.py`.
+  Duas melhorias vieram de graça, das que só aparecem quando a leitura e a
+  escrita passam a caber na mesma transação: a checagem de slug duplicado do
+  `criar` e o `projeto_ou_404` do `alterar`/`arquivar` deixaram de acontecer
+  numa conexão à parte, e o `UPDATE ... RETURNING` do `alterar` virou
+  `fetch_row` — antes era `fetch_one` e um `None` viajava para o
+  `response_model`, virando 500 em vez de dizer o que houve.
+  Os dois guardas por AST saíram de `tests/test_datasets.py` para
+  `tests/test_conexao_do_servico.py`, parametrizados pela lista de serviços
+  migrados (conferidos quebrando de propósito nos dois). Suíte: **224 testes
+  passando** (eram 222).

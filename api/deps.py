@@ -34,13 +34,21 @@ async def current_user(request: Request) -> Principal:
 CurrentUser = Annotated[Principal, Depends(current_user)]
 
 
-async def project_role(project_slug: str, user: Principal) -> str | None:
+async def project_role(project_slug: str, user: Principal,
+                       *, conn: db.Conn | None = None) -> str | None:
+    """O papel do usuário no projeto, ou `None` se ele não é membro.
+
+    Aceita `conn` pelo mesmo motivo que os helpers de `db.py`: serviço migrado
+    (item 15 do PLANO) não alcança o pool por conta própria, e o papel entra na
+    resposta ao lado de leituras que precisam vir da mesma conexão.
+    """
     if user.is_superuser:
         return "owner"
     row = await db.fetch_one(
         "SELECT m.role FROM project_member m"
         "  JOIN project p ON p.id = m.project_id"
-        " WHERE p.slug = %s AND m.user_id = %s", (project_slug, user.id))
+        " WHERE p.slug = %s AND m.user_id = %s", (project_slug, user.id),
+        conn=conn)
     return row["role"] if row else None
 
 
