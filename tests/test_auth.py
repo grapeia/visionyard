@@ -1,8 +1,14 @@
 """Login, sessão, convite e token de API."""
 from __future__ import annotations
 
+import asyncio
+import contextlib
+
 import psycopg
 import pytest
+
+from api import db
+from api.config import settings
 
 from .conftest import TEST_DSN
 
@@ -412,3 +418,75 @@ async def test_nome_de_token_revogado_pode_ser_reusado(admin):
 
     r = await admin.post("/v1/me/tokens", json={"name": "ci"})
     assert r.status_code == 201, r.text
+
+
+async def test_sessao_ociosa_fica_revogada_no_banco(admin):
+    """O 401 por inatividade tem de DEIXAR a sessão revogada.
+
+    Revogar na conexão de quem vai levantar a exceção não vale: o pool faz
+    `ROLLBACK` ao vê-la subir, e a sessão segue `revoked_at IS NULL` para
+    sempre — continua aparecendo aberta em `/me/sessions` e cada requisição
+    repete a mesma escrita desfeita. É a armadilha de `record_attempt`, cem
+    linhas abaixo no mesmo arquivo.
+    """
+    assert (await admin.get("/v1/me")).status_code == 200
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        conn.execute("UPDATE user_session SET last_seen_at = now()"
+                     " - make_interval(hours => %s)",
+                     (settings.session_idle_hours + 1,))
+
+    assert (await admin.get("/v1/me")).status_code == 401
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        vivas = conn.execute("SELECT count(*) FROM user_session"
+                             " WHERE revoked_at IS NULL").fetchone()[0]
+    assert vivas == 0, "sessão ociosa continuou aberta no banco"
+
+
+@contextlib.asynccontextmanager
+async def _contando_conexoes(monkeypatch):
+    """Profundidade máxima de conexões que UMA task segura ao mesmo tempo.
+
+    Por task, e não global: o laço de importação embutido na API tem conexão
+    própria e polla a cada dois segundos, então um contador único mediria a
+    coincidência de dois fluxos independentes em vez do aninhamento de um só.
+    """
+    original = db.connection
+    por_task: dict[int, int] = {}
+    maxima = 0
+
+    @contextlib.asynccontextmanager
+    async def contando():
+        nonlocal maxima
+        task = id(asyncio.current_task())
+        por_task[task] = por_task.get(task, 0) + 1
+        maxima = max(maxima, por_task[task])
+        try:
+            async with original() as conn:
+                yield conn
+        finally:
+            por_task[task] -= 1
+
+    monkeypatch.setattr(db, "connection", contando)
+    medida: list[int] = []
+    yield medida
+    medida.append(maxima)
+
+
+@pytest.mark.parametrize("senha, esperado", [("senha-de-teste-123", 200),
+                                             ("errada", 401)])
+async def test_login_nunca_segura_duas_conexoes_do_pool(client, superuser,
+                                                        monkeypatch, senha,
+                                                        esperado):
+    """Uma conexão de cada vez, nos dois desfechos do login.
+
+    `record_attempt` pega conexão própria de propósito. Chamada de dentro de
+    uma conexão já tomada, ela vira a segunda: com dez logins simultâneos as
+    dez vagas do pool ficam presas esperando a décima primeira, e o
+    `PoolTimeout` transforma dez 401 em dez 500 — justamente sob a rajada que
+    o throttle existe para atender.
+    """
+    async with _contando_conexoes(monkeypatch) as medida:
+        r = await client.post("/v1/login", json={"email": superuser["email"],
+                                                 "password": senha})
+    assert r.status_code == esperado
+    assert medida[0] == 1, f"o login segurou {medida[0]} conexões ao mesmo tempo"

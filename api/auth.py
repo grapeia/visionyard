@@ -146,38 +146,47 @@ async def authenticate(email: str, password: str, ip: str | None) -> dict:
     """Valida credencial. Erro é sempre o mesmo texto — não revela se o email
     existe, se está desativado ou se a senha está errada."""
     email = email.strip().lower()
-    # Uma conexão para o login inteiro: eram até seis idas ao pool por
-    # tentativa — throttle, busca, registro da tentativa, rehash, ponto — e
-    # login é a rota que mais leva ataque em volume.
+    # Três fases, e a do meio SEM conexão na mão. Segurar uma conexão pelo
+    # login inteiro custava duas coisas, as duas sob a carga que este caminho
+    # existe para aguentar: o argon2 (64 MiB, t=3) rodava com a sessão
+    # `idle in transaction`, prendendo uma das dez vagas do pool em trabalho de
+    # CPU; e `record_attempt`, que pega conexão PRÓPRIA de propósito, virava
+    # uma segunda tomada com a primeira ainda presa — dez logins simultâneos
+    # seguravam as dez vagas e ficavam todos esperando a décima primeira, até
+    # o `PoolTimeout` transformar dez 401 em dez 500.
     async with db.connection() as conn:
         await check_throttle(conn, email, ip)
-
         user = await db.fetch_one(
             "SELECT id, email, display_name, password_hash, status,"
             "       is_superuser"
             " FROM app_user WHERE lower(email) = %s", (email,), conn=conn)
 
-        if user is None:
-            dummy_verify()                  # equaliza o tempo de resposta
-            await record_attempt(email, ip, False)
-            raise AuthError("email ou senha inválidos")
+    if user is None:
+        dummy_verify()                      # equaliza o tempo de resposta
+        await record_attempt(email, ip, False)
+        raise AuthError("email ou senha inválidos")
 
-        if not verify_password(password, user["password_hash"]):
-            await record_attempt(email, ip, False)
-            raise AuthError("email ou senha inválidos")
+    if not verify_password(password, user["password_hash"]):
+        await record_attempt(email, ip, False)
+        raise AuthError("email ou senha inválidos")
 
-        if user["status"] != "active":
-            await record_attempt(email, ip, False)
-            raise AuthError("email ou senha inválidos")
+    if user["status"] != "active":
+        await record_attempt(email, ip, False)
+        raise AuthError("email ou senha inválidos")
 
-        # Custo do argon2 pode ter subido desde o cadastro: aproveita que a
-        # senha em claro está em mãos e re-hasheia com os parâmetros atuais.
-        if needs_rehash(user["password_hash"]):
+    # Custo do argon2 pode ter subido desde o cadastro: aproveita que a senha
+    # em claro está em mãos e re-hasheia com os parâmetros atuais. O hash sai
+    # daqui pronto — reabrir a conexão só depois é o que mantém o trabalho
+    # pesado fora dela.
+    novo_hash = (hash_password(password)
+                 if needs_rehash(user["password_hash"]) else None)
+
+    await record_attempt(email, ip, True)
+    async with db.connection() as conn, conn.transaction():
+        if novo_hash is not None:
             await db.execute(
                 "UPDATE app_user SET password_hash = %s WHERE id = %s",
-                (hash_password(password), user["id"]), conn=conn)
-
-        await record_attempt(email, ip, True)
+                (novo_hash, user["id"]), conn=conn)
         await db.execute(
             "UPDATE app_user SET last_login_at = now() WHERE id = %s",
             (user["id"],), conn=conn)
@@ -221,18 +230,24 @@ async def resolve_session(token: str) -> Principal:
         if row["expires_at"] <= now:
             raise AuthError("sessão expirada")
         # Expiração por inatividade, além do teto absoluto.
-        if (row["last_seen_at"]
-                + timedelta(hours=settings.session_idle_hours) <= now):
-            await db.execute(
-                "UPDATE user_session SET revoked_at = now()"
-                " WHERE id = %s AND revoked_at IS NULL",
-                (row["session_id"],), conn=conn)
-            raise AuthError("sessão expirada por inatividade")
-        if row["status"] != "active":
-            raise AuthError("usuário desativado")
+        ociosa = (row["last_seen_at"]
+                  + timedelta(hours=settings.session_idle_hours) <= now)
+        if not ociosa:
+            if row["status"] != "active":
+                raise AuthError("usuário desativado")
+            await db.execute("UPDATE user_session SET last_seen_at = now()"
+                             " WHERE id = %s", (row["session_id"],), conn=conn)
 
-        await db.execute("UPDATE user_session SET last_seen_at = now()"
-                         " WHERE id = %s", (row["session_id"],), conn=conn)
+    # A revogação por inatividade sai DEPOIS de devolver a conexão, e em
+    # conexão própria (`revoke_session`), pela mesma razão de
+    # `record_attempt`: daqui sai exceção, e o pool faz `ROLLBACK` ao vê-la
+    # subir. Revogando na conexão de cima, o UPDATE era desfeito junto com o
+    # 401 — a sessão seguia `revoked_at IS NULL` para sempre, continuava
+    # aparecendo aberta em `/me/sessions`, e cada requisição repetia a mesma
+    # escrita desfeita.
+    if ociosa:
+        await revoke_session(str(row["session_id"]))
+        raise AuthError("sessão expirada por inatividade")
     return Principal(kind="user", id=str(row["user_id"]), email=row["email"],
                      display_name=row["display_name"],
                      is_superuser=row["is_superuser"],
