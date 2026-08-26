@@ -109,7 +109,11 @@ async def readyz():
     temporária, e o detalhe do erro fica no log, sob o código da requisição.
     """
     try:
-        await db.fetch_one("SELECT 1 AS ok")
+        # Comando único, e ainda assim a conexão é aberta aqui: é o que faz
+        # "nenhuma função alcança o pool sozinha" valer para o módulo inteiro,
+        # e não só para os que têm sequência a proteger.
+        async with db.connection() as conn:
+            await db.fetch_one("SELECT 1 AS ok", conn=conn)
     except Exception:
         logging.getLogger("visionyard").exception("banco indisponível no readyz")
         return JSONResponse(status_code=503,

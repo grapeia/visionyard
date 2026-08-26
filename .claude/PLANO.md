@@ -942,3 +942,40 @@ sistema, criado para proteger o que não precisa.
   disparava. A suíte pegou na hora (três testes de throttle), o que é o
   argumento a favor de eles existirem. Suíte: **256 testes passando** (eram
   252).
+
+- **2026-08-26** — review do `427004c` (alto esforço). Cinco achados, os cinco
+  procedentes; **três são regressões do próprio commit revisado**, o que diz
+  algo sobre juntar conversão de disciplina com correção de review no mesmo
+  passo. As duas de peso vieram da mesma frase que eu escrevi como melhoria —
+  "uma conexão para o login inteiro":
+  - `resolve_session` passou a revogar a sessão ociosa na conexão do chamador
+    e a levantar `AuthError` duas linhas depois. O pool faz `ROLLBACK` ao ver a
+    exceção subir, então a revogação era desfeita: 401 a cada requisição, e a
+    sessão seguia `revoked_at IS NULL` para sempre, listada como aberta em
+    `/me/sessions`. É exatamente a armadilha que o mesmo commit documentou na
+    docstring de `record_attempt`, cem linhas acima. A revogação saiu para fora
+    do `async with`, em `revoke_session`.
+  - `authenticate` segurava uma conexão e, de dentro dela, chamava
+    `record_attempt`, que toma outra de propósito. Com `max_size=10`, dez
+    logins simultâneos seguram as dez vagas e esperam a décima primeira até o
+    `PoolTimeout` (30s) — dez 500 no lugar de dez 401, e o resto do processo
+    faminto junto. Reachable sob a rajada de credenciais que o throttle existe
+    para atender. E, no mesmo bloco, o argon2 (64 MiB, t=3) rodava com a
+    conexão `INTRANS` na mão, contra a regra que o `CLAUDE.md` escreve.
+    `authenticate` virou três fases: ler, verificar sem conexão nenhuma,
+    gravar.
+  - A lista `MODULOS` da varredura afirmava exaustividade que não tinha:
+    `importers/runner.py` tem SQL, ficou de fora, e é onde o defeito estava
+    vivo — lia o `existing` numa conexão, decidia, gravava noutra, e no bloco
+    separado (`async with db.connection()` / `async with conn.transaction()`)
+    que a varredura irmã existe para reprovar. Migrado; `audit.py` e `main.py`
+    entraram junto. A exaustividade deixou de ser frase e virou
+    `test_a_lista_e_exaustiva`, que varre `api/` inteiro atrás de quem alcança
+    o pool e não está na lista — conferida quebrando-a de propósito.
+  - `_definidas` isentava por nome todas as funções do módulo, subtraindo de
+    `ACESSOS_DB` também: um auxiliar chamado `execute` desligaria calado a
+    varredura do arquivo inteiro. A isenção ficou só para os vizinhos.
+
+  Os três testes novos foram rodados contra o código antigo antes de contra o
+  novo: os três reprovam lá e passam aqui.
+

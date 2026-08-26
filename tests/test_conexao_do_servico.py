@@ -25,11 +25,20 @@ from pathlib import Path
 import pytest
 
 # Todo módulo que fala com o banco, e não só os de `services/`: `auth.py` é o
-# serviço do domínio de autenticação e `deps.py` resolve papel e projeto, os
-# dois com SQL próprio. Fora da lista fica `services/buckets.py`, por não ter
-# uma linha de SQL — o que ele guarda é a cerca da allowlist, e o acesso ao GCS
-# passa por `storage.py`. Módulo novo com SQL entra aqui.
-MODULOS = ["auth.py", "deps.py",
+# serviço do domínio de autenticação, `deps.py` resolve papel e projeto,
+# `audit.py` escreve a trilha, `importers/runner.py` é a única escrita da
+# importação e `main.py` tem a sonda do `readyz` — todos com SQL próprio. Fora
+# da lista fica `services/buckets.py`, por não ter uma linha de SQL — o que ele
+# guarda é a cerca da allowlist, e o acesso ao GCS passa por `storage.py`. A
+# lista é exaustiva de propósito — é ela que dá sentido à frase do `CLAUDE.md`
+# —, e quem confere isso é `test_a_lista_e_exaustiva`, no fim do arquivo:
+# módulo novo que alcance o pool entra aqui, ou a suíte reprova.
+#
+# `importers/label_studio.py` tem SQL e também fica de fora, sem ser exceção: o
+# banco dele é o sqlite do dump que o usuário trouxe, aberto em modo leitura —
+# não o Postgres, não o pool, nada que estas duas regras tenham o que dizer.
+MODULOS = ["audit.py", "auth.py", "deps.py", "main.py",
+           "importers/runner.py",
            "services/agents.py", "services/datasets.py",
            "services/devices.py", "services/imports.py", "services/jobs.py",
            "services/models.py", "services/prelabel.py",
@@ -78,8 +87,13 @@ def _nome_chamado(no: ast.Call, proprias: set[str]) -> str | None:
             and isinstance(no.func.value, ast.Name)
             and no.func.value.id == "db"):
         return f"db.{no.func.attr}"
-    if (isinstance(no.func, ast.Name)
-            and no.func.id in (ACESSOS_DB | ACESSOS_VIZINHOS) - proprias):
+    # A isenção de "o módulo é dono desta função" vale só para os vizinhos: um
+    # módulo que definisse um auxiliar chamado `execute` desligaria calado a
+    # varredura do nome solto para o arquivo inteiro — e `ast.walk` alcança
+    # definições aninhadas, então bastaria uma função de dentro de outra.
+    if isinstance(no.func, ast.Name) and (
+            no.func.id in ACESSOS_DB
+            or no.func.id in ACESSOS_VIZINHOS - proprias):
         return no.func.id
     return None
 
@@ -127,3 +141,34 @@ def test_transacao_do_servico_nunca_e_savepoint(modulo: str):
               and not any(abre(i, "connection") for i in no.items)]
     assert not soltas, ("transaction() longe do connection() vira savepoint: "
                         + "; ".join(soltas))
+
+
+# Alcançar o pool é usar qualquer coisa de `db.py` que abra conexão — os
+# acessos, e as duas portas que entregam uma.
+ALCANCA_O_POOL = ACESSOS_DB | {"connection", "conexao_ou"}
+
+
+def test_a_lista_e_exaustiva():
+    """`MODULOS` cobre todo módulo de `api/` que alcança o pool.
+
+    Sem esta, as duas regras acima valem só onde alguém lembrou de escrevê-las,
+    e a frase do `CLAUDE.md` ("todo módulo com SQL está na lista") vira palavra
+    de honra. Foi o que aconteceu com `importers/runner.py`: fora da lista, ele
+    lia numa conexão e gravava noutra, com o `conn.transaction()` solto, sem
+    nada acusar.
+    """
+    raiz = Path(__file__).resolve().parents[1] / "api"
+    faltando = []
+    for caminho in sorted(raiz.rglob("*.py")):
+        modulo = caminho.relative_to(raiz).as_posix()
+        if modulo == "db.py" or modulo in MODULOS:
+            continue        # `db.py` é o dono dos acessos
+        alcanca = [f"linha {no.lineno}: db.{no.attr}"
+                   for no in ast.walk(ast.parse(caminho.read_text()))
+                   if isinstance(no, ast.Attribute)
+                   and no.attr in ALCANCA_O_POOL
+                   and isinstance(no.value, ast.Name) and no.value.id == "db"]
+        if alcanca:
+            faltando.append(f"{modulo} ({alcanca[0]})")
+    assert not faltando, ("alcançam o pool e estão fora de MODULOS: "
+                          + "; ".join(faltando))

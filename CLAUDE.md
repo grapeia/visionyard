@@ -87,21 +87,41 @@ da sua lista `MIGRADOS` — entra um nome ali a cada migração — e reprova
 `db.fetch_*`/`db.execute` sem `conn=`, o acesso importado solto e o auxiliar
 que alcança o pool sozinho (`deps.projeto_ou_404`).
 
-**Todo módulo com SQL está na lista** — inclusive `auth.py` e `deps.py`, que
-não moram em `services/`. O único de fora é `services/buckets.py`, por não ter
-uma linha de SQL. Vale também para a escrita de comando único (o ponto da
+**Todo módulo com SQL está na lista** — inclusive `auth.py`, `deps.py`,
+`audit.py`, `importers/runner.py` e `main.py`, que não moram em `services/`.
+Ficam de fora dois, e nenhum por exceção: `services/buckets.py`, que não tem
+uma linha de SQL, e `importers/label_studio.py`, cujo banco é o sqlite do dump
+do usuário, aberto em modo leitura — não o Postgres, não o pool. Que a lista
+seja exaustiva é conferido por `test_a_lista_e_exaustiva`, e não por palavra
+de honra: enquanto era só a frase daqui, `importers/runner.py` ficou fora dela
+lendo numa conexão e gravando noutra, com o `conn.transaction()` solto.
+Vale também para a escrita de comando único (a sonda do `readyz`, o ponto da
 importação, o heartbeat do agente): ela abre a conexão explicitamente, mesmo
 sem sequência a proteger. O ganho ali não é atomicidade, é que "nenhuma função
 alcança o pool sozinha" vira propriedade conferível — e quem acrescentar um
 segundo comando não o faz noutra conexão sem perceber.
 
-**A exceção que prova a regra é `auth.record_attempt`**, que abre conexão
-própria de propósito e tem isso escrito na docstring: o caminho de falha do
-login sai por exceção, e o pool faz `ROLLBACK` ao vê-la subir. Registrar a
-tentativa na conexão de quem chama desfazia o registro junto com o erro — o
-contador do throttle ficava em zero e o teto por IP nunca disparava. Escrita
-que precisa sobreviver ao fracasso de quem a pediu não entra na transação
-dele.
+**Escrita que precisa sobreviver ao fracasso de quem a pediu não entra na
+transação dele.** São duas em `auth.py`, as duas com o motivo na docstring, e
+as duas mordem do mesmo jeito: o caminho sai por exceção e o pool faz
+`ROLLBACK` ao vê-la subir, então o que foi gravado na conexão de cima é
+desfeito junto com o erro. `record_attempt` abre conexão própria — registrando
+na de quem chama, toda tentativa errada sumia, o contador do throttle ficava
+em zero e o teto por IP nunca disparava. E a revogação por inatividade de
+`resolve_session` acontece **depois** do `async with`, chamando
+`revoke_session`: feita dentro, a sessão seguia `revoked_at IS NULL` para
+sempre, continuava listada como aberta em `/me/sessions`, e cada requisição
+repetia a mesma escrita desfeita.
+
+**Não tome uma segunda conexão com a primeira na mão.** O pool tem dez vagas:
+se cada fluxo segura uma e pede outra, dez fluxos simultâneos travam os dez e
+esperam a décima primeira até o `PoolTimeout` — 500 no lugar do que a rota ia
+responder. Foi o que aconteceu ao juntar o login inteiro numa conexão só:
+`record_attempt`, que toma a sua de propósito, virava a segunda, e justamente
+sob a rajada de credenciais que o throttle existe para atender. `authenticate`
+é hoje três fases — ler, verificar sem conexão nenhuma, gravar —, e
+`test_login_nunca_segura_duas_conexoes_do_pool` mede a profundidade por task
+para que continue sendo.
 
 **`conn.transaction()` vai no mesmo `async with` que abre a conexão.** O
 psycopg decide o que o bloco é pelo estado da conexão: ociosa, abre transação;
@@ -119,7 +139,8 @@ uma conexão na mão: a sessão fica `idle in transaction` o tempo todo, um
 `idle_in_transaction_session_timeout` derruba o backend no meio, o horizonte de
 xmin trava o vacuum, e uma das dez vagas do pool fica presa esperando CPU. O
 `congelar` de `services/datasets.py` é o exemplo: ler, montar o manifesto sem
-conexão nenhuma, gravar.
+conexão nenhuma, gravar. `authenticate` é o mesmo desenho por outro motivo — o
+argon2 (64 MiB, t=3) roda entre as duas conexões, não dentro de uma.
 
 **Toda rota declara o que devolve.** O `response_model` do router é o contrato
 de saída; sem ele a linha do banco *é* o DTO, e coluna acrescentada a um
