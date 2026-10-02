@@ -31,7 +31,7 @@ Params = Sequence[Any] | Mapping[str, Any]
 async def open_pool() -> None:
     global _pool
     _pool = AsyncConnectionPool[Conn](
-        settings.database_url, min_size=1, max_size=10,
+        settings.database_url, min_size=1, max_size=settings.db_pool_max,
         kwargs={"row_factory": dict_row}, open=False)
     await _pool.open(wait=True)
 

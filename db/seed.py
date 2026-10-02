@@ -8,8 +8,13 @@ demais.
     python -m db.seed --email voce@empresa.com --name "Seu Nome" --password ...
 
 Sem --password, a senha é gerada e impressa uma única vez. É o caminho
-recomendado: senha em argumento de linha de comando fica no histórico do shell
-e é visível em `ps` para qualquer usuário da máquina.
+recomendado numa máquina: senha em argumento de linha de comando fica no
+histórico do shell e é visível em `ps` para qualquer usuário dela.
+
+Num job do Cloud Run é o contrário: o que ele imprime vai para o Cloud Logging,
+e a senha gerada ficaria lá, legível a quem lê log do projeto. Ali a senha vem
+de `VISIONYARD_SEED_PASSWORD` (que o job recebe do Secret Manager) e não é
+impressa. Ver deploy/gcp/README.md.
 
 Idempotente: se o email já existe, não altera nada (use --reset-password pra
 redefinir a senha de um seed perdido).
@@ -18,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import secrets
 import string
 import sys
@@ -45,11 +51,12 @@ def main() -> int:
     args = ap.parse_args()
 
     email = args.email.strip().lower()
-    if args.password and len(args.password) < settings.password_min_length:
+    informada = args.password or os.environ.get("VISIONYARD_SEED_PASSWORD")
+    if informada and len(informada) < settings.password_min_length:
         print(f"senha precisa de ao menos {settings.password_min_length} "
               f"caracteres", file=sys.stderr)
         return 1
-    password = args.password or generate_password()
+    password = informada or generate_password()
 
     with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
         existing = conn.execute(
@@ -109,7 +116,7 @@ def main() -> int:
         conn.commit()
 
     print(f"\n  superusuário {action}: {email}  (id={user_id})")
-    if not args.password:
+    if not informada:
         print(f"  senha: {password}")
         print("\n  Anote agora — não é possível recuperá-la depois.")
     print()

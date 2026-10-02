@@ -28,6 +28,7 @@ todo serviço do repositório.
 from __future__ import annotations
 
 import ipaddress
+import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -47,6 +48,8 @@ from .security import (
     token_prefix,
     verify_password,
 )
+
+logger = logging.getLogger("visionyard.auth")
 
 
 @dataclass(frozen=True)
@@ -580,6 +583,10 @@ def client_ip(request: Request) -> str | None:
     levava a escrita junto (aceitar convite deixava a conta sem senha).
     """
     peer = request.client.host if request.client else None
+    # O que se lê para acertar `trusted_proxies` num ambiente novo: o salto
+    # que a API vê e a cadeia que veio. Em DEBUG porque sai a cada login.
+    logger.debug("client_ip: peer=%s x-forwarded-for=%s", peer,
+                 request.headers.get("x-forwarded-for"))
     if peer is None or not _is_trusted_proxy(peer):
         return peer if _e_endereco(peer) else None
 

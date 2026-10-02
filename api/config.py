@@ -30,6 +30,14 @@ class Settings(BaseSettings):
     # Nível do log da aplicação. O acesso sai numa linha por requisição, com o
     # código de correlação; DEBUG só para investigar.
     log_level: str = "INFO"
+    # `json` no Cloud Run: o Cloud Logging lê a severidade de cada linha só
+    # nesse formato (ver `logs.FormatoJson`). `texto` para quem lê no terminal.
+    log_format: Literal["texto", "json"] = "texto"
+
+    # Conexões do pool POR PROCESSO. Num orquestrador que escala por instância
+    # o total é isto vezes o número de instâncias, e o Cloud SQL recusa acima
+    # do teto do tier — com 10 por instância, cinco instâncias já levam 50.
+    db_pool_max: int = 10
 
     # Throttle de login. O teto duro é por IP — é o que barra força bruta sem
     # permitir que alguém tranque a conta de outro só errando a senha de

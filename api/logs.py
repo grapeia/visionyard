@@ -10,11 +10,14 @@ O mecanismo é um só: cada requisição ganha um código, que vai para uma
 root, não por quem chama o logger), volta no cabeçalho `X-Request-Id` e, quando
 a resposta é 500, no corpo — é o que o usuário informa ao suporte.
 
-O formato é uma linha de texto com o código no meio. Quando houver coletor que
-leia JSON, o que muda é o formatter, e só ele.
+O formato é uma linha de texto com o código no meio, ou — com
+`VISIONYARD_LOG_FORMAT=json`, que é o do Cloud Run — um objeto JSON por linha,
+com `severity` e `message`, que é o que o Cloud Logging lê. O que muda entre os
+dois é o formatter, e só ele: o código entra pelo mesmo filtro.
 """
 from __future__ import annotations
 
+import json
 import logging
 import re
 import time
@@ -45,6 +48,28 @@ _SEM_LOG = ("/healthz", "/readyz", "/static", "/favicon.ico")
 FORMATO = "%(asctime)s %(levelname)s %(name)s [%(request_id)s] %(message)s"
 
 
+class FormatoJson(logging.Formatter):
+    """Um objeto por linha, nos campos que o Cloud Logging reconhece.
+
+    `severity` é o que importa: no Cloud Run toda linha do stderr que não diz a
+    própria severidade é classificada como ERROR, e o `logging` escreve no
+    stderr — um alerta por taxa de erro dispararia com o log de acesso. O
+    traceback vai DENTRO de `message`: em linhas soltas ele viraria uma entrada
+    por linha, sem código de requisição e sem severidade.
+    """
+
+    def format(self, record: logging.LogRecord) -> str:
+        mensagem = record.getMessage()
+        if record.exc_info:
+            mensagem = f"{mensagem}\n{self.formatException(record.exc_info)}"
+        return json.dumps({
+            "severity": record.levelname,
+            "message": mensagem,
+            "logger": record.name,
+            "request_id": getattr(record, "request_id", "-"),
+        }, ensure_ascii=False)
+
+
 class _InjetarCodigo(logging.Filter):
     """Põe o código da requisição em todo registro.
 
@@ -69,9 +94,28 @@ def configurar() -> None:
     raiz = logging.getLogger()
     if not raiz.handlers:
         logging.basicConfig(level=nivel, format=FORMATO)
+    em_json = settings.log_format == "json"
     for h in raiz.handlers:
         if not any(isinstance(f, _InjetarCodigo) for f in h.filters):
             h.addFilter(_InjetarCodigo())
+        if em_json:
+            h.setFormatter(FormatoJson())
+        elif isinstance(h.formatter, FormatoJson):
+            h.setFormatter(logging.Formatter(FORMATO))
+    if em_json:
+        # O uvicorn tem handler próprio, em texto e no stderr: sem passar pelo
+        # root, cada linha dele chegaria ao Cloud Logging como ERROR.
+        for nome in ("uvicorn", "uvicorn.error"):
+            lg = logging.getLogger(nome)
+            lg.handlers = []
+            lg.propagate = True
+        # O de acesso fica mudo, e não propagado: o middleware de
+        # `correlacionar` já escreve uma linha por requisição, com o código. E
+        # propagar o religaria mesmo com `--no-access-log`, porque o uvicorn
+        # decide se loga pelo `hasHandlers()`, que enxerga o root.
+        acesso = logging.getLogger("uvicorn.access")
+        acesso.handlers = []
+        acesso.propagate = False
     raiz.setLevel(nivel)
 
 

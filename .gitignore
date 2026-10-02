@@ -9,6 +9,7 @@ venv/
 # Configuração local
 .env
 .env.docker
+deploy/gcp/config.env
 
 # Rascunho: material de trabalho que não faz parte do produto
 tmp/

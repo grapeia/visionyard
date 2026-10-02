@@ -65,8 +65,11 @@ o primeiro usuário sai daí, os demais por convite na aba Usuários.
 
 ## Subir (produção)
 
-O `docker-compose.yml` é o artefato de deploy — desenvolvimento não passa por
-ele. Sobe o Postgres da instalação, aplica as migrations e serve a API.
+Dois caminhos. No **GCP**, a API vai para o Cloud Run e o front para um
+bucket, atrás de um balanceador HTTPS: ver [`deploy/gcp/README.md`](deploy/gcp/README.md).
+Numa **máquina própria**, o `docker-compose.yml` é o artefato de deploy
+(desenvolvimento não passa por ele): ele sobe o Postgres da instalação,
+aplica as migrations e serve a API.
 
 ```bash
 cp .env.docker.example .env.docker    # preencha POSTGRES_PASSWORD e a conta de serviço
@@ -121,6 +124,8 @@ As que importam no primeiro dia:
 | `VISIONYARD_IMPORT_WORKER_EMBEDDED` | `false` tira a execução da importação do processo da API — aí `python -m api.worker` precisa estar no ar |
 | `VISIONYARD_COOKIE_SECURE` | `true` em produção, atrás de TLS |
 | `VISIONYARD_TRUSTED_PROXIES` | CIDR dos proxies que terminam TLS; vazio = sem proxy |
+| `VISIONYARD_LOG_FORMAT` | `json` no Cloud Run, que lê a severidade de cada linha só nesse formato; `texto` (default) para terminal |
+| `VISIONYARD_DB_POOL_MAX` | conexões por processo (default 10); vezes o número de instâncias, tem de caber no teto do banco |
 | `VISIONYARD_MODELS_BUCKET` | bucket onde treino e export publicam (prefixo em `VISIONYARD_MODELS_PREFIX`, default `models`) — sem ele não há onde publicar |
 
 O acesso ao GCS usa `GOOGLE_APPLICATION_CREDENTIALS`, e só a API o tem. As

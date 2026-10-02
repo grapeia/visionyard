@@ -490,3 +490,19 @@ async def test_login_nunca_segura_duas_conexoes_do_pool(client, superuser,
                                                  "password": senha})
     assert r.status_code == esperado
     assert medida[0] == 1, f"o login segurou {medida[0]} conexões ao mesmo tempo"
+
+
+async def test_debug_mostra_o_peer_e_o_xff_que_chegaram(client, caplog):
+    """É o que se lê para acertar `VISIONYARD_TRUSTED_PROXIES` num ambiente
+    novo (deploy/gcp/README.md): qual salto a API vê e o que veio no header.
+    Sem esta linha a instrução de conferir mandava ler um log que não existia."""
+    import logging
+    with caplog.at_level(logging.DEBUG, logger="visionyard.auth"):
+        await client.post("/v1/login",
+                          headers={"X-Forwarded-For": "198.51.100.7, 10.0.0.1"},
+                          json={"email": "dbg@teste.com",
+                                "password": "errada-de-prop123"})
+    linhas = [r.getMessage() for r in caplog.records
+              if r.name == "visionyard.auth"]
+    assert any("198.51.100.7, 10.0.0.1" in m and "127.0.0.1" in m
+               for m in linhas), linhas

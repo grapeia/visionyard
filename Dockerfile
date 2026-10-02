@@ -30,4 +30,10 @@ USER visionyard
 
 EXPOSE 8000
 
-CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# A porta vem de `$PORT` quando o orquestrador a define (o Cloud Run passa
+# 8080 e espera que o processo a respeite) e cai em 8000 fora dele. Forma de
+# shell só para expandir a variável; o `exec` devolve ao uvicorn o PID 1, que é
+# quem recebe o SIGTERM da parada. Sem log de acesso do uvicorn: o middleware
+# de `api/logs.py` já escreve uma linha por requisição, com o código de
+# correlação, e duas linhas por acesso só dobravam o custo de log.
+CMD ["sh", "-c", "exec uvicorn api.main:app --host 0.0.0.0 --port ${PORT:-8000} --no-access-log --timeout-graceful-shutdown 8"]

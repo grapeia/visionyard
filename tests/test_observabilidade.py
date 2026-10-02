@@ -131,3 +131,74 @@ def test_nivel_de_log_em_minusculas_nao_derruba_a_subida(monkeypatch):
     finally:
         monkeypatch.setattr(settings, "log_level", "INFO")
         logs.configurar()
+
+
+def _registro(nivel: int, msg: str, exc: bool = False) -> logging.LogRecord:
+    info = None
+    if exc:
+        try:
+            raise ValueError("estourou")
+        except ValueError:
+            import sys
+            info = sys.exc_info()
+    r = logging.LogRecord("visionyard.x", nivel, __file__, 1, msg, (), info)
+    r.request_id = "abc123"
+    return r
+
+
+def test_formato_json_e_o_que_o_cloud_logging_le():
+    """No Cloud Run tudo o que sai no stderr vira ERROR se a linha não disser
+    a severidade — e o Python escreve no stderr. Em JSON, `severity` e
+    `message` são os campos que o coletor reconhece."""
+    import json
+
+    from api import logs
+
+    linha = json.loads(logs.FormatoJson().format(
+        _registro(logging.WARNING, "devagar %s")))
+    assert linha["severity"] == "WARNING"
+    assert linha["message"] == "devagar %s"
+    assert linha["request_id"] == "abc123"
+    assert linha["logger"] == "visionyard.x"
+    assert json.loads(logs.FormatoJson().format(
+        _registro(logging.INFO, "x")))["severity"] == "INFO"
+
+
+def test_formato_json_leva_o_traceback_na_mesma_linha():
+    """Uma linha por evento: o traceback em linhas soltas viraria N entradas
+    sem código nenhum, cada uma com severidade padrão."""
+    import json
+
+    from api import logs
+
+    saida = logs.FormatoJson().format(_registro(logging.ERROR, "falhou", True))
+    assert "\n" not in saida
+    linha = json.loads(saida)
+    assert linha["severity"] == "ERROR"
+    assert "ValueError: estourou" in linha["message"]
+
+
+def test_formato_json_ligado_pela_configuracao(monkeypatch):
+    from api import logs
+    from api.config import settings
+
+    monkeypatch.setattr(settings, "log_format", "json")
+    try:
+        logs.configurar()
+        raiz = logging.getLogger()
+        assert any(isinstance(h.formatter, logs.FormatoJson)
+                   for h in raiz.handlers)
+        # o uvicorn tem handler próprio, em texto, no stderr: sem isto cada
+        # linha dele chegava ao Cloud Logging como ERROR
+        assert logging.getLogger("uvicorn.error").handlers == []
+        assert logging.getLogger("uvicorn.error").propagate is True
+        # O de acesso fica mudo: o middleware já escreve uma linha por
+        # requisição, com o código. Propagado para o root ele voltava mesmo
+        # com `--no-access-log` — o uvicorn decide se loga pelo
+        # `hasHandlers()`, que enxerga o handler do root.
+        acesso = logging.getLogger("uvicorn.access")
+        assert acesso.handlers == [] and acesso.propagate is False
+        assert not acesso.hasHandlers()
+    finally:
+        monkeypatch.setattr(settings, "log_format", "texto")
+        logs.configurar()
