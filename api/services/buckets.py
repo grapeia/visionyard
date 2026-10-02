@@ -12,7 +12,7 @@ aparece sem imagem em vez de falhar.
 
 Único serviço sem uma linha de SQL: o que ele guarda é a cerca (a allowlist de
 buckets) e a forma da resposta. O acesso ao GCS em si é a porta de
-`api/storage.py`.
+`api/storage.py`, e a allowlist vem de `services/parameters.py`.
 """
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ from fastapi import HTTPException, status
 from starlette.concurrency import run_in_threadpool
 
 from .. import storage
-from ..config import settings
+from . import parameters
 
 logger = logging.getLogger(__name__)
 
@@ -34,14 +34,14 @@ MAX_OBJETOS = 60
 MAX_MINIATURAS = 24
 
 
-def configurados() -> list[dict[str, str]]:
+async def configurados() -> list[dict[str, str]]:
     """Buckets pré-definidos na instalação.
 
-    Vem de configuração e não do banco: é infraestrutura do ambiente, muda
-    junto com o deploy, e digitar o nome à mão toda vez convida a erro de
-    digitação que só aparece como 'nenhuma imagem encontrada'.
+    Vem da parametrização e não do que o usuário digita: digitar o nome à mão
+    toda vez convida a erro de digitação que só aparece como 'nenhuma imagem
+    encontrada'.
     """
-    return [{"nome": b} for b in settings.buckets]
+    return [{"nome": b} for b in await parameters.valor("buckets")]
 
 
 def _navegar(bucket: str, prefixo: str) -> dict:
@@ -97,7 +97,7 @@ async def navegar(bucket: str, prefixo: str) -> dict[str, Any]:
     # Lista vazia nega tudo, em vez de liberar tudo. A conta de serviço desta
     # máquina enxerga o projeto inteiro do GCP, então uma allowlist que falha
     # aberta transformaria a rota num listador de qualquer bucket da empresa.
-    if bucket not in settings.buckets:
+    if bucket not in await parameters.valor("buckets"):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "bucket não disponível")
 
     try:

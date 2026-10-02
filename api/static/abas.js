@@ -10,6 +10,7 @@ import { carregarDevices } from "./pool.js";
 import { carregarProjetoTab } from "./projeto.js";
 import { carregarDados, dados } from "./rotulagem.js";
 import { carregarRuns, pararPollRun } from "./treino.js";
+import { carregarParametros } from "./parametros.js";
 import { carregarUsuarios } from "./usuarios.js";
 
 $("abas").addEventListener("click", (ev) => {
@@ -116,6 +117,16 @@ const AJUDA = {
       <dt>Membro do projeto</dt><dd>O papel vale por projeto: a mesma pessoa
         pode ser engineer num projeto e annotator em outro.</dd>
     </dl>`],
+  parametros: ["Parâmetros", `
+    <dl>
+      <dt>Origem</dt><dd><b>travado no ambiente</b>: o servidor define por
+        variável, e ela vence esta tela; <b>definido aqui</b>: gravado nesta
+        tela; <b>padrão</b>: ninguém definiu.</dd>
+      <dt>Quando vale</dt><dd>Na hora para a API; para o executor de
+        importação rodando à parte, em até 10 segundos.</dd>
+      <dt>Credencial</dt><dd>Não se cadastra aqui: a API usa a do servidor.
+        "Testar acesso" mostra qual conta é e o que ela consegue fazer.</dd>
+    </dl>`],
 };
 
 $("botaoAjuda").addEventListener("click", () => {
@@ -136,7 +147,7 @@ export function mostrarAba(nome) {
   for (const [aba, el] of Object.entries({
     projeto: "abaProjeto", datasets: "abaDatasets", dados: "abaDados",
     treino: "abaTreino", modelos: "abaModelos", devices: "abaDevices",
-    usuarios: "abaUsuarios",
+    usuarios: "abaUsuarios", parametros: "abaParametros",
   })) $(el).hidden = aba !== nome;
   // Sair da aba de treino encerra o polling ao vivo — senão ele segue batendo
   // na API em segundo plano por uma tela que ninguém está vendo.
@@ -147,4 +158,5 @@ export function mostrarAba(nome) {
   if (nome === "modelos") carregarModelos().catch(erroAviso);
   if (nome === "devices") carregarDevices().catch(erroAviso);
   if (nome === "usuarios") carregarUsuarios().catch(erroAviso);
+  if (nome === "parametros") carregarParametros().catch(erroAviso);
 }

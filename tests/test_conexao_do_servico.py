@@ -41,7 +41,8 @@ MODULOS = ["audit.py", "auth.py", "deps.py", "main.py",
            "importers/runner.py",
            "services/agents.py", "services/datasets.py",
            "services/devices.py", "services/imports.py", "services/jobs.py",
-           "services/models.py", "services/prelabel.py",
+           "services/models.py", "services/parameters.py",
+           "services/prelabel.py",
            "services/projects.py", "services/samples.py",
            "services/training.py", "services/users.py"]
 

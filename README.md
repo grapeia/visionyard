@@ -107,6 +107,10 @@ borda, onde o torch vem do fornecedor da plataforma. Ver
 ## Configuração
 
 Tudo por variável de ambiente com prefixo `VISIONYARD_` (lidas de `.env`).
+Buckets, bucket e prefixo de modelos e validade da URL do agente também podem
+ser definidos na aba **Parâmetros** (superusuário), sem reiniciar — mas a
+variável, quando definida, vence e trava o campo na tela. A mesma aba testa o
+que a credencial da API consegue fazer em cada bucket.
 As que importam no primeiro dia:
 
 | Variável | Para quê |

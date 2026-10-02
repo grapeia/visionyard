@@ -100,6 +100,10 @@ def clean_tables():
     with psycopg.connect(TEST_DSN, autocommit=True) as conn:
         conn.execute("TRUNCATE app_user, project, login_attempt, audit_log,"
                      " device CASCADE")
+    # O cache dos parâmetros é do processo e vale segundos: sem isto o que um
+    # teste gravou seguiria valendo no seguinte, com a tabela já vazia.
+    from api.services import parameters
+    parameters.esquecer()
     yield
 
 

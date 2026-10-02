@@ -25,6 +25,7 @@ from .routers import devices as devices_router
 from .routers import imports as imports_router
 from .routers import jobs as jobs_router
 from .routers import models as models_router
+from .routers import parameters as parameters_router
 from .routers import prelabel as prelabel_router
 from .routers import projects as projects_router
 from .routers import samples as samples_router
@@ -77,6 +78,7 @@ app.include_router(devices_router.router, prefix="/v1")
 app.include_router(imports_router.router, prefix="/v1")
 app.include_router(jobs_router.router, prefix="/v1")
 app.include_router(models_router.router, prefix="/v1")
+app.include_router(parameters_router.router, prefix="/v1")
 app.include_router(prelabel_router.router, prefix="/v1")
 app.include_router(projects_router.router, prefix="/v1")
 app.include_router(samples_router.router, prefix="/v1")

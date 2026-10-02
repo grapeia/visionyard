@@ -705,6 +705,16 @@ dialog .acoes { display: flex; gap: 8px; justify-content: flex-end; margin-top: 
   border: none; background: none; color: var(--acento); cursor: pointer; }
 
 #painelUsuarios { padding: 20px 24px; max-width: 860px; }
+#painelParametros { padding: 20px 24px; max-width: 860px; }
+#painelParametros input, #painelParametros textarea { width: 100%;
+  margin-top: 8px; }
+#painelParametros textarea { background: var(--aco-900); color: var(--texto);
+  border: 1px solid var(--trilho); border-radius: var(--r); padding: 7px 10px;
+  font-family: var(--mono); resize: vertical; }
+#painelParametros .diag { display: block; margin-top: 18px; }
+.diag-buckets { list-style: none; margin: 8px 0 0; padding: 0; }
+.diag-buckets li { display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 6px 0; border-top: 1px solid var(--trilho); }
 .lista-users, .lista-membros { list-style: none; margin: 0; padding: 0; }
 .user { background: var(--aco-800); border: 1px solid var(--trilho);
   border-radius: var(--r); padding: 12px 14px; margin-bottom: 10px; }

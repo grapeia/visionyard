@@ -85,6 +85,79 @@ def como_assinar(c: Any) -> dict[str, str] | None:
             "access_token": cred.token}
 
 
+# O que cada papel de bucket precisa: o de imagens é lido (galeria e agente),
+# o de modelos é gravado no fim do treino e lido no pré-tag, export e deploy.
+PERMISSOES_IMAGENS = ["storage.objects.list", "storage.objects.get"]
+PERMISSOES_MODELOS = ["storage.objects.create", "storage.objects.get"]
+
+
+def _falha(e: Exception) -> str:
+    """Erro do fornecedor encurtado. Só vai para a tela do superusuário — a
+    que existe justamente para dizer o que está errado na credencial —, e
+    não para `job.error` ou rota que um viewer leia."""
+    return f"{type(e).__name__}: {str(e)[:200]}"
+
+
+# Os dois erros que quem configura mais vê, em português. O resto vai cru
+# (encurtado): é diagnóstico, e esconder o motivo não ajuda ninguém.
+FALHAS_DE_BUCKET = {
+    "NotFound": "bucket não existe — confira o nome",
+    "Forbidden": "a conta não tem acesso a este bucket",
+}
+
+
+def diagnosticar(buckets: list[str], models_bucket: str) -> dict[str, Any]:
+    """O que a credencial da API consegue fazer, sem gravar nada.
+
+    `test_iam_permissions` responde quais das permissões pedidas a conta tem
+    naquele bucket — inclusive a de criar objeto — sem criar objeto nenhum, e
+    não exige permissão de ler a política do bucket.
+    """
+    out: dict[str, Any] = {"conta": None, "origem": None, "assina": False,
+                           "erro": None, "buckets": []}
+    try:
+        c = cliente()
+    except Exception as e:
+        out["erro"] = _falha(e)
+        return out
+    cred: Any = getattr(c, "_credentials", None)
+    if hasattr(cred, "signer_email"):
+        out["origem"] = "chave de conta de serviço"
+    elif hasattr(cred, "service_account_email"):
+        out["origem"] = "identidade da máquina (VM/Cloud Run)"
+    else:
+        out["origem"] = "credencial de usuário — não assina URL"
+    # Assina de verdade uma URL qualquer, em vez de só olhar a credencial: na
+    # VM o que decide é a permissão `signBlob`, e ela só aparece tentando. A
+    # assinatura não toca o objeto — ele nem precisa existir.
+    try:
+        assinante = como_assinar(c)
+        if assinante is not None:
+            alvo = models_bucket or (buckets[0] if buckets else "diagnostico")
+            c.bucket(alvo).blob(".visionyard-diagnostico").generate_signed_url(
+                version="v4", expiration=timedelta(minutes=1), method="GET",
+                **assinante)
+            out["assina"] = True
+    except Exception as e:
+        out["erro"] = _falha(e)
+    out["conta"] = (getattr(cred, "signer_email", None)
+                    or getattr(cred, "service_account_email", None))
+
+    alvos = [(b, "imagens", PERMISSOES_IMAGENS) for b in buckets]
+    if models_bucket:
+        alvos.append((models_bucket, "modelos", PERMISSOES_MODELOS))
+    for nome, papel, pedidas in alvos:
+        item: dict[str, Any] = {"bucket": nome, "papel": papel,
+                                "faltando": [], "erro": None}
+        try:
+            tem = set(c.bucket(nome).test_iam_permissions(pedidas))
+            item["faltando"] = [p for p in pedidas if p not in tem]
+        except Exception as e:
+            item["erro"] = FALHAS_DE_BUCKET.get(type(e).__name__) or _falha(e)
+        out["buckets"].append(item)
+    return out
+
+
 def assinar_ou_falhar(uris: list[str], minutos: int, metodo: str = "GET",
                       content_type: str | None = None) -> dict[str, str]:
     """URL assinada para cada `gs://`, para o AGENTE — sem meio-termo.

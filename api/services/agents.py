@@ -30,6 +30,7 @@ from contracts import jobs
 
 from .. import db, storage
 from ..config import settings
+from . import parameters
 
 logger = logging.getLogger(__name__)
 
@@ -274,35 +275,52 @@ def _job_ativo(job: dict) -> None:
                             f"job já está '{job['status']}'")
 
 
-def _base_modelos() -> str:
-    if not settings.models_bucket:
+async def _base_modelos(conn: db.Conn) -> str:
+    bucket = await parameters.valor("models_bucket", conn)
+    if not bucket:
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
-            "a API não tem VISIONYARD_MODELS_BUCKET configurado — sem onde "
-            "publicar")
-    return f"gs://{settings.models_bucket}/{settings.models_prefix}"
+            "a instalação não tem bucket de modelos configurado — sem onde "
+            "publicar (Parâmetros, ou VISIONYARD_MODELS_BUCKET)")
+    prefixo = await parameters.valor("models_prefix", conn)
+    return f"gs://{bucket}/{prefixo}"
 
 
-def _destino_base(job: dict, p: jobs.Train | jobs.Export) -> str:
+async def _destino_base(conn: db.Conn, job: dict,
+                        p: jobs.Train | jobs.Export) -> str:
     """Pasta onde o job publica. O treino escreve por `run_id` e o export por
     `job_id` — os dois únicos por job, então dois jobs nunca escrevem no mesmo
     objeto. O export antes escrevia em `v<N>/builds/<arquivo>`, e dois exports
     da mesma versão (fp16 e int8 dão o mesmo `best.engine`) sobrescreviam um o
     peso que o outro já tinha registrado com outro sha256."""
-    base = _base_modelos()
+    base = await _base_modelos(conn)
     if isinstance(p, jobs.Train):
         return f"{base}/{p.project_slug}/{p.model_slug}/{p.run_id}/"
     return (f"{base}/{p.project_slug}/{p.model_slug}/v{p.version}/builds/"
             f"{job['id']}/")
 
 
-def _confere_destino(uri: str, base: str) -> None:
+async def _confere_destino(conn: db.Conn, job: dict,
+                           p: jobs.Train | jobs.Export, uri: str) -> None:
     """O que o agente registra tem de estar onde a API mandou publicar.
 
     Sem isto a assinatura teria uma porta dos fundos: o agente registraria um
     `weights_uri` qualquer (o peso de outro projeto, uma imagem de outro
     cliente) e o próximo pré-tag ou export, que lê o peso pelo payload, faria
-    a API assinar a leitura dele."""
+    a API assinar a leitura dele.
+
+    Vale primeiro o que `assinar_upload` entregou a ESTE job (`job_upload`),
+    e não o caminho recalculado agora: bucket e prefixo são parâmetros da
+    tela, e mudar um deles entre o upload e o registro fazia o treino de horas
+    terminar em 422 com o peso órfão. O caminho recalculado fica como segunda
+    porta só para o agente 0.1, que publica sozinho e nunca passou pelo
+    `/upload`."""
+    entregue = await db.fetch_one(
+        "SELECT 1 FROM job_upload WHERE job_id = %s AND uri = %s",
+        (job["id"], uri), conn=conn)
+    if entregue is not None:
+        return
+    base = await _destino_base(conn, job, p)
     if not (uri.startswith(base) and NOME_ARQUIVO.fullmatch(uri[len(base):])):
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
                             "o arquivo registrado não está onde a API mandou "
@@ -314,10 +332,10 @@ async def _assinar(uris: list[str], metodo: str = "GET",
     """Assina fora do event loop — com credencial de VM, cada assinatura é
     uma ida ao IAM. Falha é de infra: o texto do fornecedor cita conta de
     serviço, então vai para o log e o agente recebe a mensagem genérica."""
+    minutos = await parameters.valor("agent_url_minutes")
     try:
         return await run_in_threadpool(
-            storage.assinar_ou_falhar, uris, settings.agent_url_minutes,
-            metodo, content_type)
+            storage.assinar_ou_falhar, uris, minutos, metodo, content_type)
     except Exception:
         logger.exception("assinatura de URL para o agente falhou")
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -382,7 +400,7 @@ async def assinar_upload(job_id: str, device_id: str, arquivo: str) -> dict:
     if not NOME_ARQUIVO.fullmatch(arquivo):
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
                             "nome de arquivo inválido")
-    async with db.connection() as conn:
+    async with db.connection() as conn, conn.transaction():
         job = await job_da_maquina(conn, job_id, device_id)
         _job_ativo(job)
         _confere_tipo(job, jobs.Train.TIPO, jobs.Export.TIPO)
@@ -390,7 +408,12 @@ async def assinar_upload(job_id: str, device_id: str, arquivo: str) -> dict:
             jobs.Train.de_payload(job["payload"])
             if job["type"] == jobs.Train.TIPO
             else jobs.Export.de_payload(job["payload"]))
-    uri = _destino_base(job, p) + arquivo
+        uri = await _destino_base(conn, job, p) + arquivo
+        # Gravado antes de assinar: o registro confere contra esta linha, e
+        # uma assinatura que falhe depois só deixa um destino nunca usado.
+        await db.execute(
+            "INSERT INTO job_upload (job_id, uri) VALUES (%s, %s)"
+            " ON CONFLICT DO NOTHING", (job_id, uri), conn=conn)
     url = (await _assinar([uri], "PUT", TIPO_UPLOAD))[uri]
     return {"uri": uri, "url": url, "headers": {"Content-Type": TIPO_UPLOAD}}
 
@@ -577,7 +600,7 @@ async def registrar_modelo(job_id: str, device_id: str, *, weights_uri: str,
     ao bucket. É INSERT único: model_version não aceita UPDATE (008)."""
     async with db.connection() as conn, conn.transaction():
         job, p = await job_com_payload(conn, job_id, device_id, jobs.Train)
-        _confere_destino(weights_uri, _destino_base(job, p))
+        await _confere_destino(conn, job, p, weights_uri)
         run = await db.fetch_one(
             "SELECT id, schema_id, created_by FROM training_run"
             " WHERE job_id = %s", (job_id,), conn=conn)
@@ -625,7 +648,7 @@ async def registrar_build(job_id: str, device_id: str, *, formato: str, uri: str
     máquina que compilou que define para qual classe o engine vale."""
     async with db.connection() as conn, conn.transaction():
         job, p = await job_com_payload(conn, job_id, device_id, jobs.Export)
-        _confere_destino(uri, _destino_base(job, p))
+        await _confere_destino(conn, job, p, uri)
         d = await _device_do_token(conn, device_id)
         alvo = {**target, "device_class": d["device_class"]}
         row = await db.fetch_one(

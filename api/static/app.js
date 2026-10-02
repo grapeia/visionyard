@@ -12,6 +12,7 @@ import "./abas.js";
 import "./anotador.js";
 import "./pool.js";
 import "./prelabel.js";
+import "./parametros.js";
 import "./usuarios.js";
 import { carregarDatasets } from "./datasets.js";
 import { carregarModelos, modelos } from "./modelos.js";
@@ -28,6 +29,7 @@ export async function iniciar() {
   // Administração da instalação: só o superusuário cadastra devices e usuários.
   $("abaBotaoDevices").hidden = !eu.is_superuser;
   $("abaBotaoUsuarios").hidden = !eu.is_superuser;
+  $("abaBotaoParametros").hidden = !eu.is_superuser;
   $("telaEntrada").hidden = true;
   $("telaApp").hidden = false;
 

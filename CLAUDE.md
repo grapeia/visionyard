@@ -290,13 +290,22 @@ pede.
   artefato do payload — e recusa o lote inteiro se uma URI for de fora.
   `assinar_upload` escolhe o caminho; o agente só batiza a folha. E
   `registrar_modelo`/`registrar_build` conferem (`_confere_destino`) que o
-  URI registrado está debaixo desse caminho: sem isso o agente registraria um
+  URI registrado é um que `assinar_upload` entregou àquele job (`job_upload`)
+  — e não o caminho recalculado, que muda se alguém editar o prefixo no meio;
+  o recalculado só vale para o agente 0.1. Sem isso o agente registraria um
   `weights_uri` qualquer, e o próximo pré-tag faria a API assinar a leitura
   dele. Não afrouxe nenhuma das três achando que as outras cobrem.
 - **Split é sorteado no congelamento, uma vez.** Sortear no treino torna dois
   runs incomparáveis.
 
 ## Armadilhas conhecidas
+
+- **Parâmetro editável na tela não se lê de `settings`.** Buckets, bucket e
+  prefixo de modelos e `agent_url_minutes` vêm de
+  `services/parameters.py: valor()`, que aplica "ambiente vence a tela" e o
+  cache de 10 s. Ler `settings.models_bucket` direto ignora o que o
+  superusuário gravou. Quem já tem conexão na mão passa `conn`: com o cache
+  vencido, `valor()` sem ela toma uma segunda vaga do pool.
 
 - **Transação não faz ler-e-inserir virar atômico.** Em READ COMMITTED cada
   comando pega snapshot novo, então `SELECT ... WHERE email = x` seguido de

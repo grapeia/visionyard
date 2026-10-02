@@ -54,7 +54,7 @@ async def listar_buckets(project_slug: Annotated[str, P()]):
     autenticado — inclusive um `annotator` terceirizado — enxergaria o
     conteúdo de todos os buckets da instalação.
     """
-    return svc.configurados()
+    return await svc.configurados()
 
 
 @router.get("/projects/{project_slug}/buckets/browse",

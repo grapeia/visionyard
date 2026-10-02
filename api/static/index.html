@@ -54,6 +54,7 @@
     <button data-aba="modelos">Modelos</button>
     <button data-aba="devices" id="abaBotaoDevices" hidden>Pool</button>
     <button data-aba="usuarios" id="abaBotaoUsuarios" hidden>Usuários</button>
+    <button data-aba="parametros" id="abaBotaoParametros" hidden>Parâmetros</button>
     <span class="espaco"></span>
     <button id="botaoAjuda" title="O que é cada coisa nesta tela"
       aria-label="Ajuda da tela">Help</button>
@@ -138,6 +139,14 @@
       <button class="primario" id="botaoNovoUsuario">Novo usuário</button>
     </div>
     <div id="painelUsuarios"><p class="carregando">Carregando…</p></div>
+  </div>
+
+  <!-- aba Parâmetros (superusuário) -->
+  <div id="abaParametros" hidden>
+    <div class="barra-dados">
+      <span class="rotulo">Parâmetros da instalação</span>
+    </div>
+    <div id="painelParametros"><p class="carregando">Carregando…</p></div>
   </div>
 
   <!-- aba Máquinas (superusuário) -->

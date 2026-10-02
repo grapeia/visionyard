@@ -52,6 +52,12 @@ agentes** — o agente 0.2 depende das rotas de assinatura, e a API nova recusa
 build registrado no caminho antigo do agente 0.1 (`v<N>/builds/<arquivo>`,
 que dois exports da mesma versão sobrescreviam).
 
+Enquanto houver agente 0.1 no ar, não mude o bucket nem o prefixo de modelos
+(aba **Parâmetros**): ele publica no caminho que calcula sozinho, e a API só
+o aceita se ainda for o caminho atual — o treino termina em falha, com o peso
+no bucket sem versão registrada. O agente 0.2 não tem esse problema: a API
+confere contra o destino que ela própria entregou.
+
 ## Rodar
 
 ```bash
