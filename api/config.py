@@ -84,6 +84,18 @@ class Settings(BaseSettings):
     # treino lento seria reclamado por engano e rodaria duas vezes.
     agent_job_stale_seconds: int = 180
 
+    # Onde os pesos treinados e os builds compilados são publicados. Quem
+    # escolhe o caminho é a API, não o agente: ela assina o PUT e depois só
+    # aceita registrar um modelo que esteja debaixo do caminho que ela mesma
+    # deu. Vazio significa que treino e export não têm onde publicar.
+    models_bucket: str = ""
+    models_prefix: str = "models"
+
+    # Validade da URL assinada que o agente recebe para ler ou gravar no
+    # bucket. Ele pede na hora de usar (lote de imagens, peso, upload no fim
+    # do treino), então o prazo só precisa cobrir a transferência — não o job.
+    agent_url_minutes: int = 60
+
     # Redes dos proxies reversos que terminam TLS na frente da API (CIDR).
     # Só destes endereços o X-Forwarded-For é aceito — vazio significa "não há
     # proxy", e vale sempre o IP real da conexão. Preencher indevidamente

@@ -1,7 +1,7 @@
 """Materialização do manifesto no layout YOLO — sem GPU nem GCS.
 
-O download do GCS é substituído por uma função que escreve bytes de mentira; o
-que importa aqui é a árvore de arquivos, o formato do rótulo e o cache por md5.
+O download é substituído por uma função que escreve bytes de mentira; o que
+importa aqui é a árvore de arquivos, o formato do rótulo e o cache por md5.
 """
 from __future__ import annotations
 
@@ -11,20 +11,27 @@ from pathlib import Path
 from agent import materialize
 
 
+def _baixador(baixar_um):
+    """O `baixar` em lote que o executor passa, sobre um download falso."""
+    def baixar(pares, progresso):
+        for uri, destino in pares:
+            baixar_um(uri, destino)
+        progresso(len(pares))
+    return baixar
+
+
 def _manifesto(tmp: Path, linhas: list[dict]) -> Path:
     p = tmp / "items.jsonl"
     p.write_text("\n".join(json.dumps(x) for x in linhas) + "\n")
     return p
 
 
-def test_materializar_gera_arvore_yolo(tmp_path, monkeypatch):
+def test_materializar_gera_arvore_yolo(tmp_path):
     baixados = []
 
     def fake_baixar(uri, destino):
         baixados.append(uri)
         Path(destino).write_bytes(b"imagem-falsa")
-
-    monkeypatch.setattr(materialize.gcs, "baixar", fake_baixar)
 
     itens = [
         {"uri": "gs://b/a.jpg", "md5": "a" * 32, "split": "train",
@@ -35,7 +42,8 @@ def test_materializar_gera_arvore_yolo(tmp_path, monkeypatch):
     items = _manifesto(tmp_path, itens)
     destino = tmp_path / "ds"
     conta = materialize.materializar(items, ["classe_a", "classe_b"],
-                                     destino, tmp_path / "cache", lambda *_: None)
+                                     destino, tmp_path / "cache", lambda *_: None,
+                                     baixar=_baixador(fake_baixar))
 
     assert conta["train"] == 1 and conta["val"] == 1
     # imagens no lugar certo
@@ -52,15 +60,13 @@ def test_materializar_gera_arvore_yolo(tmp_path, monkeypatch):
     assert "nc: 2" in dy
 
 
-def test_roi_recorta_imagem_e_reprojeta_caixas(tmp_path, monkeypatch):
+def test_roi_recorta_imagem_e_reprojeta_caixas(tmp_path):
     """Com ROI: a imagem é recortada, a caixa central é reprojetada para o
     espaço do recorte, e o vizinho (centro fora da ROI) é descartado."""
     from PIL import Image
 
     def fake_baixar(uri, destino):
         Image.new("RGB", (100, 100), (120, 120, 120)).save(destino, "JPEG")
-
-    monkeypatch.setattr(materialize.gcs, "baixar", fake_baixar)
 
     itens = [{
         "uri": "gs://b/a.jpg", "md5": "a" * 32, "split": "train",
@@ -73,7 +79,8 @@ def test_roi_recorta_imagem_e_reprojeta_caixas(tmp_path, monkeypatch):
     destino = tmp_path / "ds"
     roi = (0.25, 0.0, 0.5, 0.5)          # crop x[25,75] y[0,50] → 50×50
     materialize.materializar(items, ["c0"], destino, tmp_path / "cache",
-                             lambda *_: None, roi=roi)
+                             lambda *_: None, roi=roi,
+                             baixar=_baixador(fake_baixar))
 
     img = Image.open(destino / "images" / "train" / f"{'a' * 32}.jpg")
     assert img.size == (50, 50), "imagem não foi recortada para a ROI"
@@ -82,7 +89,7 @@ def test_roi_recorta_imagem_e_reprojeta_caixas(tmp_path, monkeypatch):
     assert rot == "0 0.500000 0.500000 0.400000 0.400000"
 
 
-def test_cache_por_md5_nao_baixa_de_novo(tmp_path, monkeypatch):
+def test_cache_por_md5_nao_baixa_de_novo(tmp_path):
     """Mesmo md5 em dois itens (a foto entra em treino e reaparece): baixa uma
     vez só. É o md5 do conteúdo, então cache trocado é impossível."""
     n = {"baixas": 0}
@@ -91,11 +98,10 @@ def test_cache_por_md5_nao_baixa_de_novo(tmp_path, monkeypatch):
         n["baixas"] += 1
         Path(destino).write_bytes(b"x")
 
-    monkeypatch.setattr(materialize.gcs, "baixar", fake_baixar)
-
     itens = [{"uri": "gs://b/a.jpg", "md5": "a" * 32, "split": "train", "boxes": []},
              {"uri": "gs://b/a.jpg", "md5": "a" * 32, "split": "val", "boxes": []}]
     items = _manifesto(tmp_path, itens)
     materialize.materializar(items, ["c0"], tmp_path / "ds",
-                             tmp_path / "cache", lambda *_: None)
+                             tmp_path / "cache", lambda *_: None,
+                             baixar=_baixador(fake_baixar))
     assert n["baixas"] == 1, "baixou a mesma imagem duas vezes"

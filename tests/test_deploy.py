@@ -7,7 +7,7 @@ import pytest
 from .conftest import TEST_DSN
 from .test_datasets import PROJ
 from .test_models import _produzir_modelo
-from .test_training import _device, _h
+from .test_training import _device, _h, _publicar
 
 pytestmark = pytest.mark.anyio
 
@@ -21,7 +21,8 @@ async def _modelo_com_build(admin, client, tmp_path) -> None:
     dev = await _device(admin, {"infer": True}, slug="build-box")
     job = (await client.post("/v1/agent/claim", headers=_h(dev["token"]))).json()["job"]
     await client.post(f"/v1/agent/jobs/{job['id']}/build", json={
-        "format": "onnx", "uri": "gs://b/MODELOS-VISIONYARD/v1/builds/best.onnx",
+        "format": "onnx",
+        "uri": await _publicar(client, dev["token"], job["id"], "best.onnx"),
         "sha256": "aa" * 32, "bytes": 4_000_000,
         "target": {"imgsz": 640}, "bench": {}}, headers=_h(dev["token"]))
 
@@ -227,7 +228,9 @@ async def test_deploy_engine_classe_incompativel_recusa(admin, client, tmp_path)
     r = await client.post("/v1/agent/claim", headers=_h(builder["token"]))
     job = r.json()["job"]
     await client.post(f"/v1/agent/jobs/{job['id']}/build", json={
-        "format": "engine", "uri": "gs://b/x.engine", "sha256": "bb" * 32,
+        "format": "engine",
+        "uri": await _publicar(client, builder["token"], job["id"], "x.engine"),
+        "sha256": "bb" * 32,
         "bytes": 1, "target": {"precision": "int8"}, "bench": {}},
         headers=_h(builder["token"]))
     # máquina-alvo de OUTRA classe

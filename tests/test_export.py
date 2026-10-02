@@ -5,7 +5,7 @@ import pytest
 
 from .test_datasets import PROJ
 from .test_models import _produzir_modelo
-from .test_training import _device, _h
+from .test_training import _device, _h, _publicar
 
 pytestmark = pytest.mark.anyio
 
@@ -30,7 +30,8 @@ async def test_export_enfileira_e_registra_build(admin, client, tmp_path):
 
     # o agente registra o build (a máquina define o device_class do alvo)
     r = await client.post(f"/v1/agent/jobs/{job['id']}/build", json={
-        "format": "engine", "uri": "gs://b/MODELOS-VISIONYARD/v1/builds/best.engine",
+        "format": "engine",
+        "uri": await _publicar(client, tok, job["id"], "best.engine"),
         "sha256": "ef" * 32, "bytes": 4_000_000,
         "target": {"precision": "int8", "imgsz": 640, "dla": True},
         "bench": {"p50_ms": 8.6, "p95_ms": 10.2}}, headers=_h(tok))
@@ -85,7 +86,9 @@ async def test_build_mesmo_alvo_nao_duplica(admin, client, tmp_path):
         f"/v1/projects/{PROJ['slug']}/models/detector/versions/1/export",
         json={"format": "onnx"})
     tok, job = await _claim_export(admin, client)
-    corpo = {"format": "onnx", "uri": "gs://b/x.onnx", "sha256": "aa" * 32,
+    corpo = {"format": "onnx",
+             "uri": await _publicar(client, tok, job["id"], "x.onnx"),
+             "sha256": "aa" * 32,
              "bytes": 1, "target": {"imgsz": 640}, "bench": {}}
     r1 = await client.post(f"/v1/agent/jobs/{job['id']}/build", json=corpo,
                            headers=_h(tok))

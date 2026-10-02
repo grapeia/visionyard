@@ -22,8 +22,7 @@ from .materialize import materializar, roi_tupla
 from .train_worker import MARCADOR
 
 
-def executar(cli: Client, job: dict, work_dir: Path, models_bucket: str,
-             models_prefix: str) -> None:
+def executar(cli: Client, job: dict, work_dir: Path) -> None:
     job_id = job["id"]
     p = jobs.Train.de_payload(job["payload"])
     run_id = p.run_id
@@ -50,7 +49,9 @@ def executar(cli: Client, job: dict, work_dir: Path, models_bucket: str,
     items.parent.mkdir(parents=True, exist_ok=True)
     cli.download_items(job_id, str(items))
     conta = materializar(items, classes, raiz / "ds",
-                         work_dir / "cache-imagens", log, roi=roi)
+                         work_dir / "cache-imagens", log, roi=roi,
+                         baixar=lambda pares, prog: gcs.baixar_lote(
+                             cli, job_id, pares, prog))
 
     # ------------------------------------------------------------------ #
     # 2. Treinar num subprocesso fresco, transmitindo métricas por época
@@ -119,16 +120,9 @@ def executar(cli: Client, job: dict, work_dir: Path, models_bucket: str,
         cli.finish(job_id, "failed", error=f"peso não encontrado: {best}")
         return
 
-    if not models_bucket:
-        cli.finish(job_id, "failed",
-                   error="VISIONYARD_MODELS_BUCKET não configurado — sem onde "
-                         "publicar o peso")
-        return
-
-    destino = (f"gs://{models_bucket}/{models_prefix}/"
-               f"{p.project_slug}/{p.model_slug}/{run_id}/best.pt")
-    log(f"publicando peso em {destino}")
-    gcs.enviar(best, destino)
+    log("publicando o peso")
+    destino = gcs.publicar(cli, job_id, best)
+    log(f"peso publicado em {destino}")
     sha = gcs.sha256_arquivo(best)
     reg = cli.register_model(job_id, destino, sha, best.stat().st_size,
                              melhor_metrics)

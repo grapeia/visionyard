@@ -2,8 +2,8 @@
 devolve as caixas previstas.
 
 Leve perto do treino: baixa o peso uma vez, prevê imagem a imagem, envia em
-lotes. As imagens vêm do GCS (mesma credencial do agente); nenhuma anotação
-humana é tocada — a decisão de o que sobrescrever é da API.
+lotes. As imagens vêm do GCS por URL que a API assina, um lote por vez;
+nenhuma anotação humana é tocada — a decisão de o que sobrescrever é da API.
 """
 from __future__ import annotations
 
@@ -41,7 +41,7 @@ def executar(cli: Client, job: dict, work_dir: Path) -> None:
     raiz = work_dir / job_id
     raiz.mkdir(parents=True, exist_ok=True)
     peso = raiz / "model.pt"
-    gcs.baixar(p.weights_uri, peso)
+    gcs.baixar(cli, job_id, p.weights_uri, peso)
     modelo = YOLO(str(peso))
     log("modelo carregado")
 
@@ -56,15 +56,21 @@ def executar(cli: Client, job: dict, work_dir: Path) -> None:
             cli.prelabel(job_id, list(pendentes))
             pendentes.clear()
 
-    for i, alvo in enumerate(alvos):
-        uri = alvo["uri"]
+    def local(uri: str) -> Path:
         # cache por hash do URI COMPLETO, não pelo basename: dois prefixos com
         # o mesmo nome de arquivo (camA/frame1.jpg vs camB/frame1.jpg) colidiam
         # e o modelo previa na imagem errada, em silêncio.
-        chave = hashlib.sha1(uri.encode()).hexdigest()
-        img = cache / (chave + Path(uri).suffix)
-        if not img.is_file():
-            gcs.baixar(uri, img)
+        return cache / (hashlib.sha1(uri.encode()).hexdigest() + Path(uri).suffix)
+
+    for i, alvo in enumerate(alvos):
+        if i % LOTE == 0:
+            # baixa o bloco que vem antes de prevê-lo: uma assinatura por
+            # bloco, e a URL é usada logo, longe de expirar.
+            faltam = [(a["uri"], local(a["uri"])) for a in alvos[i:i + LOTE]
+                      if not local(a["uri"]).is_file()]
+            if faltam:
+                gcs.baixar_lote(cli, job_id, faltam)
+        img = local(alvo["uri"])
         res = modelo.predict(str(img), conf=conf, verbose=False)[0]
         boxes = []
         for b in res.boxes:

@@ -62,9 +62,55 @@ def cliente() -> Any:
     return _cliente
 
 
-def pode_assinar(c: Any) -> bool:
-    """Conta de serviço assina; ADC de usuário não tem chave privada."""
-    return hasattr(getattr(c, "_credentials", None), "signer_email")
+def como_assinar(c: Any) -> dict[str, str] | None:
+    """O que `generate_signed_url` precisa receber para assinar com esta
+    credencial, ou None se ela não assina.
+
+    Chave de conta de serviço assina sozinha (`{}`). A credencial da VM ou do
+    Cloud Run não tem chave privada nem `signer_email`, e sem argumento nenhum
+    a biblioteca desiste com "you need a private key": ela só assina pelo IAM
+    (`signBlob`, que a conta precisa ter sobre si mesma) quando recebe o e-mail
+    da conta e um token. O e-mail vem "default" até o primeiro refresh, que é
+    quem o resolve. ADC de usuário não assina de jeito nenhum.
+    """
+    cred: Any = getattr(c, "_credentials", None)
+    if hasattr(cred, "signer_email"):
+        return {}
+    if not hasattr(cred, "service_account_email"):
+        return None
+    if not cred.valid or cred.service_account_email == "default":
+        from google.auth.transport.requests import Request
+        cred.refresh(Request())
+    return {"service_account_email": cred.service_account_email,
+            "access_token": cred.token}
+
+
+def assinar_ou_falhar(uris: list[str], minutos: int, metodo: str = "GET",
+                      content_type: str | None = None) -> dict[str, str]:
+    """URL assinada para cada `gs://`, para o AGENTE — sem meio-termo.
+
+    O contrário de `assinar()`: lá a URL que falta vira um quadrado cinza na
+    galeria; aqui ela vira um treino que falha no meio, então qualquer falha
+    sobe. `content_type` entra na assinatura do PUT, e o agente precisa
+    mandar o mesmo cabeçalho — o GCS recusa o upload se não bater.
+    """
+    c = cliente()
+    assinante = como_assinar(c)
+    if assinante is None:
+        raise RuntimeError("a credencial da API não assina URL — é de usuário, "
+                           "não de conta de serviço")
+    out: dict[str, str] = {}
+    for uri in uris:
+        if not uri.startswith("gs://"):
+            raise ValueError(f"esperava gs://, veio {uri!r}")
+        bucket, _, chave = uri[5:].partition("/")
+        kw: dict[str, Any] = {"version": "v4", "method": metodo,
+                              "expiration": timedelta(minutes=minutos),
+                              **assinante}
+        if content_type:
+            kw["content_type"] = content_type
+        out[uri] = c.bucket(bucket).blob(chave).generate_signed_url(**kw)
+    return out
 
 
 def assinar(uris: list[str], minutos: int) -> dict[str, str]:
@@ -78,9 +124,10 @@ def assinar(uris: list[str], minutos: int) -> dict[str, str]:
     """
     try:
         c = cliente()
+        assinante = como_assinar(c)
     except Exception:
         return {}
-    if not pode_assinar(c):
+    if assinante is None:
         return {}
     out: dict[str, str] = {}
     for uri in uris:
@@ -90,7 +137,7 @@ def assinar(uris: list[str], minutos: int) -> dict[str, str]:
         try:
             out[uri] = c.bucket(bucket).blob(chave).generate_signed_url(
                 version="v4", expiration=timedelta(minutes=minutos),
-                method="GET")
+                method="GET", **assinante)
         except Exception:
             continue
     return out

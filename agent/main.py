@@ -17,7 +17,7 @@ import traceback
 from .client import ApiError, Client
 from .config import Config
 
-AGENT_VERSION = "0.1.0"
+AGENT_VERSION = "0.2.0"
 
 
 def detectar_capacidades() -> dict:
@@ -42,15 +42,13 @@ def executar_job(cli: Client, cfg: Config, job: dict) -> None:
     # mesmo nome o mypy vê uma redefinição com outra assinatura em cada ramo.
     if tipo == "train":
         from .train import executar as treinar
-        treinar(cli, job, Path(cfg.work_dir), cfg.models_bucket,
-                cfg.models_prefix)
+        treinar(cli, job, Path(cfg.work_dir))
     elif tipo == "prelabel":
         from .prelabel import executar as pretaguear
         pretaguear(cli, job, Path(cfg.work_dir))
     elif tipo == "export":
         from .export import executar as compilar
-        compilar(cli, job, Path(cfg.work_dir), cfg.models_bucket,
-                 cfg.models_prefix)
+        compilar(cli, job, Path(cfg.work_dir))
     elif tipo == "evaluate":
         from .evaluate import executar as avaliar
         avaliar(cli, job, Path(cfg.work_dir))
@@ -64,16 +62,22 @@ def executar_job(cli: Client, cfg: Config, job: dict) -> None:
 def processar_deployments(cli: Client, cfg: Config) -> None:
     """Puxa os builds pendentes para esta máquina e os coloca no caminho que o
     coletor lê. Ativar troca o link `current` — a implantação anterior é
-    superseded no controlador."""
+    superseded no controlador.
+
+    O build vem pela `url` assinada que a API manda junto; uma API anterior a
+    ela não manda, e aí a implantação falha dizendo isso."""
     from pathlib import Path
 
     from . import gcs
     for dep in cli.pending_deployments():
         try:
+            if not dep.get("url"):
+                raise RuntimeError("a API não mandou a URL do build — "
+                                   "atualize a API antes do agente")
             destino = (Path(cfg.deploy_dir) / dep["model_slug"])
             destino.mkdir(parents=True, exist_ok=True)
             arquivo = destino / f"v{dep['version']}.{dep['format']}"
-            gcs.baixar(dep["uri"], arquivo)
+            gcs.baixar_url(dep["url"], arquivo, o_que=f"build {dep['uri']}")
             # `current`: o coletor lê sempre este nome; trocar aqui é a ativação.
             # Troca ATÔMICA (symlink temporário + os.replace) para o coletor
             # nunca ver o link ausente no meio da troca.
@@ -124,8 +128,18 @@ def main() -> int:
             try:
                 executar_job(cli, cfg, job)
                 print(f"job {job['id']} concluído")
-            except ApiError:
-                raise
+            except ApiError as e:
+                # 4xx é a API recusando o pedido (URI fora do job, imagem
+                # fora do GCS): repetir dá o mesmo, então o job falha com o
+                # motivo. Sem resposta ou 5xx sobe — com a API fora do ar o
+                # finish também não chegaria, e o reaper devolve o job à fila.
+                if e.status is None or e.status >= 500:
+                    raise
+                print(f"job {job['id']} recusado pela API: {e}")
+                try:
+                    cli.finish(job["id"], "failed", error=str(e)[:2000])
+                except ApiError:
+                    pass
             except Exception as e:      # falha do job, não do agente
                 print(f"job {job['id']} falhou: {e}")
                 traceback.print_exc()

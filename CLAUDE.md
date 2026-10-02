@@ -284,6 +284,15 @@ pede.
   do corpo da requisição — o `SELECT ... WHERE s.project_id = %s` dentro do
   INSERT (`services/agents.py: gravar_prelabels`) é o que impede injetar dado em
   outro projeto.
+- **A máquina não tem credencial do bucket; a URL assinada é a credencial.**
+  `services/agents.py: assinar_leitura` assina só o que o job referencia —
+  imagens da versão (treino/avaliação), do projeto (pré-tag), e o peso ou
+  artefato do payload — e recusa o lote inteiro se uma URI for de fora.
+  `assinar_upload` escolhe o caminho; o agente só batiza a folha. E
+  `registrar_modelo`/`registrar_build` conferem (`_confere_destino`) que o
+  URI registrado está debaixo desse caminho: sem isso o agente registraria um
+  `weights_uri` qualquer, e o próximo pré-tag faria a API assinar a leitura
+  dele. Não afrouxe nenhuma das três achando que as outras cobrem.
 - **Split é sorteado no congelamento, uma vez.** Sortear no treino torna dois
   runs incomparáveis.
 

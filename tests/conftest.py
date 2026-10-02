@@ -18,6 +18,8 @@ os.environ["VISIONYARD_DATABASE_URL"] = TEST_DSN   # antes de importar api.confi
 # A instalação nasce sem bucket configurado; os testes de navegação precisam
 # de um, então fixam aqui — também antes do import de api.config.
 os.environ["VISIONYARD_BUCKETS"] = '["bucket-de-teste"]'
+# Idem para o bucket de modelos: sem ele treino e export não têm onde publicar.
+os.environ["VISIONYARD_MODELS_BUCKET"] = "modelos-de-teste"
 
 import httpx
 import psycopg
@@ -66,6 +68,26 @@ def import_root_no_tmp(tmp_path_factory):
     settings.import_root = str(tmp_path_factory.getbasetemp())
     yield
     settings.import_root = anterior
+
+
+@pytest.fixture(autouse=True)
+def assinaturas(monkeypatch) -> list[tuple[str, str]]:
+    """A assinatura de URL para o agente, sem GCS.
+
+    Autouse porque a lista de implantações pendentes assina a cada chamada:
+    sem isto toda a suíte de deploy daria 503 por falta de credencial. A URL
+    falsa diz o método e o objeto, e a lista devolvida registra o que foi
+    assinado — é por ela que os testes conferem o escopo.
+    """
+    from api import storage
+    feitas: list[tuple[str, str]] = []
+
+    def falsa(uris, minutos, metodo="GET", content_type=None):
+        feitas.extend((metodo, u) for u in uris)
+        return {u: f"https://assinada/{metodo}/{u[5:]}" for u in uris}
+
+    monkeypatch.setattr(storage, "assinar_ou_falhar", falsa)
+    return feitas
 
 
 @pytest.fixture(autouse=True)

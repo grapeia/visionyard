@@ -86,6 +86,34 @@ async def manifest_items(job_id: Annotated[str, Path()], dev: CurrentDevice):
 
 
 # --------------------------------------------------------------------------- #
+# Bucket: URL assinada (a máquina não tem credencial do GCS)
+# --------------------------------------------------------------------------- #
+
+class UrlsIn(BaseModel):
+    # Teto por chamada: o agente pede em lotes, e com credencial de VM cada
+    # assinatura é uma ida ao IAM — um pedido sem teto prende o worker.
+    uris: list[str] = Field(min_length=1, max_length=500)
+
+
+@router.post("/jobs/{job_id}/urls")
+async def assinar_leitura(body: UrlsIn, job_id: Annotated[str, Path()],
+                          dev: CurrentDevice):
+    """URL de leitura para imagens, peso ou artefato que o job referencia."""
+    return {"urls": await svc.assinar_leitura(job_id, dev.id, body.uris)}
+
+
+class UploadIn(BaseModel):
+    arquivo: str = Field(min_length=1, max_length=128)   # só o nome da folha
+
+
+@router.post("/jobs/{job_id}/upload")
+async def assinar_upload(body: UploadIn, job_id: Annotated[str, Path()],
+                         dev: CurrentDevice):
+    """Onde publicar o peso ou o build, e a URL do PUT. O caminho é da API."""
+    return await svc.assinar_upload(job_id, dev.id, body.arquivo)
+
+
+# --------------------------------------------------------------------------- #
 # Progresso
 # --------------------------------------------------------------------------- #
 

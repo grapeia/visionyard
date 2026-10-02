@@ -4,7 +4,7 @@ from __future__ import annotations
 import pytest
 
 from .test_datasets import PROJ
-from .test_training import _criar_run, _device, _h, _versao_congelada
+from .test_training import _criar_run, _device, _h, _publicar, _versao_congelada
 
 pytestmark = pytest.mark.anyio
 
@@ -20,7 +20,8 @@ async def _produzir_modelo(admin, client, tmp_path) -> None:
     await client.post(f"/v1/agent/jobs/{jid}/heartbeat",
                       json={"progress": {}}, headers=_h(tok))
     await client.post(f"/v1/agent/jobs/{jid}/model", json={
-        "weights_uri": "gs://b/MODELOS-VISIONYARD/best.pt", "sha256": "cd" * 32,
+        "weights_uri": await _publicar(client, tok, jid, "best.pt"),
+        "sha256": "cd" * 32,
         "bytes": 5_000_000, "metrics": {"mAP50-95": 0.62}}, headers=_h(tok))
     await client.post(f"/v1/agent/jobs/{jid}/finish",
                       json={"status": "succeeded"}, headers=_h(tok))

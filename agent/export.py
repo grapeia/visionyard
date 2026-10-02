@@ -30,8 +30,7 @@ def _detectar_alvo(p: jobs.Export) -> dict:
     return alvo
 
 
-def executar(cli: Client, job: dict, work_dir: Path, models_bucket: str,
-             models_prefix: str) -> None:
+def executar(cli: Client, job: dict, work_dir: Path) -> None:
     from ultralytics import YOLO
 
     job_id = job["id"]
@@ -43,16 +42,10 @@ def executar(cli: Client, job: dict, work_dir: Path, models_bucket: str,
         seq["n"] += 1
         cli.events(job_id, [{"seq": seq["n"], "level": level, "message": msg}])
 
-    if not models_bucket:
-        cli.finish(job_id, "failed",
-                   error="VISIONYARD_MODELS_BUCKET não configurado — sem onde "
-                         "publicar o build")
-        return
-
     raiz = work_dir / job_id
     raiz.mkdir(parents=True, exist_ok=True)
     peso = raiz / "model.pt"
-    gcs.baixar(p.weights_uri, peso)
+    gcs.baixar(cli, job_id, p.weights_uri, peso)
     log(f"compilando v{p.version} para {fmt} "
         f"({precision}, imgsz={imgsz}"
         + (", dinâmico" if p.dynamic else "") + ")")
@@ -100,10 +93,7 @@ def executar(cli: Client, job: dict, work_dir: Path, models_bucket: str,
     except Exception as e:
         log(f"latência não medida: {e}", "warn")
 
-    destino = (f"gs://{models_bucket}/{models_prefix}/"
-               f"{p.project_slug}/{p.model_slug}/"
-               f"v{p.version}/builds/{saida.name}")
-    gcs.enviar(saida, destino)
+    destino = gcs.publicar(cli, job_id, saida)
     sha = gcs.sha256_arquivo(saida)
     reg = cli.register_build(job_id, fmt, destino, sha, saida.stat().st_size,
                              _detectar_alvo(p), bench)

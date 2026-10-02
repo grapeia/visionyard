@@ -11,6 +11,11 @@ modelo treinado.
 register → claim → (baixa manifesto) → treina → heartbeat/logs/métricas → publica peso → finish
 ```
 
+A máquina não tem credencial de nuvem. Imagens, peso e build vêm do bucket
+por URL que a API assina para aquele job (`/jobs/{id}/urls`, em lotes), e o
+peso treinado sobe por um PUT assinado para o caminho que a API escolhe
+(`/jobs/{id}/upload`) — ela só aceita registrar o modelo que estiver lá.
+
 O *claim* só entrega um job cujas exigências (`requires`) estão contidas nas
 capacidades (`capabilities`) do device. Quem define as flags de roteamento
 (`train`/`infer`) é o admin, ao cadastrar o device na aba **Pool** da interface.
@@ -36,11 +41,16 @@ além da stdlib — não muda o que precisa ser instalado na máquina.
 |---|---|---|
 | `VISIONYARD_API_URL` | sim | `http://api.interna:8000` |
 | `VISIONYARD_AGENT_TOKEN` | sim | token do device (emitido na aba **Pool** → Máquinas → criar) |
-| `GOOGLE_APPLICATION_CREDENTIALS` | sim | conta de serviço com leitura do bucket de imagens |
-| `VISIONYARD_MODELS_BUCKET` | treino | bucket onde o peso treinado é publicado |
-| `VISIONYARD_MODELS_PREFIX` | não | prefixo dos modelos no bucket (default `models`) |
 | `VISIONYARD_WORK_DIR` | não | onde materializa dataset e roda o treino (default `./agent-work`) |
+| `VISIONYARD_DEPLOY_DIR` | não | onde o build implantado fica para o coletor ler (default `./visionyard-deploy`) |
 | `VISIONYARD_POLL_SECONDS` | não | intervalo entre polls quando ocioso (default 5) |
+| `VISIONYARD_HEARTBEAT_SECONDS` | não | intervalo do ponto de presença quando ocioso (default 30) |
+
+O bucket de modelos (`VISIONYARD_MODELS_BUCKET`) deixou de ser configuração do
+agente: é da API, que escolhe onde publicar. **Atualize a API antes dos
+agentes** — o agente 0.2 depende das rotas de assinatura, e a API nova recusa
+build registrado no caminho antigo do agente 0.1 (`v<N>/builds/<arquivo>`,
+que dois exports da mesma versão sobrescreviam).
 
 ## Rodar
 

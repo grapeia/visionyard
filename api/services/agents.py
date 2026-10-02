@@ -17,16 +17,21 @@ a máquina só mexa no que é dela (`job_da_maquina`) e só dentro do projeto do
 from __future__ import annotations
 
 import json
+import logging
 import math
+import re
 from pathlib import Path as FsPath
 from typing import Any
 
 from fastapi import HTTPException, status
+from starlette.concurrency import run_in_threadpool
 
 from contracts import jobs
 
-from .. import db
+from .. import db, storage
 from ..config import settings
+
+logger = logging.getLogger(__name__)
 
 # Chaves que o agente pode declarar: só DIAGNÓSTICO. As flags de roteamento
 # (train/infer) são do admin — se o agente pudesse mesclá-las, um dispositivo
@@ -243,6 +248,154 @@ def arquivo_do_manifesto(diretorio: FsPath, nome: str) -> FsPath:
 
 
 # --------------------------------------------------------------------------- #
+# Bucket: URL assinada no lugar da credencial do GCS na máquina
+# --------------------------------------------------------------------------- #
+
+# Assinar é emitir credencial: uma URL de leitura vale para qualquer um que a
+# tenha, até expirar. Então a API não assina "o que o agente pedir" — isso
+# seria a conta de serviço do bucket inteiro por outro caminho. Lê-se só o que
+# o job referencia, e grava-se só onde a API escolheu.
+
+# Nome de arquivo que o agente pode pedir para publicar. Sem barra e sem ponto
+# na frente: o caminho inteiro é da API, o agente só batiza a folha.
+NOME_ARQUIVO = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+
+# O PUT assinado carrega o tipo; o agente manda o mesmo cabeçalho.
+TIPO_UPLOAD = "application/octet-stream"
+
+ATIVOS = ("claimed", "running")
+
+
+def _job_ativo(job: dict) -> None:
+    """Job encerrado não ganha credencial nova: o desfecho já foi escrito, e
+    uma URL emitida agora só serviria a quem não tem mais nada a fazer."""
+    if job["status"] not in ATIVOS:
+        raise HTTPException(status.HTTP_409_CONFLICT,
+                            f"job já está '{job['status']}'")
+
+
+def _base_modelos() -> str:
+    if not settings.models_bucket:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "a API não tem VISIONYARD_MODELS_BUCKET configurado — sem onde "
+            "publicar")
+    return f"gs://{settings.models_bucket}/{settings.models_prefix}"
+
+
+def _destino_base(job: dict, p: jobs.Train | jobs.Export) -> str:
+    """Pasta onde o job publica. O treino escreve por `run_id` e o export por
+    `job_id` — os dois únicos por job, então dois jobs nunca escrevem no mesmo
+    objeto. O export antes escrevia em `v<N>/builds/<arquivo>`, e dois exports
+    da mesma versão (fp16 e int8 dão o mesmo `best.engine`) sobrescreviam um o
+    peso que o outro já tinha registrado com outro sha256."""
+    base = _base_modelos()
+    if isinstance(p, jobs.Train):
+        return f"{base}/{p.project_slug}/{p.model_slug}/{p.run_id}/"
+    return (f"{base}/{p.project_slug}/{p.model_slug}/v{p.version}/builds/"
+            f"{job['id']}/")
+
+
+def _confere_destino(uri: str, base: str) -> None:
+    """O que o agente registra tem de estar onde a API mandou publicar.
+
+    Sem isto a assinatura teria uma porta dos fundos: o agente registraria um
+    `weights_uri` qualquer (o peso de outro projeto, uma imagem de outro
+    cliente) e o próximo pré-tag ou export, que lê o peso pelo payload, faria
+    a API assinar a leitura dele."""
+    if not (uri.startswith(base) and NOME_ARQUIVO.fullmatch(uri[len(base):])):
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            "o arquivo registrado não está onde a API mandou "
+                            "publicar")
+
+
+async def _assinar(uris: list[str], metodo: str = "GET",
+                   content_type: str | None = None) -> dict[str, str]:
+    """Assina fora do event loop — com credencial de VM, cada assinatura é
+    uma ida ao IAM. Falha é de infra: o texto do fornecedor cita conta de
+    serviço, então vai para o log e o agente recebe a mensagem genérica."""
+    try:
+        return await run_in_threadpool(
+            storage.assinar_ou_falhar, uris, settings.agent_url_minutes,
+            metodo, content_type)
+    except Exception:
+        logger.exception("assinatura de URL para o agente falhou")
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE,
+                            "o armazenamento não está disponível agora") from None
+
+
+async def _uris_do_job(conn: db.Conn, job: dict, pedidas: list[str]) -> set[str]:
+    """Das URIs pedidas, as que este job tem o direito de ler.
+
+    Treino e avaliação leem as imagens da VERSÃO (não do projeto: versão é
+    imutável, e é ela que o manifesto descreve); pré-tag lê as imagens do
+    projeto do job, que é o mesmo escopo em que `gravar_prelabels` escreve.
+    Peso e artefato vêm do payload, que só a API escreve."""
+    do_payload: set[str] = set()
+    imagens: list[dict[str, Any]] = []
+    if job["type"] in (jobs.Train.TIPO, jobs.Evaluate.TIPO):
+        c: type[jobs.Train] | type[jobs.Evaluate] = (
+            jobs.Train if job["type"] == jobs.Train.TIPO else jobs.Evaluate)
+        p = c.de_payload(job["payload"])
+        if isinstance(p, jobs.Evaluate):
+            do_payload.add(p.artifact_uri)
+        imagens = await db.fetch_all(
+            "SELECT s.uri FROM dataset_version_item i"
+            "  JOIN sample s ON s.id = i.sample_id"
+            " WHERE i.dataset_version_id = %s AND s.uri = ANY(%s)",
+            (p.dataset_version_id, pedidas), conn=conn)
+    elif job["type"] == jobs.Prelabel.TIPO:
+        do_payload.add(jobs.Prelabel.de_payload(job["payload"]).weights_uri)
+        imagens = await db.fetch_all(
+            "SELECT uri FROM sample WHERE project_id = %s AND uri = ANY(%s)",
+            (job["project_id"], pedidas), conn=conn)
+    elif job["type"] == jobs.Export.TIPO:
+        do_payload.add(jobs.Export.de_payload(job["payload"]).weights_uri)
+    return {r["uri"] for r in imagens} | (do_payload & set(pedidas))
+
+
+async def assinar_leitura(job_id: str, device_id: str,
+                          uris: list[str]) -> dict[str, str]:
+    """URL de leitura para cada URI pedida — todas, ou nenhuma."""
+    async with db.connection() as conn:
+        job = await job_da_maquina(conn, job_id, device_id)
+        _job_ativo(job)
+        permitidas = await _uris_do_job(conn, job, uris)
+    fora = [u for u in uris if u not in permitidas]
+    if fora:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            f"{len(fora)} arquivo(s) fora do que este job lê: {fora[0]}")
+    locais = [u for u in uris if not u.startswith("gs://")]
+    if locais:
+        # Imagem importada de disco (dump do Label Studio): mora na máquina da
+        # API, e nenhuma URL assinada a alcança.
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            f"{len(locais)} imagem(ns) fora do GCS, que o agente não "
+            f"alcança: {locais[0]}")
+    return await _assinar(list(dict.fromkeys(uris)))
+
+
+async def assinar_upload(job_id: str, device_id: str, arquivo: str) -> dict:
+    """Onde publicar o arquivo que o job produziu, e a URL para o PUT."""
+    if not NOME_ARQUIVO.fullmatch(arquivo):
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            "nome de arquivo inválido")
+    async with db.connection() as conn:
+        job = await job_da_maquina(conn, job_id, device_id)
+        _job_ativo(job)
+        _confere_tipo(job, jobs.Train.TIPO, jobs.Export.TIPO)
+        p: jobs.Train | jobs.Export = (
+            jobs.Train.de_payload(job["payload"])
+            if job["type"] == jobs.Train.TIPO
+            else jobs.Export.de_payload(job["payload"]))
+    uri = _destino_base(job, p) + arquivo
+    url = (await _assinar([uri], "PUT", TIPO_UPLOAD))[uri]
+    return {"uri": uri, "url": url, "headers": {"Content-Type": TIPO_UPLOAD}}
+
+
+# --------------------------------------------------------------------------- #
 # Progresso
 # --------------------------------------------------------------------------- #
 
@@ -424,6 +577,7 @@ async def registrar_modelo(job_id: str, device_id: str, *, weights_uri: str,
     ao bucket. É INSERT único: model_version não aceita UPDATE (008)."""
     async with db.connection() as conn, conn.transaction():
         job, p = await job_com_payload(conn, job_id, device_id, jobs.Train)
+        _confere_destino(weights_uri, _destino_base(job, p))
         run = await db.fetch_one(
             "SELECT id, schema_id, created_by FROM training_run"
             " WHERE job_id = %s", (job_id,), conn=conn)
@@ -471,6 +625,7 @@ async def registrar_build(job_id: str, device_id: str, *, formato: str, uri: str
     máquina que compilou que define para qual classe o engine vale."""
     async with db.connection() as conn, conn.transaction():
         job, p = await job_com_payload(conn, job_id, device_id, jobs.Export)
+        _confere_destino(uri, _destino_base(job, p))
         d = await _device_do_token(conn, device_id)
         alvo = {**target, "device_class": d["device_class"]}
         row = await db.fetch_one(
@@ -514,12 +669,16 @@ async def registrar_avaliacao(job_id: str, device_id: str, *, metrics: dict,
 # --------------------------------------------------------------------------- #
 
 async def deployments_pendentes(device_id: str) -> list[dict[str, Any]]:
-    """Implantações pendentes PARA ESTA máquina. Device desativado não recebe."""
+    """Implantações pendentes PARA ESTA máquina. Device desativado não recebe.
+
+    Cada uma vai com a `url` assinada do build — a máquina não tem credencial
+    do bucket. Assinada depois de devolver a conexão: com credencial de VM
+    assinar é ida ao IAM, e isso não acontece com uma vaga do pool na mão."""
     async with db.connection() as conn:
         d = await _device_do_token(conn, device_id)
         if d["status"] == "disabled":
             return []
-        return await db.fetch_all(
+        rows = await db.fetch_all(
         "SELECT dep.id, mb.uri, mb.format, encode(mb.sha256,'hex') AS sha256,"
         "       m.slug AS model_slug, mv.version"
         "  FROM deployment dep"
@@ -528,6 +687,10 @@ async def deployments_pendentes(device_id: str) -> list[dict[str, Any]]:
         "  JOIN model m ON m.id = mv.model_id"
         " WHERE dep.device_id = %s AND dep.state = 'pending'"
             " ORDER BY dep.requested_at", (device_id,), conn=conn)
+    if not rows:
+        return rows
+    urls = await _assinar(list(dict.fromkeys(r["uri"] for r in rows)))
+    return [{**r, "url": urls[r["uri"]]} for r in rows]
 
 
 async def atualizar_deployment(dep_id: str, device_id: str, *, estado: str,

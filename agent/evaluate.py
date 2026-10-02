@@ -49,13 +49,15 @@ def executar(cli: Client, job: dict, work_dir: Path) -> None:
     items.parent.mkdir(parents=True, exist_ok=True)
     cli.download_items(job_id, str(items))
     materializar(items, classes, raiz / "ds", work_dir / "cache-imagens", log,
-                 split_fixo="val", roi=roi)
+                 split_fixo="val", roi=roi,
+                 baixar=lambda pares, prog: gcs.baixar_lote(
+                     cli, job_id, pares, prog))
 
     # o artefato pode ser o peso (.pt) ou um build (.onnx/.engine): o formato
     # muda a latência, que é justamente o que se quer comparar.
     from pathlib import Path as _P
     artefato = raiz / ("model" + (_P(p.artifact_uri).suffix or ".pt"))
-    gcs.baixar(p.artifact_uri, artefato)
+    gcs.baixar(cli, job_id, p.artifact_uri, artefato)
     log(f"artefato {p.rotulo} carregado — avaliando")
     cli.job_heartbeat(job_id, {"etapa": "val"})
 

@@ -6,8 +6,10 @@ segredo com default utilizável: sem API_URL e AGENT_TOKEN o agente recusa subir
 
     VISIONYARD_API_URL=http://api.interna:8000
     VISIONYARD_AGENT_TOKEN=<token do device, emitido em Devices>
-    VISIONYARD_MODELS_BUCKET=meu-bucket-modelos
-    GOOGLE_APPLICATION_CREDENTIALS=/caminho/para/sa.json
+
+Não há credencial de nuvem aqui: o bucket é lido e gravado por URL que a API
+assina por job, e o caminho onde o peso é publicado também é ela que escolhe
+(`VISIONYARD_MODELS_BUCKET` agora é configuração da API).
 """
 from __future__ import annotations
 
@@ -20,8 +22,6 @@ class Config:
     api_url: str
     token: str
     work_dir: str
-    models_bucket: str          # bucket GCS onde o peso treinado é publicado
-    models_prefix: str
     deploy_dir: str             # onde o build ativo é colocado p/ o coletor ler
     poll_seconds: float
     heartbeat_seconds: float
@@ -38,8 +38,6 @@ class Config:
             api_url=api,
             token=token,
             work_dir=os.environ.get("VISIONYARD_WORK_DIR", "./agent-work"),
-            models_bucket=os.environ.get("VISIONYARD_MODELS_BUCKET", ""),
-            models_prefix=os.environ.get("VISIONYARD_MODELS_PREFIX", "models"),
             deploy_dir=os.environ.get("VISIONYARD_DEPLOY_DIR", "./visionyard-deploy"),
             poll_seconds=float(os.environ.get("VISIONYARD_POLL_SECONDS", "5")),
             heartbeat_seconds=float(

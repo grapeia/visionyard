@@ -36,6 +36,15 @@ def _h(token: str) -> dict:
     return {"X-Agent-Token": token}
 
 
+async def _publicar(client, tok: str, jid: str, arquivo: str) -> str:
+    """O caminho que a API escolhe para o arquivo do job — é o único que ela
+    aceita registrar depois."""
+    r = await client.post(f"/v1/agent/jobs/{jid}/upload",
+                          json={"arquivo": arquivo}, headers=_h(tok))
+    assert r.status_code == 200, r.text
+    return r.json()["uri"]
+
+
 async def _criar_run(admin, base_model="yolo11n.pt") -> dict:
     r = await admin.post(f"/v1/projects/{PROJ['slug']}/runs", json={
         "dataset_slug": DS["slug"], "version": 1, "experiment": "baseline",
@@ -89,8 +98,9 @@ async def test_ciclo_completo_treino(admin, client, tmp_path):
         {"epoch": 2, "key": "mAP50", "value": 0.81}]}, headers=_h(tok))
 
     # registro do modelo produzido
+    peso = await _publicar(client, tok, jid, "best.pt")
     r = await client.post(f"/v1/agent/jobs/{jid}/model", json={
-        "weights_uri": "gs://bucket/models/best.pt", "sha256": "ab" * 32,
+        "weights_uri": peso, "sha256": "ab" * 32,
         "bytes": 5_000_000, "metrics": {"mAP50-95": 0.62}}, headers=_h(tok))
     assert r.status_code == 200, r.text
     assert r.json()["version"] == 1 and r.json()["model_slug"] == "detector"
@@ -107,7 +117,7 @@ async def test_ciclo_completo_treino(admin, client, tmp_path):
     assert d["best_epoch"] == 2
     assert d["metrics"]["mAP50-95"] == 0.62
     assert d["model_version"]["version"] == 1
-    assert d["model_version"]["weights_uri"] == "gs://bucket/models/best.pt"
+    assert d["model_version"]["weights_uri"] == peso
 
     # stream incremental devolve eventos e métricas
     s = (await admin.get(

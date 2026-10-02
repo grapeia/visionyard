@@ -54,7 +54,10 @@ def _navegar(bucket: str, prefixo: str) -> dict:
     tem_mais = len(blobs) > MAX_OBJETOS
     blobs = blobs[:MAX_OBJETOS]
 
-    assina = storage.pode_assinar(cliente)
+    try:
+        assinante = storage.como_assinar(cliente)
+    except Exception:          # metadata server fora: lista sem miniatura
+        assinante = None
     objetos, miniaturas = [], 0
     for b in blobs:
         nome = b.name[len(prefixo):] if prefixo else b.name
@@ -65,11 +68,11 @@ def _navegar(bucket: str, prefixo: str) -> dict:
             continue
         eh_imagem = Path(b.name).suffix.lower() in IMG_EXTS
         url = None
-        if eh_imagem and assina and miniaturas < MAX_MINIATURAS:
+        if eh_imagem and assinante is not None and miniaturas < MAX_MINIATURAS:
             try:
                 url = b.generate_signed_url(version="v4",
                                             expiration=timedelta(minutes=30),
-                                            method="GET")
+                                            method="GET", **assinante)
                 miniaturas += 1
             except Exception:      # sem assinatura, segue sem imagem
                 url = None
@@ -85,7 +88,7 @@ def _navegar(bucket: str, prefixo: str) -> dict:
     return {"bucket": bucket, "prefixo": prefixo, "pai": pai,
             "pastas": pastas, "objetos": objetos, "tem_mais": tem_mais,
             "imagens": sum(1 for o in objetos if o["imagem"]),
-            "assina": assina}
+            "assina": assinante is not None}
 
 
 async def navegar(bucket: str, prefixo: str) -> dict[str, Any]:

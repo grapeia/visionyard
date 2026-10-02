@@ -10,14 +10,19 @@ de arquivos:
 As imagens vêm do GCS, cacheadas por md5: o mesmo frame em dois treinos baixa
 uma vez só. É o md5 do manifesto (identidade de conteúdo), então cache errado é
 impossível — bytes diferentes têm md5 diferente.
+
+Quem baixa é quem chama (`baixar`), porque baixar precisa do job: a URL é
+assinada pela API para aquele job. Aqui fica só a decisão do que falta.
 """
 from __future__ import annotations
 
 import json
 import shutil
+from collections.abc import Callable
 from pathlib import Path
 
-from . import gcs
+# (pares (uri, destino), progresso(n baixadas)) → baixa todos ou levanta.
+Baixador = Callable[[list[tuple[str, Path]], Callable[[int], None]], None]
 
 
 def _cache_path(cache_dir: Path, md5: str, uri: str) -> Path:
@@ -57,9 +62,30 @@ def _reprojetar_boxes(boxes: list, roi: tuple) -> list:
     return out
 
 
+def _faltando(items_jsonl: Path, cache_dir: Path) -> tuple[list[tuple[str, Path]], int]:
+    """O que não está no cache, uma vez por arquivo, e quantos itens já estão.
+
+    Separado do laço que escreve a árvore para que a assinatura vá em lote:
+    pedir uma URL por imagem seriam milhares de idas à API por treino."""
+    faltam: dict[Path, str] = {}
+    cacheadas = 0
+    with open(items_jsonl) as f:
+        for linha in f:
+            linha = linha.strip()
+            if not linha:
+                continue
+            it = json.loads(linha)
+            caminho = _cache_path(cache_dir, it["md5"], it["uri"])
+            if caminho.is_file():
+                cacheadas += 1
+            elif caminho not in faltam:
+                faltam[caminho] = it["uri"]
+    return [(uri, caminho) for caminho, uri in faltam.items()], cacheadas
+
+
 def materializar(items_jsonl: Path, classes: list[str], destino: Path,
                  cache_dir: Path, log, split_fixo: str | None = None,
-                 roi: tuple | None = None) -> dict:
+                 roi: tuple | None = None, *, baixar: Baixador) -> dict:
     """Escreve a árvore YOLO e devolve contagens. `log(msg)` reporta progresso.
 
     `split_fixo` força todas as imagens para um split (a avaliação usa 'val': o
@@ -74,8 +100,13 @@ def materializar(items_jsonl: Path, classes: list[str], destino: Path,
         (destino / "labels" / split).mkdir(parents=True, exist_ok=True)
     cache_dir.mkdir(parents=True, exist_ok=True)
 
+    pares, cacheadas = _faltando(items_jsonl, cache_dir)
+    baixadas = len(pares)
+    if pares:
+        log(f"baixando {baixadas} imagens ({cacheadas} já no cache)")
+        baixar(pares, lambda feitas: log(f"baixadas {feitas}/{baixadas}"))
+
     n = {"train": 0, "val": 0}
-    baixadas = cacheadas = 0
     with open(items_jsonl) as f:
         for i, linha in enumerate(f):
             linha = linha.strip()
@@ -87,11 +118,6 @@ def materializar(items_jsonl: Path, classes: list[str], destino: Path,
             uri = it["uri"]
             nome = f"{md5}"
             img_cache = _cache_path(cache_dir, md5, uri)
-            if not img_cache.is_file():
-                gcs.baixar(uri, img_cache)
-                baixadas += 1
-            else:
-                cacheadas += 1
 
             boxes = it.get("boxes", [])
             if roi is not None:
@@ -126,8 +152,7 @@ def materializar(items_jsonl: Path, classes: list[str], destino: Path,
             rotulo.write_text("\n".join(linhas) + ("\n" if linhas else ""))
             n[split] += 1
             if (i + 1) % 200 == 0:
-                log(f"materializadas {i + 1} imagens "
-                    f"({baixadas} baixadas, {cacheadas} do cache)")
+                log(f"materializadas {i + 1} imagens")
 
     data_yaml = destino / "data.yaml"
     data_yaml.write_text(

@@ -5,7 +5,7 @@ import pytest
 
 from .test_datasets import DS, PROJ
 from .test_models import _produzir_modelo
-from .test_training import _device, _h
+from .test_training import _device, _h, _publicar
 
 pytestmark = pytest.mark.anyio
 
@@ -85,7 +85,9 @@ async def _build_onnx(admin, client) -> None:
     dev = await _device(admin, {"infer": True}, slug="build-box")
     job = (await client.post("/v1/agent/claim", headers=_h(dev["token"]))).json()["job"]
     await client.post(f"/v1/agent/jobs/{job['id']}/build", json={
-        "format": "onnx", "uri": "gs://b/v1/best.onnx", "sha256": "cc" * 32,
+        "format": "onnx",
+        "uri": await _publicar(client, dev["token"], job["id"], "best.onnx"),
+        "sha256": "cc" * 32,
         "bytes": 1, "target": {"imgsz": 640}, "bench": {}}, headers=_h(dev["token"]))
 
 

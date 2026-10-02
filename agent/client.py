@@ -13,7 +13,12 @@ import requests
 
 
 class ApiError(RuntimeError):
-    pass
+    """`status` é o código HTTP, ou None quando nem resposta houve. É ele que
+    separa o 4xx (a API recusou: repetir não muda nada) do resto."""
+
+    def __init__(self, msg: str, status: int | None = None):
+        super().__init__(msg)
+        self.status = status
 
 
 class Client:
@@ -45,12 +50,15 @@ class Client:
                 if r.status_code < 400:
                     return r
                 if r.status_code < 500:      # erro do cliente: não adianta repetir
-                    raise ApiError(f"{method} {path} → {r.status_code}: {r.text[:300]}")
-                ultimo = ApiError(f"{method} {path} → {r.status_code}")
+                    raise ApiError(f"{method} {path} → {r.status_code}: "
+                                   f"{r.text[:300]}", r.status_code)
+                ultimo = ApiError(f"{method} {path} → {r.status_code}",
+                                  r.status_code)
             if i < self._tentativas - 1:
                 time.sleep(min(2 ** i, 8))
         raise ApiError(f"{method} {path} falhou após {self._tentativas} "
-                       f"tentativas: {ultimo}")
+                       f"tentativas: {ultimo}",
+                       getattr(ultimo, "status", None))
 
     def _post(self, path: str, json: dict | None = None) -> Any:
         r = self._send("POST", path, json=json or {})
@@ -86,6 +94,15 @@ class Client:
         with open(destino, "wb") as f:
             for chunk in r.iter_content(chunk_size=1 << 20):
                 f.write(chunk)
+
+    def assinar(self, job_id: str, uris: list[str]) -> dict[str, str]:
+        """URL de leitura para cada URI — a API recusa o lote inteiro se uma
+        delas não for do job."""
+        return self._post(f"/agent/jobs/{job_id}/urls", {"uris": uris})["urls"]
+
+    def destino_upload(self, job_id: str, arquivo: str) -> dict:
+        """`{"uri", "url", "headers"}`: onde publicar e com que PUT."""
+        return self._post(f"/agent/jobs/{job_id}/upload", {"arquivo": arquivo})
 
     def job_heartbeat(self, job_id: str, progress: dict) -> bool:
         """Devolve True se o usuário pediu cancelamento."""

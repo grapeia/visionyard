@@ -117,9 +117,15 @@ As que importam no primeiro dia:
 | `VISIONYARD_IMPORT_WORKER_EMBEDDED` | `false` tira a execução da importação do processo da API — aí `python -m api.worker` precisa estar no ar |
 | `VISIONYARD_COOKIE_SECURE` | `true` em produção, atrás de TLS |
 | `VISIONYARD_TRUSTED_PROXIES` | CIDR dos proxies que terminam TLS; vazio = sem proxy |
+| `VISIONYARD_MODELS_BUCKET` | bucket onde treino e export publicam (prefixo em `VISIONYARD_MODELS_PREFIX`, default `models`) — sem ele não há onde publicar |
 
-O acesso ao GCS usa `GOOGLE_APPLICATION_CREDENTIALS`. As imagens são servidas
-ao navegador por URL assinada — a API emite a URL e não trafega bytes.
+O acesso ao GCS usa `GOOGLE_APPLICATION_CREDENTIALS`, e só a API o tem. As
+imagens são servidas ao navegador por URL assinada, e ao agente também: a API
+assina, por job, o que aquele job lê e onde ele grava, e não trafega bytes.
+Por isso a credencial precisa **assinar** — chave de conta de serviço, ou, com
+a credencial da VM/Cloud Run, a permissão `iam.serviceAccounts.signBlob` na
+própria conta. Sem isso a galeria mostra só o lugar da imagem e o agente não
+consegue baixar nada (503).
 
 ## Agentes
 
