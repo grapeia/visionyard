@@ -80,6 +80,12 @@ class MembroDoProjeto(BaseModel):
     granted_at: datetime
 
 
+class CandidatoAMembro(BaseModel):
+    id: UUID
+    email: EmailStr
+    display_name: str
+
+
 class MembroDefinido(BaseModel):
     email: EmailStr
     role: str
@@ -137,6 +143,15 @@ async def set_user_status(user_id: Annotated[UUID, Path()],
             dependencies=[Depends(require_role("viewer"))])
 async def list_members(project_slug: Annotated[str, Path()]):
     return await svc.listar_membros(project_slug)
+
+
+@router.get("/projects/{project_slug}/member-candidates",
+            response_model=list[CandidatoAMembro],
+            dependencies=[Depends(require_role("admin"))])
+async def list_member_candidates(project_slug: Annotated[str, Path()]):
+    """Quem pode ser incluído: só admin+ vê, porque é a lista de contas da
+    instalação — o resto dos membros enxerga só quem já está no projeto."""
+    return await svc.candidatos_a_membro(project_slug)
 
 
 @router.put("/projects/{project_slug}/members",

@@ -25,8 +25,9 @@ const AJUDA = {
     <dl>
       <dt>Projeto</dt><dd>O espaço de trabalho de um cliente/linha (imagens,
         datasets, modelos e máquinas ficam dentro dele).</dd>
-      <dt>Papéis</dt><dd><b>admin</b> gerencia tudo; <b>engineer</b> treina,
-        compila e implanta modelos; <b>annotator</b> só rotula imagens.</dd>
+      <dt>Papéis</dt><dd><b>Dono</b> e <b>Administrador</b> gerenciam tudo;
+        <b>Engenheiro</b> treina, compila e implanta modelos; <b>Anotador</b> só
+        rotula imagens; <b>Visualizador</b> só consulta.</dd>
     </dl>`],
   datasets: ["Datasets", `
     <dl>
@@ -112,10 +113,10 @@ const AJUDA = {
     </dl>`],
   usuarios: ["Usuários", `
     <dl>
-      <dt>Papéis</dt><dd><b>admin</b> gerencia projetos e pessoas;
-        <b>engineer</b> treina/compila/implanta; <b>annotator</b> rotula.</dd>
+      <dt>Papéis</dt><dd><b>Administrador</b> gerencia projetos e pessoas;
+        <b>Engenheiro</b> treina/compila/implanta; <b>Anotador</b> rotula.</dd>
       <dt>Membro do projeto</dt><dd>O papel vale por projeto: a mesma pessoa
-        pode ser engineer num projeto e annotator em outro.</dd>
+        pode ser Engenheiro num projeto e Anotador em outro.</dd>
     </dl>`],
   parametros: ["Parâmetros", `
     <dl>

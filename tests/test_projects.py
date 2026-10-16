@@ -349,3 +349,39 @@ async def test_superuser_em_projeto_inexistente_recebe_404(admin, metodo, rota,
     `SELECT ... FROM project` direto e o slug errado virava 500."""
     r = await admin.request(metodo, f"/v1/projects/nao-existe{rota}", json=corpo)
     assert r.status_code == 404, f"{metodo} {rota} → {r.status_code}: {r.text}"
+
+
+async def test_senha_de_oito_caracteres_basta(admin):
+    """O mínimo é 8, não 12 — e 7 continua recusado."""
+    r = await admin.post("/v1/users", json={
+        "email": "oito@teste.com", "display_name": "oito",
+        "password": "12345678"})
+    assert r.status_code == 201, r.text
+    r = await admin.post("/v1/users", json={
+        "email": "sete@teste.com", "display_name": "sete",
+        "password": "1234567"})
+    assert r.status_code == 422
+
+
+async def test_candidatos_a_membro(admin, client, superuser):
+    """O admin do projeto escolhe de uma lista, e não digita um email às cegas.
+
+    Só entram contas que ainda não são membros e não estão desativadas; e só
+    quem administra o projeto vê a lista.
+    """
+    await admin.post("/v1/projects", json=PROJ)
+    base = f"/v1/projects/{PROJ['slug']}"
+    async with novo_usuario(admin, client, "ana@teste.com") as (ana, _), \
+            novo_usuario(admin, client, "caio@teste.com") as (_, _), \
+            novo_usuario(admin, client, "dora@teste.com") as (_, dora_id):
+        await admin.post(f"/v1/users/{dora_id}/status",
+                         params={"status_": "disabled"})
+        await admin.put(f"{base}/members",
+                        json={"email": "ana@teste.com", "role": "annotator"})
+
+        r = await admin.get(f"{base}/member-candidates")
+        assert r.status_code == 200, r.text
+        assert [c["email"] for c in r.json()] == ["caio@teste.com"]
+        assert set(r.json()[0]) == {"id", "email", "display_name"}
+
+        assert (await ana.get(f"{base}/member-candidates")).status_code == 403

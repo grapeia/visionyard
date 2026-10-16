@@ -25,7 +25,7 @@ class Settings(BaseSettings):
     session_idle_hours: int = 12
     session_max_days: int = 7
 
-    password_min_length: int = 12
+    password_min_length: int = 8
 
     # Nível do log da aplicação. O acesso sai numa linha por requisição, com o
     # código de correlação; DEBUG só para investigar.

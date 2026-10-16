@@ -22,14 +22,14 @@ SUFIXO="$(date +%s)-$(openssl rand -hex 4)"
 SEGREDO_SENHA="${PREFIXO}-seed-senha-${SUFIXO}"
 JOB_SEED="${JOB_SEED}-${SUFIXO}"
 
-read -rsp "senha para $EMAIL (mín. 12 caracteres): " SENHA; echo
+read -rsp "senha para $EMAIL (mín. 8 caracteres): " SENHA; echo
 read -rsp "de novo: " CONFIRMA; echo
 [[ "$SENHA" == "$CONFIRMA" ]] || { echo "as senhas não conferem" >&2; exit 1; }
 unset CONFIRMA
 # Antes de criar qualquer recurso: senha vazia criaria um segredo sem versão,
 # e curta seria recusada pelo `db.seed` só depois do job inteiro subir.
-if (( ${#SENHA} < 12 )); then
-  echo "a senha precisa de ao menos 12 caracteres" >&2
+if (( ${#SENHA} < 8 )); then
+  echo "a senha precisa de ao menos 8 caracteres" >&2
   exit 1
 fi
 

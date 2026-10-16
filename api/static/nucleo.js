@@ -91,3 +91,10 @@ export const css = (v) =>
   getComputedStyle(document.documentElement).getPropertyValue(v).trim();
 
 export const RANK = { viewer: 0, annotator: 1, engineer: 2, admin: 3, owner: 4 };
+
+/** Nome do papel na tela. O banco e a API guardam a chave em inglês; quem lê é
+ *  português. Chave que não estiver aqui aparece como veio. */
+export const PAPEL = { viewer: "Visualizador", annotator: "Anotador",
+                       engineer: "Engenheiro", admin: "Administrador",
+                       owner: "Dono" };
+export const nomePapel = (p) => PAPEL[p] || p || "—";

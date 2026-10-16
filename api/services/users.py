@@ -151,6 +151,23 @@ async def listar_membros(project_slug: str) -> list[dict[str, Any]]:
             (project_slug,), conn=conn)
 
 
+async def candidatos_a_membro(project_slug: str) -> list[dict[str, Any]]:
+    """Contas que o admin do projeto pode incluir: as que ainda não são membros.
+
+    Desativada fica de fora — incluí-la seria conceder papel a quem não entra.
+    Convidada entra: o papel espera o primeiro acesso dela.
+    """
+    async with db.connection() as conn:
+        proj = await projeto_ou_404(conn, project_slug)
+        return await db.fetch_all(
+            "SELECT u.id, u.email, u.display_name FROM app_user u"
+            " WHERE u.status <> 'disabled'"
+            "   AND NOT EXISTS (SELECT 1 FROM project_member m"
+            "                    WHERE m.user_id = u.id AND m.project_id = %s)"
+            " ORDER BY u.display_name, u.email",
+            (proj["id"],), conn=conn)
+
+
 async def definir_membro(project_slug: str, actor: Principal, *, email: str,
                          role: str, ip: str | None) -> dict[str, Any]:
     async with db.connection() as conn, conn.transaction():

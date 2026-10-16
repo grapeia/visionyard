@@ -16,7 +16,7 @@ import "./parametros.js";
 import "./usuarios.js";
 import { carregarDatasets } from "./datasets.js";
 import { carregarModelos, modelos } from "./modelos.js";
-import { $, api, avisar, erroAviso, esc, estado, mostrarEntrada } from "./nucleo.js";
+import { $, api, avisar, erroAviso, esc, estado, mostrarEntrada, nomePapel } from "./nucleo.js";
 import { carregarProjetoTab } from "./projeto.js";
 import { carregarDados, dados, preencherEscopo } from "./rotulagem.js";
 import { carregarRuns } from "./treino.js";
@@ -33,17 +33,23 @@ export async function iniciar() {
   $("telaEntrada").hidden = true;
   $("telaApp").hidden = false;
 
+  // Antes do retorno de "nenhum projeto": numa instalação recém-criada o
+  // superusuário não participa de projeto algum, e é por este botão que ele
+  // cria o primeiro. Depois do retorno, a tela ficava sem saída.
+  $("botaoNovoProjeto").hidden = !estado.usuario.is_superuser;
   const projetos = await api("/projects");
   const sel = $("seletorProjeto");
   if (!projetos.length) {
     sel.innerHTML = "<option>nenhum projeto</option>";
     $("painelDataset").innerHTML =
       `<div class="vazio"><p>Você ainda não participa de nenhum projeto.</p>
-       <p class="dica">Peça a um administrador para incluir você, ou crie um projeto pela API.</p></div>`;
+       <p class="dica">Peça a um administrador para incluir você.</p></div>`;
+    // Projeto é a aba de entrada: sem isto ela ficava em "Carregando…".
+    await carregarProjetoTab();
     return;
   }
   sel.innerHTML = projetos
-    .map((p) => `<option value="${esc(p.slug)}">${esc(p.name)} · ${esc(p.role)}</option>`)
+    .map((p) => `<option value="${esc(p.slug)}">${esc(p.name)} · ${esc(nomePapel(p.role))}</option>`)
     .join("");
   estado.projetos = projetos;
   estado.projeto = projetos[0].slug;
@@ -51,7 +57,6 @@ export async function iniciar() {
   // Projeto é a primeira aba e a de entrada. Ainda assim carregamos classes e
   // datasets aqui: estado.classes serve o anotador e estado.datasets serve o
   // escopo e o diálogo de treino, ambos usados por outras abas.
-  $("botaoNovoProjeto").hidden = !estado.usuario.is_superuser;
   await carregarProjeto();
   await carregarDatasets();
   preencherEscopo();

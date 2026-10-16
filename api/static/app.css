@@ -729,11 +729,10 @@ dialog .acoes { display: flex; gap: 8px; justify-content: flex-end; margin-top: 
   padding: 8px 0; border-top: 1px solid var(--trilho); }
 .papel-sel { background: var(--aco-800); border: 1px solid var(--trilho);
   border-radius: var(--r); color: var(--texto); padding: 4px 8px; }
-.add-membro { display: flex; gap: 8px; margin-top: 12px; max-width: 520px; }
-.add-membro input { flex: 1; padding: 7px 9px; background: var(--aco-800);
-  border: 1px solid var(--trilho); border-radius: var(--r); color: var(--texto); }
+.add-membro { display: flex; gap: 8px; margin-top: 12px; max-width: 640px; }
+.add-membro #mbEmail { flex: 1; min-width: 0; }
 .add-membro select { background: var(--aco-800); border: 1px solid var(--trilho);
-  border-radius: var(--r); color: var(--texto); padding: 0 8px; }
+  border-radius: var(--r); color: var(--texto); padding: 7px 9px; width: auto; }
 
 /* editor de recorte (ROI) */
 .roi-editor { display: flex; gap: 22px; align-items: flex-start; margin: 6px 0 4px; }

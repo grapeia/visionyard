@@ -6,7 +6,8 @@
 
 import { carregarProjeto } from "./app.js";
 import { carregarDatasets } from "./datasets.js";
-import { $, RANK, api, avisar, comTravaDeEnvio, cor, esc, estado, num, post } from "./nucleo.js";
+import { $, PAPEL, RANK, api, avisar, comTravaDeEnvio, cor, esc, estado, nomePapel, num,
+  post } from "./nucleo.js";
 import { dados, preencherEscopo } from "./rotulagem.js";
 
 export const tipoProjeto = (t) =>
@@ -15,7 +16,10 @@ export const tipoProjeto = (t) =>
 export async function carregarProjetoTab() {
   if (!estado.projeto) {
     $("painelProjetoTab").innerHTML = `<div class="vazio">
-      <p>Você ainda não participa de nenhum projeto.</p></div>`;
+      <p>Você ainda não participa de nenhum projeto.</p>
+      <p class="dica">${estado.usuario && estado.usuario.is_superuser
+        ? "Crie o primeiro em \"Novo projeto\", acima."
+        : "Peça a um administrador para incluir você."}</p></div>`;
     return;
   }
   const d = await api(`/projects/${estado.projeto}`);
@@ -35,7 +39,7 @@ export async function carregarProjetoTab() {
       <span>${num(c.annotations)} anotações</span>
       <span>${num(c.datasets)} datasets</span>
       <span>${num(c.models)} modelos</span>
-      <span>seu papel: ${esc(d.role || "—")}</span>
+      <span>seu papel: ${esc(nomePapel(d.role))}</span>
     </div>
 
     <section class="secao">
@@ -94,10 +98,16 @@ export async function carregarProjetoTab() {
 
 const PAPEIS = ["viewer", "annotator", "engineer", "admin", "owner"];
 
+const opcoesPapel = (atual) => PAPEIS.map((p) =>
+  `<option value="${p}" ${p === atual ? "selected" : ""}>${PAPEL[p]}</option>`).join("");
+
 /** Membros do projeto: quem tem acesso e com que papel. Admin+ concede/remove;
- *  owner só um owner concede (o backend garante). */
+ *  "Dono" só um dono concede (o backend garante). */
 async function renderMembros(slug, podeAdmin) {
-  const membros = await api(`/projects/${slug}/members`).catch(() => []);
+  const [membros, candidatos] = await Promise.all([
+    api(`/projects/${slug}/members`).catch(() => []),
+    podeAdmin ? api(`/projects/${slug}/member-candidates`).catch(() => []) : [],
+  ]);
   const sec = document.createElement("section");
   sec.className = "secao";
   sec.innerHTML = `<header><span class="rotulo">Membros</span></header>
@@ -105,18 +115,22 @@ async function renderMembros(slug, podeAdmin) {
       <li><span class="user-nome">${esc(m.display_name)}</span>
         <span class="mono slug">${esc(m.email)}</span>
         <span class="espaco"></span>
-        ${podeAdmin ? `<select class="papel-sel" data-membro="${esc(m.email)}">
-          ${PAPEIS.map((p) => `<option value="${p}" ${p === m.role ? "selected" : ""}>${p}</option>`).join("")}
-        </select>
+        ${podeAdmin ? `<select class="papel-sel" data-membro="${esc(m.email)}"
+            aria-label="Papel de ${esc(m.display_name)}">${opcoesPapel(m.role)}</select>
         <button class="discreto ruim" data-remover-membro="${esc(m.id)}">remover</button>`
-        : `<span class="selo-run neutro">${esc(m.role)}</span>`}</li>`).join("")}</ul>
-    ${podeAdmin ? `<form class="add-membro" id="formMembro">
-      <input id="mbEmail" type="email" placeholder="email de um usuário" required>
-      <select id="mbPapel">${PAPEIS.map((p) =>
-        `<option value="${p}" ${p === "annotator" ? "selected" : ""}>${p}</option>`).join("")}</select>
+        : `<span class="selo-run neutro">${esc(nomePapel(m.role))}</span>`}</li>`).join("")}</ul>
+    ${!podeAdmin ? "" : candidatos.length ? `<form class="add-membro" id="formMembro">
+      <select id="mbEmail" required aria-label="Usuário">
+        <option value="" selected disabled>Escolha um usuário…</option>
+        ${candidatos.map((c) => `<option value="${esc(c.email)}">${esc(c.display_name)}
+          — ${esc(c.email)}</option>`).join("")}
+      </select>
+      <select id="mbPapel" aria-label="Papel">${opcoesPapel("annotator")}</select>
       <button class="primario" type="submit">Adicionar</button>
     </form>
-    <p class="dica">O usuário precisa existir (aba Usuários). "owner" só um owner concede.</p>` : ""}`;
+    <p class="dica">Falta alguém? Cadastre na aba Usuários. "Dono" só outro dono concede.</p>`
+    : `<p class="dica">Todos os usuários da instalação já são membros deste projeto.
+        Para incluir alguém novo, cadastre na aba Usuários.</p>`}`;
   $("painelProjetoTab").appendChild(sec);
   if (!podeAdmin) return;
 
@@ -124,7 +138,7 @@ async function renderMembros(slug, podeAdmin) {
     s.addEventListener("change", () => setMembro(slug, s.dataset.membro, s.value)));
   sec.querySelectorAll("[data-remover-membro]").forEach((b) =>
     b.addEventListener("click", () => removerMembro(slug, b.dataset.removerMembro)));
-  $("formMembro").addEventListener("submit", async (ev) => {
+  $("formMembro")?.addEventListener("submit", async (ev) => {
     ev.preventDefault();
     await setMembro(slug, $("mbEmail").value, $("mbPapel").value);
   });
@@ -134,7 +148,7 @@ async function setMembro(slug, email, role) {
   try {
     await api(`/projects/${slug}/members`,
               { method: "PUT", body: JSON.stringify({ email, role }) });
-    avisar(`${email}: ${role}`);
+    avisar(`${email}: ${nomePapel(role)}`);
     await carregarProjetoTab();
   } catch (e) { avisar(e.message, true); }
 }
@@ -223,7 +237,7 @@ async function trocarPara(slug) {
   const projetos = await api("/projects");
   const sel = $("seletorProjeto");
   sel.innerHTML = projetos
-    .map((p) => `<option value="${esc(p.slug)}">${esc(p.name)} · ${esc(p.role)}</option>`)
+    .map((p) => `<option value="${esc(p.slug)}">${esc(p.name)} · ${esc(nomePapel(p.role))}</option>`)
     .join("");
   if (projetos.some((p) => p.slug === slug)) sel.value = slug;
   estado.projetos = projetos;
