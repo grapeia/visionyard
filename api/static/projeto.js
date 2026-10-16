@@ -76,7 +76,8 @@ export async function carregarProjetoTab() {
             · ${new Date(s.created_at).toLocaleDateString("pt-BR")}</p>
         </li>`).join("")}
       </ul>
-    </section>`;
+    </section>
+    <section class="secao" id="membrosProjeto"></section>`;
 
   const f = $("formAddClasse");
   if (f) f.addEventListener("submit", async (ev) => {
@@ -108,8 +109,11 @@ async function renderMembros(slug, podeAdmin) {
     api(`/projects/${slug}/members`).catch(() => []),
     podeAdmin ? api(`/projects/${slug}/member-candidates`).catch(() => []) : [],
   ]);
-  const sec = document.createElement("section");
-  sec.className = "secao";
+  // Substitui, não acrescenta: a aba é carregada mais de uma vez em seguida
+  // (início e troca de aba), e cada carga terminava anexando a sua seção —
+  // "Membros" aparecia duplicado.
+  const sec = $("membrosProjeto");
+  if (!sec) return;
   sec.innerHTML = `<header><span class="rotulo">Membros</span></header>
     <ul class="lista-membros">${membros.map((m) => `
       <li><span class="user-nome">${esc(m.display_name)}</span>
@@ -131,7 +135,6 @@ async function renderMembros(slug, podeAdmin) {
     <p class="dica">Falta alguém? Cadastre na aba Usuários. "Dono" só outro dono concede.</p>`
     : `<p class="dica">Todos os usuários da instalação já são membros deste projeto.
         Para incluir alguém novo, cadastre na aba Usuários.</p>`}`;
-  $("painelProjetoTab").appendChild(sec);
   if (!podeAdmin) return;
 
   sec.querySelectorAll(".papel-sel").forEach((s) =>
