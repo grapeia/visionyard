@@ -152,6 +152,13 @@ LADO_SAM = 1024   # o encoder do SAM trabalha em 1024; mais que isso é tráfego
 # folga a câmera de celular (12–50 MP) e a industrial.
 LIMITE_BYTES = 60 * 1024 * 1024
 LIMITE_PIXELS = 100_000_000
+# Só o JPEG decodifica já reduzido (`draft`); os outros formatos decodificam
+# inteiros antes do thumbnail, então o teto deles é menor: 40 MP em RGBA de
+# 8 bits já são 160 MB.
+LIMITE_PIXELS_SEM_DRAFT = 40_000_000
+# Modos de 8 bits por canal. 16 bits e ponto flutuante dobram ou quadruplicam
+# o buffer, e nenhuma câmera do produto os entrega.
+MODOS = {"1", "L", "LA", "P", "PA", "RGB", "RGBA", "RGBX", "CMYK", "YCbCr"}
 # Reduções simultâneas: cada uma usa uma thread e alguns buffers; o resto
 # espera a vez em vez de disputar a RAM da API.
 _reducoes = asyncio.Semaphore(4)
@@ -171,6 +178,11 @@ async def imagem_sam(project_slug: str, sample_id: UUID) -> bytes:
             " WHERE p.slug = %s AND s.id = %s", (project_slug, sample_id),
             conn=conn)
     if s is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "imagem não encontrada")
+    # A rota lê com a credencial da API: só de bucket da lista da instalação.
+    # 404 e não 403, como o resto: não confirma que a URI existe.
+    lista = await parameters.valor("buckets")
+    if s["uri"][5:].partition("/")[0] not in lista:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "imagem não encontrada")
     grande = HTTPException(
         status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -204,8 +216,10 @@ def _reduzir(bruto: bytes) -> bytes:
     with Image.open(io.BytesIO(bruto)) as arq:
         # Pelo cabeçalho, antes de decodificar um pixel: o teto global do
         # Pillow só levanta acima de ~179 MP, e mexer nele seria por processo.
-        if arq.width * arq.height > LIMITE_PIXELS:
-            raise storage.GrandeDemais(f"{arq.width}x{arq.height}")
+        teto = LIMITE_PIXELS if arq.format == "JPEG" else LIMITE_PIXELS_SEM_DRAFT
+        if arq.width * arq.height > teto or arq.mode not in MODOS:
+            raise storage.GrandeDemais(f"{arq.format} {arq.mode} "
+                                       f"{arq.width}x{arq.height}")
         # JPEG decodifica já reduzido (fator de 2 ≥ o pedido): poupa a cópia
         # em tamanho cheio que o exif_transpose e o convert fariam.
         arq.draft("RGB", (LADO_SAM, LADO_SAM))

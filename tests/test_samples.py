@@ -220,7 +220,7 @@ async def _sample_de_segmentacao(admin) -> str:
     with psycopg.connect(TEST_DSN, autocommit=True) as conn:
         row = conn.execute(
             "INSERT INTO sample (project_id, sha256, uri, width, height)"
-            " SELECT id, 'abc', 'gs://bucket/banda.jpg', 640, 480"
+            " SELECT id, 'abc', 'gs://bucket-de-teste/banda.jpg', 640, 480"
             "   FROM project WHERE slug = %s RETURNING id",
             (SEG["slug"],)).fetchone()
     return str(row[0])
@@ -318,7 +318,7 @@ async def test_sam_le_a_imagem_pela_api_reduzida(admin, monkeypatch):
 
     from PIL import Image
     assert Image.open(BytesIO(r.content)).size == (1024, 683)
-    assert pedidos == ["gs://bucket/banda.jpg"]
+    assert pedidos == ["gs://bucket-de-teste/banda.jpg"]
 
 
 async def test_sam_direto_do_bucket_quando_o_parametro_manda(admin, monkeypatch):
@@ -331,7 +331,7 @@ async def test_sam_direto_do_bucket_quando_o_parametro_manda(admin, monkeypatch)
     assert r.status_code == 200, r.text
     sid = await _sample_de_segmentacao(admin)
     d = (await admin.get(f"/v1/projects/{SEG['slug']}/samples/{sid}")).json()
-    assert d["url_sam"] == d["url"] == "https://assinada/bucket/banda.jpg"
+    assert d["url_sam"] == d["url"] == "https://assinada/bucket-de-teste/banda.jpg"
 
 
 async def test_sam_so_em_projeto_de_segmentacao(admin, tmp_path):
@@ -385,6 +385,37 @@ async def test_sam_image_recusa_imagem_grande_demais(admin, monkeypatch):
 async def test_sam_image_arquivo_corrompido_e_422(admin, monkeypatch):
     from api import storage
     monkeypatch.setattr(storage, "ler", lambda uri, m: b"isto nao e um jpeg")
+    sid = await _sample_de_segmentacao(admin)
+    r = await admin.get(f"/v1/projects/{SEG['slug']}/samples/{sid}/sam-image")
+    assert r.status_code == 422
+
+
+async def test_sam_image_so_le_bucket_da_lista(admin, monkeypatch):
+    """A rota lê com a credencial da API: imagem cuja URI aponta para bucket
+    fora da lista da instalação não sai por aqui."""
+    from api import storage
+    from api.services import parameters
+    monkeypatch.setattr(storage, "ler", lambda uri, m: _jpeg(10, 10))
+    monkeypatch.setattr(parameters, "travados", lambda: set())
+    await admin.put("/v1/parameters/buckets", json={"valor": ["outro-bucket"]})
+    sid = await _sample_de_segmentacao(admin)          # gs://bucket-de-teste/banda.jpg
+    r = await admin.get(f"/v1/projects/{SEG['slug']}/samples/{sid}/sam-image")
+    assert r.status_code == 404
+
+
+async def test_sam_image_png_tem_teto_menor(admin, monkeypatch):
+    """Só JPEG decodifica já reduzido; PNG decodifica inteiro, então o teto
+    de pixels dele é menor."""
+    import io
+
+    from PIL import Image
+
+    from api import storage
+    from api.services import samples as svc
+    buf = io.BytesIO()
+    Image.new("RGB", (3000, 2000)).save(buf, "PNG")
+    monkeypatch.setattr(storage, "ler", lambda uri, m: buf.getvalue())
+    monkeypatch.setattr(svc, "LIMITE_PIXELS_SEM_DRAFT", 1_000_000)
     sid = await _sample_de_segmentacao(admin)
     r = await admin.get(f"/v1/projects/{SEG['slug']}/samples/{sid}/sam-image")
     assert r.status_code == 422
