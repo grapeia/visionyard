@@ -201,3 +201,81 @@ async def test_resposta_e_contrato_e_nao_a_linha_do_banco(admin, tmp_path,
     assert "segredo_do_banco" not in d
     assert "coluna_nova" not in d["itens"][0]
     assert d["total"] == 6          # e o que é contrato continua lá
+
+
+# --------------------------------------------------------------------------- #
+# Segmentação: a anotação é polígono, não caixa
+# --------------------------------------------------------------------------- #
+
+SEG = {"slug": "carcaca", "name": "Carcaça", "task_type": "segment",
+       "classes": ["banda", {"name": "hematoma", "inside": "banda"}]}
+TRI = [[.1, .1], [.9, .1], [.5, .9]]
+
+
+async def _sample_de_segmentacao(admin) -> str:
+    import psycopg
+
+    from .conftest import TEST_DSN
+    assert (await admin.post("/v1/projects", json=SEG)).status_code == 201
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        row = conn.execute(
+            "INSERT INTO sample (project_id, sha256, uri, width, height)"
+            " SELECT id, 'abc', 'gs://bucket/banda.jpg', 640, 480"
+            "   FROM project WHERE slug = %s RETURNING id",
+            (SEG["slug"],)).fetchone()
+    return str(row[0])
+
+
+async def test_segmentacao_grava_poligono(admin):
+    sid = await _sample_de_segmentacao(admin)
+    base = f"/v1/projects/{SEG['slug']}/samples/{sid}"
+    r = await admin.put(f"{base}/annotation", json={"boxes": [
+        {"cls": 0, "pts": TRI}, {"cls": 1, "pts": [[.2, .2], [.4, .2], [.3, .4]]}]})
+    assert r.status_code == 200, r.text
+    assert r.json()["caixas"] == 2
+
+    d = (await admin.get(base)).json()
+    assert d["minha_anotacao"]["boxes"][0] == {"cls": 0, "pts": TRI}
+
+
+@pytest.mark.parametrize("item", [
+    {"cls": 0, "pts": [[.1, .1], [.9, .1]]},              # dois pontos não é área
+    {"cls": 0, "pts": [[.1, .1], [1.4, .1], [.5, .9]]},   # vértice fora da imagem
+    {"cls": 0, "pts": [[.1, .1, .3], [.9, .1], [.5, .9]]},  # ponto com 3 números
+    {"cls": 5, "pts": TRI},                               # classe que não existe
+    {"cls": 0, "pts": [[.2, .2], [.2, .2], [.2, .2]]},    # pontos repetidos
+    {"cls": 0, "pts": [[.1, .1], [.5, .5], [.9, .9]]},    # colineares
+])
+async def test_poligono_invalido_e_recusado(admin, item):
+    sid = await _sample_de_segmentacao(admin)
+    r = await admin.put(f"/v1/projects/{SEG['slug']}/samples/{sid}/annotation",
+                        json={"boxes": [item]})
+    assert r.status_code == 422, r.text
+
+
+async def test_caixa_nao_entra_em_projeto_de_segmentacao(admin):
+    """Misturar as formas deixaria o manifesto com linhas de 5 números no meio
+    das de polígono, e o YOLO-seg as leria como polígono de 2 pontos."""
+    sid = await _sample_de_segmentacao(admin)
+    r = await admin.put(f"/v1/projects/{SEG['slug']}/samples/{sid}/annotation",
+                        json={"boxes": [{"cls": 0, "cx": .5, "cy": .5,
+                                         "w": .2, "h": .2}]})
+    assert r.status_code == 422
+    assert "polígono" in r.json()["detail"]
+
+
+async def test_poligono_nao_entra_em_projeto_de_deteccao(admin, tmp_path):
+    await _projeto_com_dados(admin, tmp_path)
+    sid = await _primeiro(admin)
+    r = await admin.put(f"/v1/projects/{PROJ['slug']}/samples/{sid}/annotation",
+                        json={"boxes": [{"cls": 0, "pts": TRI}]})
+    assert r.status_code == 422
+    assert "caixa" in r.json()["detail"]
+
+
+def test_poligono_instanciado_e_reconhecido():
+    """O discriminador olha a chave no JSON e o tipo na instância: só a chave
+    fazia o `model_dump` da própria resposta cair em `Caixa`."""
+    from api.routers.samples import AnotacaoIn, Poligono
+    a = AnotacaoIn(boxes=[Poligono(cls=0, pts=[(0, 0), (1, 0), (0, 1)])])
+    assert a.model_dump()["boxes"][0]["pts"][1] == (1, 0)

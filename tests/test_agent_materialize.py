@@ -105,3 +105,34 @@ def test_cache_por_md5_nao_baixa_de_novo(tmp_path):
                              tmp_path / "cache", lambda *_: None,
                              baixar=_baixador(fake_baixar))
     assert n["baixas"] == 1, "baixou a mesma imagem duas vezes"
+
+
+def _baixa_falso(uri, destino):
+    Path(destino).write_bytes(b"imagem-falsa")
+
+
+def test_materializar_escreve_poligono_no_formato_yolo_seg(tmp_path):
+    itens = [{"uri": "gs://b/a.jpg", "md5": "a" * 32, "split": "train",
+              "polys": [[1, .1, .1, .9, .1, .5, .9]]}]
+    destino = tmp_path / "ds"
+    materialize.materializar(_manifesto(tmp_path, itens), ["banda", "hematoma"],
+                             destino, tmp_path / "cache", lambda *_: None,
+                             baixar=_baixador(_baixa_falso))
+    rot = (destino / "labels" / "train" / f"{'a' * 32}.txt").read_text().strip()
+    assert rot == ("1 0.100000 0.100000 0.900000 0.100000 "
+                   "0.500000 0.900000")
+
+
+def test_poligono_e_recortado_pela_roi():
+    """O que passa da ROI é cortado na borda dela (não descartado: a banda
+    inteira raramente cabe no recorte), e o resto vai para o espaço 0..1 do
+    recorte. Polígono todo fora some."""
+    roi = (0.5, 0.0, 0.5, 1.0)                 # metade direita
+    quadrado = [0, .25, .25, .75, .25, .75, .75, .25, .75]
+    fora = [0, .1, .1, .2, .1, .2, .2]
+    out = materialize._reprojetar_polys([quadrado, fora], roi)
+    assert len(out) == 1
+    _, *xy = out[0]
+    pts = sorted(zip(xy[0::2], xy[1::2], strict=True))
+    assert [(round(x, 6), round(y, 6)) for x, y in pts] == [
+        (0.0, 0.25), (0.0, 0.75), (0.5, 0.25), (0.5, 0.75)]

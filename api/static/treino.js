@@ -6,6 +6,9 @@
 
 import { $, api, avisar, clamp01, comTravaDeEnvio, cor, css, erroAviso, esc, estado, num, post } from "./nucleo.js";
 
+const BASES = [["yolo11n", "YOLO11n — mais rápido"], ["yolo11s", "YOLO11s"],
+               ["yolo11m", "YOLO11m — mais preciso"]];
+
 const treino = { atual: null, poll: null, seq: 0, epoca: -1,
                  eventos: [], series: {} };
 
@@ -223,6 +226,12 @@ $("botaoNovoRun").addEventListener("click", () => {
       return `<option value="${esc(d.slug)}">${esc(d.name)}${off}</option>`;
     }).join("");
   }).catch(() => {});
+  // O peso-base acompanha a tarefa: a API recusa a combinação errada, e
+  // oferecer só a certa evita o 422 depois de preencher o formulário.
+  const sufixo = estado.tarefa === "segment" ? "-seg" : "";
+  $("runBase").innerHTML = BASES.map(([b, rotulo]) =>
+    `<option value="${b}${sufixo}.pt" ${b === "yolo11n" ? "selected" : ""}>` +
+    `${rotulo}${sufixo ? " (segmentação)" : ""}</option>`).join("");
   $("dlgRun").showModal();
   preencherVersoes().catch((e) => avisar(e.message, true));
 });

@@ -1,19 +1,31 @@
-/* O anotador: canvas, alças, teclado e a gravação da caixa. */
+/* O anotador: canvas, alças, teclado e a gravação da caixa. Em projeto de
+ * segmentação, o desenho e a edição são do `segmentador.js` (polígono com
+ * SAM); o resto — navegação, classes, gravação — é o mesmo. */
 
 import { mostrarAba } from "./abas.js";
 import { $, api, avisar, clamp, clamp01, cor, erroAviso, esc, estado, post } from "./nucleo.js";
 import { hachurarFora } from "./roi.js";
 import { carregarDados, dados, desenharGrade, preencherEscopo } from "./rotulagem.js";
+import * as segm from "./segmentador.js";
+
+const segmentacao = () => estado.tarefa === "segment";
+const ctxSeg = () => ({ anot, cv: $("anotCanvas"), aoMudar: redesenhar });
 
 const anot = { id: null, boxes: [], classe: 0, classes: [], sel: -1,
                desenhando: null, img: null, indice: -1, sujo: false,
                // preferência lembrada: quem rotula o dia todo não quer
                // remarcar a caixinha a cada sessão
                nomes: localStorage.getItem("visionyard.nomes") !== "0",
-               arrasto: null, fit: 1, zoom: 1, roi: null };
+               arrasto: null, fit: 1, zoom: 1, roi: null,
+               // cresce a cada abertura: resposta de uma abertura anterior
+               // (clique rápido na grade, q/e seguidos) não pode vencer a atual
+               geracao: 0 };
 
 export async function abrirAnotador(id) {
+  const geracao = ++anot.geracao;
+  segm.esquecer();
   const d = await api(`/projects/${estado.projeto}/samples/${id}`);
+  if (geracao !== anot.geracao) return;
   anot.id = id;
   anot.classes = (estado.classes || []).map((c, i) => ({ nome: c, cor: cor(i) }));
   anot.boxes = (d.minha_anotacao && d.minha_anotacao.boxes) || [];
@@ -37,7 +49,10 @@ export async function abrirAnotador(id) {
     : "";
   $("anotDica").innerHTML =
     `<span class="anot-progresso">${anot.indice + 1}/${dados.itens.length}` +
-    ` · pág ${dados.pagina + 1} · arraste as alças p/ ajustar</span>`;
+    ` · pág ${dados.pagina + 1} · ${segmentacao()
+      ? "clique no objeto · Enter aceita · Esc descarta"
+      : "arraste as alças p/ ajustar"}</span>`;
+  $("anotRotuloLista").textContent = segmentacao() ? "Contornos" : "Caixas";
   $("anotador").hidden = false;
 
   const img = $("anotImagem");
@@ -48,6 +63,7 @@ export async function abrirAnotador(id) {
     img.src = d.url || "";
     if (!d.url) falha(new Error("imagem sem URL assinada"));
   }).catch((e) => avisar(e.message, true));
+  if (geracao !== anot.geracao) return;
 
   // Cada imagem abre inteira (fit) e sem zoom; a roda amplia a partir daí.
   anot.zoom = 1;
@@ -55,6 +71,10 @@ export async function abrirAnotador(id) {
   renderImagem();
   $("anotTela").scrollTo(0, 0);
   desenharClasses();
+  // Sem await: a imagem já está na tela e dá para começar à mão enquanto o
+  // encoder roda. Contorno começado à mão continua à mão; os que começarem
+  // depois de "SAM pronto" usam o SAM.
+  if (segmentacao()) segm.prepararImagem(d.url, redesenhar);
 }
 
 /** Escala que faz a imagem inteira caber na área, sem cortar. */
@@ -131,8 +151,8 @@ function listarCaixas() {
           <span class="cor" style="background:${cor(b.cls)}"></span>
           ${esc((anot.classes[b.cls] || {}).nome || b.cls)}
           <button class="discreto" data-apagar="${i}">apagar</button></li>`).join("")
-    : `<li class="vazio">nenhuma caixa — salvar assim marca a imagem como
-         "olhei, não há nada"</li>`;
+    : `<li class="vazio">nenhum${segmentacao() ? " contorno" : "a caixa"} —
+         salvar assim marca a imagem como "olhei, não há nada"</li>`;
   $("anotCaixas").querySelectorAll("[data-caixa]").forEach((li) =>
     li.addEventListener("click", (ev) => {
       if (ev.target.dataset.apagar !== undefined) return;
@@ -161,6 +181,13 @@ function redesenhar() {
     cx.setLineDash([6, 4]);
     cx.strokeRect(rx, ry, rw, rh);
     cx.setLineDash([]);
+  }
+  $("anotSam").textContent = segmentacao() ? segm.situacaoSam() : "";
+  $("anotSam").title = segm.seg.situacao === "indisponivel" ? segm.seg.motivo : "";
+  if (segmentacao()) {
+    segm.desenhar(cx, cv, anot);
+    listarCaixas();
+    return;
   }
   anot.boxes.forEach((b, i) => {
     const x = (b.cx - b.w / 2) * cv.width, y = (b.cy - b.h / 2) * cv.height;
@@ -248,6 +275,11 @@ function alvoEm(p, cv) {
 
 $("anotCanvas").addEventListener("pointerdown", (ev) => {
   const cv = $("anotCanvas"), p = posCanvas(ev);
+  if (segmentacao()) {
+    ev.target.setPointerCapture(ev.pointerId);
+    segm.apertar(ev, p, ctxSeg());
+    return;
+  }
   const alvo = alvoEm(p, cv);
 
   if (alvo.tipo === "resize") {
@@ -267,6 +299,10 @@ $("anotCanvas").addEventListener("pointerdown", (ev) => {
 
 $("anotCanvas").addEventListener("pointermove", (ev) => {
   const cv = $("anotCanvas"), p = posCanvas(ev);
+  if (segmentacao()) {
+    if (!segm.mover(p, ctxSeg())) cv.style.cursor = segm.cursor(p, ctxSeg());
+    return;
+  }
   const fx = clamp01(p.x / cv.width), fy = clamp01(p.y / cv.height);
 
   if (anot.desenhando) {
@@ -292,7 +328,14 @@ $("anotCanvas").addEventListener("pointermove", (ev) => {
   }
 });
 
+// Ponteiro cancelado (toque interrompido, captura perdida) não manda
+// pointerup: sem isto o arrasto seguia preso ao próximo movimento.
+$("anotCanvas").addEventListener("pointercancel", () => {
+  segm.soltar(); anot.arrasto = null; anot.desenhando = null; redesenhar();
+});
+
 $("anotCanvas").addEventListener("pointerup", () => {
+  if (segmentacao()) { segm.soltar(); return; }
   if (anot.arrasto) {
     // resize por um lado só pode ter cruzado o oposto: normaliza w/h > 0
     if (anot.sel >= 0) normalizarCaixa(anot.boxes[anot.sel]);
@@ -314,6 +357,15 @@ $("anotCanvas").addEventListener("pointerup", () => {
   anot.sel = anot.boxes.length - 1;
   anot.sujo = true;
   redesenhar();
+});
+
+// O botão direito é ponto negativo do SAM e apaga vértice: o menu do
+// navegador por cima atrapalharia os dois.
+$("anotCanvas").addEventListener("contextmenu", (ev) => {
+  if (segmentacao()) ev.preventDefault();
+});
+$("anotCanvas").addEventListener("dblclick", (ev) => {
+  if (segmentacao()) segm.duploClique(posCanvas(ev), ctxSeg());
 });
 
 /** Move a(s) borda(s) indicada(s) para o ponto (fx,fy), em coordenadas 0..1.
@@ -347,6 +399,9 @@ document.addEventListener("keydown", (ev) => {
       ev.target.matches("input, textarea, select")) return;
   const k = ev.key.toLowerCase();
 
+  // Antes do Escape geral: com um contorno em rascunho, Esc o descarta em
+  // vez de fechar a imagem.
+  if (segmentacao() && segm.tecla(ev, anot, redesenhar, avisar)) return;
   if (ev.key === "Escape") { fecharAnotador(); return; }
 
   if (k === "d" || ev.key === "Delete" || ev.key === "Backspace") {
@@ -374,6 +429,10 @@ document.addEventListener("keydown", (ev) => {
  * gravar uma anotação vazia, que no modelo significa "olhei e não há nada".
  */
 async function irParaImagem(passo) {
+  if (segmentacao() && segm.seg.rascunho) {
+    avisar("há um contorno em rascunho — Enter aceita, Esc descarta", true);
+    return;
+  }
   if (anot.sujo) await salvarAnotacao({ silencioso: true });
 
   let i = anot.indice + passo;
@@ -401,10 +460,14 @@ async function irParaImagem(passo) {
  * o resultado no canvas. Só faz sentido numa imagem em branco — o modelo não
  * sobrescreve o que você já desenhou. */
 async function prerotular() {
-  if (anot.boxes.length) {
-    avisar("esta imagem já tem caixas — o pré-tag é para começar do zero");
+  if (anot.boxes.length || segm.seg.rascunho) {
+    avisar("esta imagem já tem anotação — o pré-tag é para começar do zero");
     return;
   }
+  // A espera é longa (segundos): a pessoa pode desenhar ou trocar de imagem
+  // no meio. O resultado só entra se ainda for a mesma abertura e nada foi
+  // desenhado; senão fica gravado e aparece ao reabrir.
+  const geracao = anot.geracao, projeto = estado.projeto, sampleId = anot.id;
   const modelos = await api(`/projects/${estado.projeto}/models`).catch(() => []);
   if (!modelos.length) {
     avisar("nenhum modelo treinado ainda — treine um na aba Treinamento", true);
@@ -416,22 +479,28 @@ async function prerotular() {
   const rotulo = btn.textContent;
   btn.disabled = true; btn.textContent = "…";
   try {
-    const r = await post(`/projects/${estado.projeto}/prelabel`, {
-      model_slug: m.slug, sample_id: anot.id, conf: 0.25, only_missing: false,
+    const r = await post(`/projects/${projeto}/prelabel`, {
+      model_slug: m.slug, sample_id: sampleId, conf: 0.25, only_missing: false,
     });
     avisar(`rodando ${m.name} v${r.model_version} nesta imagem…`);
-    if (!await esperarPrelabelSample(r.job_id)) return;
-    const d = await api(`/projects/${estado.projeto}/samples/${anot.id}`);
+    if (!await esperarPrelabelSample(r.job_id, projeto)) return;
+    const d = await api(`/projects/${projeto}/samples/${sampleId}`);
     const boxes = (d.minha_anotacao && d.minha_anotacao.boxes) || [];
     if (!boxes.length) { avisar("o modelo não encontrou nada aqui"); return; }
+    if (geracao !== anot.geracao || anot.boxes.length || segm.seg.rascunho) {
+      avisar("o pré-tag terminou, mas você já mexeu aqui — ele não foi " +
+             "aplicado por cima do seu desenho");
+      return;
+    }
     anot.boxes = boxes; anot.sel = -1; anot.sujo = false; redesenhar();
-    avisar(`${boxes.length} caixa(s) do modelo — corrija e salve`);
+    avisar(`${boxes.length} ${segmentacao() ? "contorno(s)" : "caixa(s)"}` +
+           " do modelo — corrija e salve");
   } catch (e) { avisar(e.message, true); }
   finally { btn.disabled = false; btn.textContent = rotulo; }
 }
 
-async function esperarPrelabelSample(jobId) {
-  const url = `/projects/${estado.projeto}/jobs/${jobId}`;
+async function esperarPrelabelSample(jobId, projeto) {
+  const url = `/projects/${projeto}/jobs/${jobId}`;
   for (let i = 0; i < 120; i++) {
     let j;
     try { j = await api(url); } catch { return false; }
@@ -456,6 +525,7 @@ $("anotPretag").addEventListener("click", prerotular);
 $("anotVoltar").addEventListener("click", fecharAnotador);
 function fecharAnotador() {
   $("anotador").hidden = true;
+  segm.esquecer();
   $("anotImagem").src = "";
   anot.arrasto = null;
   $("anotCanvas").style.cursor = "crosshair";
@@ -475,6 +545,9 @@ async function salvarAnotacao({ silencioso = false } = {}) {
 }
 
 $("anotSalvar").addEventListener("click", async () => {
+  // gravar com um contorno em rascunho o perderia sem aviso
+  if (segmentacao() && segm.seg.rascunho)
+    return avisar("há um contorno em rascunho — Enter aceita, Esc descarta", true);
   const botao = $("anotSalvar");
   botao.disabled = true;
   try {

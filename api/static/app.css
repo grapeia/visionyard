@@ -614,7 +614,11 @@ dialog .acoes { display: flex; gap: 8px; justify-content: flex-end; margin-top: 
 .add-classe { display: flex; gap: 8px; margin-top: 12px; max-width: 420px; }
 .add-classe input { flex: 1; padding: 7px 9px; background: var(--aco-800);
   border: 1px solid var(--trilho); border-radius: var(--r); color: var(--texto); }
-.add-classe .primario { padding: 7px 12px; }
+.add-classe .primario { padding: 7px 12px; white-space: nowrap; }
+/* "Dentro de" (segmentação): o nome continua sendo o campo largo */
+.add-classe select, .chip-add select { flex: 0 1 auto; width: auto;
+  max-width: 45%; margin: 0; padding: 7px 9px; }
+.add-classe:has(select) { max-width: 560px; }
 
 /* chips do diálogo de novo projeto */
 .chips { display: flex; flex-wrap: wrap; gap: 6px; min-height: 30px;

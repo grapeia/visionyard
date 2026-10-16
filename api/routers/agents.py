@@ -15,14 +15,15 @@ o header próprio e todas as rotas deste arquivo passam por ele.
 from __future__ import annotations
 
 import json
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Path
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Discriminator, Field, Tag
 
 from ..deps import CurrentDevice
 from ..services import agents as svc
+from .samples import Poligono
 
 router = APIRouter(tags=["agents"], prefix="/agent")
 
@@ -184,9 +185,24 @@ class PreCaixa(BaseModel):
     conf: float | None = None
 
 
+class PrePoligono(Poligono):
+    """Contorno previsto por modelo -seg (projeto de segmentação)."""
+    conf: float | None = None
+
+
+def _forma(v: Any) -> str:
+    # Mesmo critério de `samples._forma`: pela chave, não pela primeira forma
+    # que validar.
+    if isinstance(v, dict):
+        return "poligono" if "pts" in v else "caixa"
+    return "poligono" if isinstance(v, PrePoligono) else "caixa"
+
+
 class Predicao(BaseModel):
     sample_id: str
-    boxes: list[PreCaixa]
+    boxes: list[Annotated[
+        Annotated[PreCaixa, Tag("caixa")] | Annotated[PrePoligono, Tag("poligono")],
+        Discriminator(_forma)]]
 
 
 class PrelabelIn(BaseModel):

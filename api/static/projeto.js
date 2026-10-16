@@ -26,6 +26,7 @@ export async function carregarProjetoTab() {
   estado.papel = d.role;
   const podeEditar = RANK[d.role] >= RANK.engineer;
   const classes = (d.schema && d.schema.classes) || [];
+  const segmento = d.task_type === "segment";
   const c = d.counts || {};
 
   $("painelProjetoTab").innerHTML = `
@@ -48,14 +49,22 @@ export async function carregarProjetoTab() {
         ${classes.map((cl) => `<li>
           <span class="idx">${cl.id}</span>
           <span class="cor" style="background:${cor(cl.id)}"></span>
-          <span class="nome">${esc(cl.name)}</span></li>`).join("")}
+          <span class="nome">${esc(cl.name)}</span>
+          ${cl.inside != null ? `<span class="dica">dentro de
+            ${esc((classes[cl.inside] || {}).name)}</span>` : ""}</li>`).join("")}
       </ol>
       ${podeEditar ? `
         <form class="add-classe" id="formAddClasse">
           <input id="addClasseNome" placeholder="nova classe"
                  pattern="[a-z0-9_]+" title="minúsculas, números e _" required>
+          ${segmento ? `<select id="addClasseDentro" title="Dentro de">
+            ${opcoesDentro(classes.filter((x) => x.inside == null).map((x) => x.name))}
+          </select>` : ""}
           <button class="primario" type="submit">Adicionar classe</button>
         </form>
+        ${segmento ? `<p class="dica">"Dentro de" faz da classe um recorte da
+          principal (um corte, um hematoma): o desenho dela é cortado pelo
+          contorno da principal. Fica fixado na criação, como o nome.</p>` : ""}
         <p class="dica">Entra como índice ${classes.length}, gera o schema
           v${(d.schema ? d.schema.version : 1) + 1} e não invalida o que já foi
           rotulado. Renomear ou reordenar é outra história (quebra compatibilidade)
@@ -87,7 +96,9 @@ export async function carregarProjetoTab() {
     const botao = f.querySelector("button");
     botao.disabled = true;
     try {
-      const r = await post(`/projects/${estado.projeto}/schema`, { add: [nome] });
+      const dentro = $("addClasseDentro") ? $("addClasseDentro").value : "";
+      const r = await post(`/projects/${estado.projeto}/schema`,
+                           { add: [dentro ? { name: nome, inside: dentro } : nome] });
       avisar(`classe "${nome}" adicionada · schema v${r.version}`);
       await carregarProjeto();          // atualiza estado.classes p/ o anotador
       await carregarProjetoTab();
@@ -166,7 +177,24 @@ async function removerMembro(slug, userId) {
 
 // ---- novo projeto (com construtor de classes em chips) ----
 
+// `{ nome, dentro }`: `dentro` é o nome da principal, ou "" (principal).
 let pjClasses = [];
+
+/** Opções do "Dentro de": principal por padrão, depois as principais. */
+const opcoesDentro = (principais) => `<option value="">— (principal)</option>` +
+  principais.map((n) => `<option value="${esc(n)}">${esc(n)}</option>`).join("");
+
+/** O select só existe em segmentação; lista as principais já na lista. */
+function renderDentro() {
+  const seg = $("pjTipo").value === "segment";
+  $("pjDentro").hidden = !seg;
+  if (!seg) { pjClasses.forEach((c) => { c.dentro = ""; }); return; }
+  const atual = $("pjDentro").value;
+  $("pjDentro").innerHTML = opcoesDentro(
+    pjClasses.filter((c) => !c.dentro).map((c) => c.nome));
+  $("pjDentro").value = pjClasses.some((c) => c.nome === atual && !c.dentro)
+    ? atual : "";
+}
 
 /** Esquece o rascunho de classes do diálogo de novo projeto.
  *
@@ -177,14 +205,20 @@ export function esquecerClasses() { pjClasses = []; }
 function renderChips() {
   $("pjChips").innerHTML = pjClasses.length
     ? pjClasses.map((c, i) => `<span class="chip">
-        <span class="chip-idx">${i}</span>${esc(c)}
+        <span class="chip-idx">${i}</span>${esc(c.nome)}${c.dentro
+          ? ` <span class="dica">⊂ ${esc(c.dentro)}</span>` : ""}
         <button type="button" data-rm="${i}" aria-label="remover">×</button>
       </span>`).join("")
     : `<span class="chip-vazio">nenhuma classe ainda</span>`;
   $("pjChips").querySelectorAll("[data-rm]").forEach((b) =>
     b.addEventListener("click", () => {
-      pjClasses.splice(Number(b.dataset.rm), 1); renderChips();
+      // remover uma principal leva junto os recortes dela: o recorte
+      // apontaria para uma classe que não vai existir
+      const [saiu] = pjClasses.splice(Number(b.dataset.rm), 1);
+      pjClasses = pjClasses.filter((c) => c.dentro !== saiu.nome);
+      renderChips();
     }));
+  renderDentro();
 }
 
 function addChip() {
@@ -193,8 +227,10 @@ function addChip() {
   if (!nome) return;
   if (!/^[a-z0-9_]+$/.test(nome))
     return avisar("classe: só minúsculas, números e _", true);
-  if (pjClasses.includes(nome)) return avisar("classe já na lista", true);
-  pjClasses.push(nome); inp.value = ""; inp.focus(); renderChips();
+  if (pjClasses.some((c) => c.nome === nome))
+    return avisar("classe já na lista", true);
+  pjClasses.push({ nome, dentro: $("pjDentro").hidden ? "" : $("pjDentro").value });
+  inp.value = ""; inp.focus(); renderChips();
 }
 
 $("botaoNovoProjeto").addEventListener("click", () => {
@@ -202,6 +238,7 @@ $("botaoNovoProjeto").addEventListener("click", () => {
   $("dlgProjeto").showModal();
 });
 $("pjAddClasse").addEventListener("click", addChip);
+$("pjTipo").addEventListener("change", () => { renderDentro(); renderChips(); });
 $("pjClasseInput").addEventListener("keydown", (ev) => {
   if (ev.key === "Enter") { ev.preventDefault(); addChip(); }
 });
@@ -223,7 +260,9 @@ $("formProjeto").addEventListener("submit", comTravaDeEnvio($("formProjeto"), as
   try {
     await post("/projects", {
       slug, name: $("pjNome").value,
-      task_type: $("pjTipo").value, classes: pjClasses,
+      task_type: $("pjTipo").value,
+      classes: pjClasses.map((c) => c.dentro ? { name: c.nome, inside: c.dentro }
+                                             : c.nome),
     });
     $("dlgProjeto").close();
     $("formProjeto").reset();

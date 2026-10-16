@@ -140,7 +140,7 @@ async def salvar_anotacao(project_slug: str, sample_id: UUID, user_id: str,
     """Grava a anotação de UM autor. A de outro rotulador não é tocada."""
     async with db.connection() as conn, conn.transaction():
         ctx = await db.fetch_one(
-            "SELECT s.id, p.id AS project_id,"
+            "SELECT s.id, p.id AS project_id, p.task_type,"
             "  (SELECT id FROM label_schema WHERE project_id = p.id"
             "    ORDER BY version DESC LIMIT 1) AS schema_id,"
             "  (SELECT classes FROM label_schema WHERE project_id = p.id"
@@ -151,6 +151,20 @@ async def salvar_anotacao(project_slug: str, sample_id: UUID, user_id: str,
         if ctx is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND,
                                 "imagem não encontrada")
+
+        # Uma forma por projeto. Misturar deixaria o manifesto com linhas de 5
+        # números entre as de polígono, e o YOLO-seg leria a caixa como um
+        # polígono de dois pontos.
+        poligonos = ["pts" in b for b in caixas]
+        if ctx["task_type"] == "segment" and not all(poligonos):
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                "projeto de segmentação anota polígono, não caixa")
+        if ctx["task_type"] != "segment" and any(poligonos):
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                "polígono só em projeto de segmentação; aqui a anotação é"
+                " caixa")
 
         n_classes = len(ctx["classes"])
         fora = [b["cls"] for b in caixas if b["cls"] >= n_classes]

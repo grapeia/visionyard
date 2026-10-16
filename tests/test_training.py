@@ -415,3 +415,99 @@ async def test_train_devices_lista_para_quem_vai_escolher(admin, client, tmp_pat
         await admin.put(f"/v1/projects/{PROJ['slug']}/members",
                         json={"email": "eng@teste.com", "role": "engineer"})
         assert (await eng.get("/v1/train-devices")).status_code == 200
+
+
+# --------------------------------------------------------------------------- #
+# Segmentação: peso -seg, e só nele
+# --------------------------------------------------------------------------- #
+
+SEG = {"slug": "carcaca", "name": "Carcaça", "task_type": "segment",
+       "classes": ["banda", {"name": "hematoma", "inside": "banda"}]}
+
+
+async def _segmentacao_congelada(admin) -> dict:
+    """Projeto de segmentação com uma imagem anotada em polígono, congelado
+    em v1. Devolve o meta do congelamento capturado do `build_manifest`."""
+    import psycopg
+
+    from .conftest import TEST_DSN
+    assert (await admin.post("/v1/projects", json=SEG)).status_code == 201
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        src, sid = conn.execute(
+            "WITH p AS (SELECT id FROM project WHERE slug = %s),"
+            " ds AS (INSERT INTO data_source (project_id, kind, uri)"
+            "        SELECT id, 'gcs', 'gs://bucket/bandas/' FROM p RETURNING id),"
+            " s AS (INSERT INTO sample (project_id, sha256, md5, uri, width, height)"
+            "       SELECT id, 'abc', decode(repeat('ab', 16), 'hex'),"
+            "              'gs://bucket/bandas/1.jpg', 640, 480 FROM p RETURNING id),"
+            " ss AS (INSERT INTO sample_source (sample_id, data_source_id)"
+            "        SELECT s.id, ds.id FROM s, ds)"
+            " SELECT ds.id, s.id FROM ds, s", (SEG["slug"],)).fetchone()
+    base = f"/v1/projects/{SEG['slug']}"
+    r = await admin.put(f"{base}/samples/{sid}/annotation", json={"boxes": [
+        {"cls": 0, "pts": [[.1, .1], [.9, .1], [.5, .9]]}]})
+    assert r.status_code == 200, r.text
+    await admin.post(f"{base}/datasets", json=DS)
+    await admin.put(f"{base}/datasets/{DS['slug']}/sources/{src}")
+
+    from api.services import datasets as svc
+    visto: dict = {}
+    original = svc.build_manifest
+
+    def espiao(*a, **kw):
+        jsonl, meta = original(*a, **kw)
+        visto.update(jsonl=jsonl, meta=meta)
+        return jsonl, meta
+
+    import pytest as _pt
+    mp = _pt.MonkeyPatch()
+    mp.setattr(svc, "build_manifest", espiao)
+    try:
+        r = await admin.post(f"{base}/datasets/{DS['slug']}/freeze",
+                             json={"descricao": "base"})
+    finally:
+        mp.undo()
+    assert r.status_code == 201, r.text
+    return visto
+
+
+async def test_congelar_segmentacao_grava_poligonos(admin):
+    import json
+    visto = await _segmentacao_congelada(admin)
+    linha = json.loads(visto["jsonl"].strip())
+    assert linha["polys"] == [[0, .1, .1, .9, .1, .5, .9]]
+    assert visto["meta"]["tarefa"] == "segment"
+    assert visto["meta"]["dentro_de"] == {"hematoma": "banda"}
+
+
+async def test_segmentacao_treina_so_com_peso_seg(admin):
+    await _segmentacao_congelada(admin)
+    url = f"/v1/projects/{SEG['slug']}/runs"
+    corpo = {"dataset_slug": DS["slug"], "version": 1, "experiment": "x",
+             "epochs": 3}
+    r = await admin.post(url, json={**corpo, "base_model": "yolo11n.pt"})
+    assert r.status_code == 422
+    assert "-seg" in r.json()["detail"]
+    r = await admin.post(url, json={**corpo, "base_model": "yolo11n-seg.pt"})
+    assert r.status_code == 201, r.text
+
+
+async def test_deteccao_recusa_peso_seg(admin, tmp_path):
+    await _versao_congelada(admin, tmp_path)
+    r = await admin.post(f"/v1/projects/{PROJ['slug']}/runs", json={
+        "dataset_slug": DS["slug"], "version": 1, "experiment": "x",
+        "base_model": "yolo11n-seg.pt", "epochs": 3})
+    assert r.status_code == 422
+
+
+def test_metricas_de_mascara_sao_normalizadas():
+    from types import SimpleNamespace
+
+    from agent.train_worker import normalizar
+    t = SimpleNamespace(metrics={"metrics/mAP50-95(B)": .5,
+                                 "metrics/mAP50-95(M)": .4,
+                                 "metrics/mAP50(M)": .6,
+                                 "val/seg_loss": 1.2})
+    m = normalizar(t)
+    assert m == {"mAP50-95": .5, "mask_mAP50-95": .4, "mask_mAP50": .6,
+                 "val_seg_loss": 1.2}

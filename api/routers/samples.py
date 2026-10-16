@@ -16,7 +16,7 @@ from typing import Annotated, Any, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Path, Query
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Discriminator, Field, Tag, field_validator
 
 from ..auth import Principal
 from ..deps import CurrentUser, projeto_ou_404, require_role
@@ -42,10 +42,48 @@ class Caixa(BaseModel):
         return v
 
 
+class Poligono(BaseModel):
+    """Contorno de projeto de segmentação: vértices normalizados, em ordem."""
+    cls: int = Field(ge=0)
+    pts: list[tuple[float, float]] = Field(min_length=3)
+
+    @field_validator("pts")
+    @classmethod
+    def _valido(cls, v: list[tuple[float, float]]) -> list[tuple[float, float]]:
+        # Mesmo motivo da caixa. Recortar aqui em silêncio esconderia o erro
+        # de conversão que pôs o vértice lá fora.
+        if any(not (0.0 <= c <= 1.0) for p in v for c in p):
+            raise ValueError("vértice do polígono fora da imagem")
+        # Três pontos repetidos ou em linha passam na contagem e não têm
+        # área: o YOLO-seg recebe uma máscara vazia, e com ROI o objeto some
+        # ou aparece conforme o recorte. Auto-interseção fica com o editor.
+        area = sum(v[i - 1][0] * p[1] - p[0] * v[i - 1][1]
+                   for i, p in enumerate(v)) / 2
+        if len(set(v)) < 3 or abs(area) < 1e-9:
+            raise ValueError("polígono sem área")
+        return v
+
+
+def _forma(v: Any) -> str:
+    # Pela chave, e não "a primeira que validar": a caixa ignora chave extra
+    # (a pré-rotulagem grava `conf` nela), então um polígono com `cx` perdido
+    # validaria como caixa e perderia os vértices. A instância conta também:
+    # é o que o pydantic entrega ao serializar (`model_dump`).
+    if isinstance(v, dict):
+        return "poligono" if "pts" in v else "caixa"
+    return "poligono" if isinstance(v, Poligono) else "caixa"
+
+
+ItemDaAnotacao = Annotated[
+    Annotated[Caixa, Tag("caixa")] | Annotated[Poligono, Tag("poligono")],
+    Discriminator(_forma)]
+
+
 class AnotacaoIn(BaseModel):
     # Lista vazia é significativa: quer dizer "olhei e não há nada aqui" —
-    # um exemplo negativo, diferente de "ainda não olhei".
-    boxes: list[Caixa]
+    # um exemplo negativo, diferente de "ainda não olhei". Caixa ou polígono
+    # conforme o tipo do projeto — quem confere é o serviço, que o conhece.
+    boxes: list[ItemDaAnotacao]
     status: Literal["submitted", "draft"] = "submitted"
 
 

@@ -555,6 +555,20 @@ async def gravar_prelabels(job_id: str, device_id: str,
                                        jobs.Prelabel)
         autor = job["created_by"]
         schema_id = p.schema_id
+        # Forma errada para o projeto é agente velho ou modelo de outra
+        # tarefa: recusa o lote inteiro em vez de gravar uma anotação que o
+        # anotador não abre e que `salvar_anotacao` recusaria ao corrigir.
+        tarefa = (await db.fetch_row(
+            "SELECT task_type FROM project WHERE id = %s",
+            (job["project_id"],), conn=conn))["task_type"]
+        segmento = tarefa == "segment"
+        if any(("pts" in b) != segmento
+               for pred in predicoes for b in pred["boxes"]):
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                "projeto de segmentação recebe polígono, não caixa"
+                if segmento else
+                "polígono só em projeto de segmentação; aqui a predição é caixa")
         for pred in predicoes:
             caixas = pred["boxes"]
             if not caixas:

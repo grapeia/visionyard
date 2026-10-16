@@ -117,6 +117,61 @@ def test_manifesto_carrega_roi():
     assert json.loads(jsonl.strip())["boxes"] == [[0, 0.5, 0.5, 0.2, 0.2]]
 
 
+def test_manifesto_de_segmentacao_leva_poligonos():
+    """Em segmentação a linha leva `polys` e não `boxes`: chave nova, e não a
+    mesma com outro tamanho, para que um agente que só conhece caixa não leia
+    o polígono como caixa. O meta diz a tarefa e a hierarquia ("Dentro de")."""
+    tri = [[.1, .1], [.9, .1], [.5, .9]]
+    itens = [{"sample_id": "s1", "uri": "gs://b/1.jpg", "md5": b"\x01" * 16,
+              "width": 100, "height": 80, "split": "train",
+              "boxes": [{"cls": 0, "pts": tri},
+                        {"cls": 1, "pts": [[.2, .2], [.4, .2], [.3, .4]]}]}]
+    jsonl, meta = build_manifest(itens, ["banda", "hematoma"], ["gs://b/"], 1,
+                                 "seg", {"method": "random"}, "proj", "ds",
+                                 tarefa="segment", dentro_de={"hematoma": "banda"})
+    linha = json.loads(jsonl.strip())
+    assert linha["boxes"] is None       # agente velho quebra em vez de treinar vazio
+    assert linha["polys"][0] == [0, .1, .1, .9, .1, .5, .9]
+    assert meta["tarefa"] == "segment"
+    assert meta["dentro_de"] == {"hematoma": "banda"}
+    assert meta["stats"]["boxes_por_classe"] == {"banda": 1, "hematoma": 1}
+
+
+def test_manifesto_de_segmentacao_converte_caixa_em_retangulo():
+    """Importação retangular num projeto de segmentação: a caixa vira um
+    polígono de 4 cantos e é contada à parte — descartar em silêncio tiraria
+    o objeto do treino, e passar como caixa quebraria o rótulo."""
+    itens = [{"sample_id": "s1", "uri": "gs://b/1.jpg", "md5": b"\x01" * 16,
+              "width": 100, "height": 80, "split": "train",
+              "boxes": [{"cls": 0, "cx": .5, "cy": .5, "w": .2, "h": .4}]}]
+    jsonl, meta = build_manifest(itens, ["banda"], ["gs://b/"], 1, "seg",
+                                 {"method": "random"}, "proj", "ds",
+                                 tarefa="segment")
+    assert json.loads(jsonl.strip())["polys"] == [
+        [0, .4, .3, .6, .3, .6, .7, .4, .7]]
+    assert meta["stats"]["caixas_como_poligono"] == 1
+
+
+def test_caixa_convertida_e_cortada_na_borda_da_imagem():
+    itens = [{"sample_id": "s1", "uri": "gs://b/1.jpg", "md5": b"\x01" * 16,
+              "width": 100, "height": 80, "split": "train",
+              "boxes": [{"cls": 0, "cx": .95, "cy": .5, "w": .2, "h": .2}]}]
+    jsonl, _ = build_manifest(itens, ["banda"], ["gs://b/"], 1, "seg",
+                              {"method": "random"}, "proj", "ds",
+                              tarefa="segment")
+    assert json.loads(jsonl.strip())["polys"] == [
+        [0, .85, .4, 1.0, .4, 1.0, .6, .85, .6]]
+
+
+def test_manifesto_de_deteccao_nao_muda():
+    itens = [{"sample_id": "s1", "uri": "gs://b/1.jpg", "md5": b"\x01" * 16,
+              "width": 100, "height": 80, "split": "train", "boxes": []}]
+    jsonl, meta = build_manifest(itens, ["a"], ["gs://b/"], 1, "x",
+                                 {"method": "random"}, "proj", "ds")
+    assert "polys" not in json.loads(jsonl.strip())
+    assert meta["tarefa"] == "detect"
+
+
 # --------------------------------------------------------------------------- #
 # Fluxo pela API
 # --------------------------------------------------------------------------- #

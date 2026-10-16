@@ -24,13 +24,46 @@ router = APIRouter(tags=["projects"])
 SLUG_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 
 
+class ClasseNova(BaseModel):
+    """Classe com "Dentro de". Em projeto de segmentação, `inside` nomeia a
+    classe principal que recorta esta; sem ele a classe é principal. Fica
+    fixado na criação, como o nome: o vocabulário é append-only."""
+    name: str = Field(min_length=1)
+    inside: str | None = None
+
+
+def _nomes_unicos(v: list[str | ClasseNova], msg: str) -> list[str | ClasseNova]:
+    """Nome em branco sai; nome repetido recusa. Vale para a forma curta
+    (só o nome) e para a forma com "Dentro de", misturadas na mesma lista."""
+    out: list[str | ClasseNova] = []
+    for c in v:
+        if isinstance(c, str):
+            if c.strip():
+                out.append(c.strip())
+        elif c.name.strip():
+            out.append(ClasseNova(name=c.name.strip(),
+                                  inside=(c.inside or "").strip() or None))
+    if not out:
+        raise ValueError("informe ao menos uma classe")
+    nomes = [c if isinstance(c, str) else c.name for c in out]
+    if len(set(nomes)) != len(nomes):
+        raise ValueError(msg)
+    return out
+
+
+def como_dict(c: str | ClasseNova) -> dict[str, str | None]:
+    if isinstance(c, str):
+        return {"name": c, "inside": None}
+    return {"name": c.name, "inside": c.inside}
+
+
 class ProjectCreateIn(BaseModel):
     slug: str = Field(min_length=2, max_length=64)
     name: str = Field(min_length=1, max_length=200)
     task_type: Literal["detect", "segment", "classify"] = "detect"
     description: str | None = None
     # As classes do LabelSchema v1. Ordem importa: é o índice do formato YOLO.
-    classes: list[str] = Field(min_length=1)
+    classes: list[str | ClasseNova] = Field(min_length=1)
 
     @field_validator("slug")
     @classmethod
@@ -43,13 +76,8 @@ class ProjectCreateIn(BaseModel):
 
     @field_validator("classes")
     @classmethod
-    def _classes(cls, v: list[str]) -> list[str]:
-        out = [c.strip() for c in v if c.strip()]
-        if not out:
-            raise ValueError("informe ao menos uma classe")
-        if len(set(out)) != len(out):
-            raise ValueError("classes duplicadas")
-        return out
+    def _classes(cls, v: list[str | ClasseNova]) -> list[str | ClasseNova]:
+        return _nomes_unicos(v, "classes duplicadas")
 
 
 class ProjectPatchIn(BaseModel):
@@ -61,18 +89,13 @@ class SchemaAppendIn(BaseModel):
     # Só os nomes a ACRESCENTAR no fim — não a lista inteira. Assim a operação é
     # sempre append por construção: não há como renomear, remover ou reordenar
     # por aqui, que são as mudanças que quebram a compatibilidade.
-    add: list[str] = Field(min_length=1)
+    add: list[str | ClasseNova] = Field(min_length=1)
     change_note: str | None = Field(default=None, max_length=200)
 
     @field_validator("add")
     @classmethod
-    def _add(cls, v: list[str]) -> list[str]:
-        out = [c.strip() for c in v if c.strip()]
-        if not out:
-            raise ValueError("informe ao menos uma classe")
-        if len(set(out)) != len(out):
-            raise ValueError("classes duplicadas na lista")
-        return out
+    def _add(cls, v: list[str | ClasseNova]) -> list[str | ClasseNova]:
+        return _nomes_unicos(v, "classes duplicadas na lista")
 
 
 class ProjetoNaLista(BaseModel):
@@ -97,9 +120,11 @@ class ProjetoCriado(BaseModel):
 
 
 class ClasseDoSchema(BaseModel):
-    """Ordem importa: `id` é o índice do formato YOLO."""
+    """Ordem importa: `id` é o índice do formato YOLO. `inside` é o `id` da
+    classe principal que recorta esta (só em segmentação); nulo é principal."""
     id: int
     name: str
+    inside: int | None = None
 
 
 class SchemaAtual(BaseModel):
@@ -171,7 +196,8 @@ async def create_project(body: ProjectCreateIn, user: CurrentUser,
     """
     return await svc.criar(user, slug=body.slug, name=body.name,
                            task_type=body.task_type,
-                           description=body.description, classes=body.classes,
+                           description=body.description,
+                           classes=[como_dict(c) for c in body.classes],
                            ip=auth.client_ip(request))
 
 
@@ -203,7 +229,8 @@ async def append_classes(
     é invalidado. Renomear/remover/reordenar não passa por aqui: quebraria a
     compatibilidade e é operação para um caminho próprio.
     """
-    return await svc.acrescentar_classes(project_slug, actor, add=body.add,
+    return await svc.acrescentar_classes(project_slug, actor,
+                                         add=[como_dict(c) for c in body.add],
                                          change_note=body.change_note,
                                          ip=auth.client_ip(request))
 

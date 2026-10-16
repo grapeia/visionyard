@@ -174,6 +174,7 @@
     <label class="alternar"><input type="checkbox" id="anotNomes" checked>
       nomes nas caixas</label>
     <span class="anot-dica" id="anotDica"></span>
+    <span class="anot-dica" id="anotSam"></span>
     <button id="anotAnterior" title="anterior (q)">q ←</button>
     <button id="anotPretag" title="pré-rotular esta imagem com o modelo (w)">w pré</button>
     <button id="anotSalvar" class="primario" title="salvar e próxima (e)">
@@ -189,7 +190,8 @@
     <aside class="anot-lado">
       <span class="rotulo">Classes</span>
       <ul class="classes" id="anotClasses"></ul>
-      <span class="rotulo" style="margin-top:20px;display:block">Caixas</span>
+      <span class="rotulo" style="margin-top:20px;display:block"
+            id="anotRotuloLista">Caixas</span>
       <ul class="caixas" id="anotCaixas"></ul>
       <p class="dica" id="anotOutros"></p>
     </aside>
@@ -357,9 +359,11 @@
     <div class="chips" id="pjChips"></div>
     <div class="chip-add">
       <input id="pjClasseInput" placeholder="ex: classe_a">
+      <select id="pjDentro" title="Dentro de" hidden></select>
       <button type="button" id="pjAddClasse">adicionar</button>
     </div>
-    <p class="dica">Enter também adiciona. A ordem é o índice (0, 1, 2…).</p>
+    <p class="dica">Enter também adiciona. A ordem é o índice (0, 1, 2…).
+      Em segmentação, "Dentro de" faz da classe um recorte de uma principal.</p>
     <div class="acoes">
       <button type="button" class="cancelar">Cancelar</button>
       <button class="primario" value="ok">Criar projeto</button>

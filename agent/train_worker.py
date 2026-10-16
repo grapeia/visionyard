@@ -30,6 +30,14 @@ KEYMAP = {
     "metrics/mAP50-95(B)": "mAP50-95",
     "val/box_loss": "val_box_loss",
     "val/cls_loss": "val_cls_loss",
+    # Segmentação: as mesmas medidas sobre a máscara. As de caixa continuam
+    # vindo, e `mAP50-95` segue sendo a da caixa — é o que escolhe o melhor
+    # peso, igual em detecção.
+    "metrics/precision(M)": "mask_precision",
+    "metrics/recall(M)": "mask_recall",
+    "metrics/mAP50(M)": "mask_mAP50",
+    "metrics/mAP50-95(M)": "mask_mAP50-95",
+    "val/seg_loss": "val_seg_loss",
 }
 
 MARCADOR = "@@EPOCH@@ "

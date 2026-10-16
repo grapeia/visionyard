@@ -27,7 +27,9 @@ from .jobs import TERMINAIS
 # Bases YOLO aceitas — restringir evita que um typo vire download silencioso de
 # um peso qualquer no agente, e documenta o que a instalação suporta.
 BASES = {"yolo11n.pt", "yolo11s.pt", "yolo11m.pt",
-         "yolov8n.pt", "yolov8s.pt", "yolov8m.pt"}
+         "yolov8n.pt", "yolov8s.pt", "yolov8m.pt",
+         "yolo11n-seg.pt", "yolo11s-seg.pt", "yolo11m-seg.pt",
+         "yolov8n-seg.pt", "yolov8s-seg.pt", "yolov8m-seg.pt"}
 
 
 def slug_experimento(texto: str) -> str:
@@ -48,7 +50,7 @@ async def criar_run(project_slug: str, actor: Principal, *, dataset_slug: str,
     async with db.connection() as conn, conn.transaction():
         dv = await db.fetch_one(
             "SELECT v.id, v.schema_id, v.manifest_uri, v.version,"
-            "       d.slug AS dataset_slug, p.id AS project_id"
+            "       d.slug AS dataset_slug, p.id AS project_id, p.task_type"
             "  FROM dataset_version v"
             "  JOIN dataset d ON d.id = v.dataset_id"
             "  JOIN project p ON p.id = d.project_id"
@@ -58,6 +60,19 @@ async def criar_run(project_slug: str, actor: Principal, *, dataset_slug: str,
             raise HTTPException(
                 status.HTTP_404_NOT_FOUND,
                 "versão de dataset não encontrada — congele antes")
+        # Peso de detecção num manifesto de polígonos treina caixa e joga a
+        # máscara fora sem erro; o contrário falha horas depois, no agente.
+        seg = base_model.endswith("-seg.pt")
+        if dv["task_type"] == "segment" and not seg:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                f"projeto de segmentação treina com base -seg"
+                f" (ex.: yolo11n-seg.pt), não '{base_model}'")
+        if dv["task_type"] != "segment" and seg:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                f"'{base_model}' é base de segmentação; este projeto é de"
+                " detecção")
         target_device_id = await _maquina_alvo(conn, device_slug)
 
         exp = await db.fetch_row(

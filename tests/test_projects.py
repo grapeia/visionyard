@@ -280,7 +280,8 @@ async def test_append_classe_gera_versao_back_compatible(admin):
     d = (await admin.get(f"/v1/projects/{PROJ['slug']}")).json()
     assert d["schema"]["version"] == 2
     # índices antigos preservados; a nova classe é o índice 2
-    assert d["schema"]["classes"][2] == {"id": 2, "name": "classe_c"}
+    assert d["schema"]["classes"][2] == {"id": 2, "name": "classe_c",
+                                         "inside": None}
     assert d["schemas"][0]["back_compatible"] is True
     assert len(d["schemas"]) == 2
 
@@ -385,3 +386,81 @@ async def test_candidatos_a_membro(admin, client, superuser):
         assert set(r.json()[0]) == {"id", "email", "display_name"}
 
         assert (await ana.get(f"{base}/member-candidates")).status_code == 403
+
+
+# --------------------------------------------------------------------------- #
+# Segmentação: "Dentro de" — a classe recorte aponta para a principal
+# --------------------------------------------------------------------------- #
+
+SEG = {"slug": "carcaca", "name": "Carcaça", "task_type": "segment",
+       "classes": ["banda"]}
+
+
+async def test_segmentacao_cria_recorte_dentro_da_principal(admin):
+    r = await admin.post("/v1/projects", json={
+        **SEG, "classes": ["banda", {"name": "hematoma", "inside": "banda"}]})
+    assert r.status_code == 201, r.text
+    assert r.json()["classes"] == ["banda", "hematoma"]
+
+    d = (await admin.get(f"/v1/projects/{SEG['slug']}")).json()
+    assert d["schema"]["classes"] == [
+        {"id": 0, "name": "banda", "inside": None},
+        {"id": 1, "name": "hematoma", "inside": 0}]
+
+
+async def test_append_recorte_aponta_para_principal_existente(admin):
+    await admin.post("/v1/projects", json=SEG)
+    r = await admin.post(f"/v1/projects/{SEG['slug']}/schema", json={
+        "add": ["picanha", {"name": "fraldinha", "inside": "banda"}]})
+    assert r.status_code == 201, r.text
+    d = (await admin.get(f"/v1/projects/{SEG['slug']}")).json()
+    # `picanha` sem "Dentro de" é principal: o campo é opcional mesmo em
+    # segmentação.
+    assert d["schema"]["classes"][1:] == [
+        {"id": 1, "name": "picanha", "inside": None},
+        {"id": 2, "name": "fraldinha", "inside": 0}]
+
+
+@pytest.mark.parametrize("classes,trecho", [
+    # pai que não existe
+    (["banda", {"name": "hematoma", "inside": "carcaca"}], "não existe"),
+    # recorte dentro de recorte: só um nível
+    (["banda", {"name": "a", "inside": "banda"}, {"name": "b", "inside": "a"}],
+     "principal"),
+    # pai declarado depois do filho: o índice do pai seria maior que o dele
+    ([{"name": "hematoma", "inside": "banda"}, "banda"], "não existe"),
+    # dentro de si mesma
+    ([{"name": "banda", "inside": "banda"}], "não existe"),
+])
+async def test_dentro_de_invalido_recusa(admin, classes, trecho):
+    r = await admin.post("/v1/projects", json={**SEG, "classes": classes})
+    assert r.status_code == 422, r.text
+    assert trecho in r.json()["detail"]
+
+
+async def test_dentro_de_so_em_projeto_de_segmentacao(admin):
+    r = await admin.post("/v1/projects", json={
+        **PROJ, "classes": ["a", {"name": "b", "inside": "a"}]})
+    assert r.status_code == 422
+    assert "segmentação" in r.json()["detail"]
+
+    await admin.post("/v1/projects", json=PROJ)
+    r = await admin.post(f"/v1/projects/{PROJ['slug']}/schema", json={
+        "add": [{"name": "c", "inside": "classe_a"}]})
+    assert r.status_code == 422
+    assert "segmentação" in r.json()["detail"]
+
+
+async def test_append_recorte_dentro_de_recorte_recusa(admin):
+    await admin.post("/v1/projects", json={
+        **SEG, "classes": ["banda", {"name": "hematoma", "inside": "banda"}]})
+    r = await admin.post(f"/v1/projects/{SEG['slug']}/schema", json={
+        "add": [{"name": "x", "inside": "hematoma"}]})
+    assert r.status_code == 422
+    assert "principal" in r.json()["detail"]
+
+
+async def test_dentro_de_duplicado_por_nome_recusa(admin):
+    r = await admin.post("/v1/projects", json={
+        **SEG, "classes": ["banda", {"name": "banda", "inside": None}]})
+    assert r.status_code == 422

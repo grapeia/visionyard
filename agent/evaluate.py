@@ -39,6 +39,11 @@ def executar(cli: Client, job: dict, work_dir: Path) -> None:
         cli.events(job_id, [{"seq": seq["n"], "level": level, "message": msg}])
 
     meta = cli.manifest_meta(job_id)
+    # Mesmo critério do treino: tarefa desconhecida para aqui, em vez de
+    # medir contra rótulos que este agente não soube materializar.
+    tarefa = meta.get("tarefa", "detect")
+    if tarefa not in ("detect", "segment"):
+        raise RuntimeError(f"tarefa '{tarefa}' desconhecida — atualize o agente")
     classes = meta["classes"]
     roi = roi_tupla(meta.get("roi"))
     log(f"benchmark: {meta['stats']['imagens']} imagens, {len(classes)} classes"
@@ -67,6 +72,12 @@ def executar(cli: Client, job: dict, work_dir: Path) -> None:
 
     bruto = {"mAP50-95": res.box.map, "mAP50": res.box.map50,
              "precision": res.box.mp, "recall": res.box.mr}
+    # Modelo -seg mede também a máscara, que é o que importa em segmentação;
+    # as chaves são as mesmas que o treino publica (`train_worker.KEYMAP`).
+    seg = getattr(res, "seg", None)
+    if tarefa == "segment" and seg is not None:
+        bruto.update({"mask_mAP50-95": seg.map, "mask_mAP50": seg.map50,
+                      "mask_precision": seg.mp, "mask_recall": seg.mr})
     # res.speed: latência POR IMAGEM, decomposta — pré, inferência e pós — em ms.
     # É o gráfico de comparação que o usuário quer (onde o tempo é gasto).
     vel = getattr(res, "speed", None) or {}

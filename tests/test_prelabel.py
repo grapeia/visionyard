@@ -251,3 +251,70 @@ async def test_prelabel_superuser_slug_invalido_404(admin):
     r = await admin.post("/v1/projects/nao-existe/prelabel",
                          json={"model_slug": "detector", "dataset_slug": "x"})
     assert r.status_code == 404
+
+
+async def test_prelabel_de_segmentacao_grava_poligono_e_recusa_caixa(admin, client):
+    """Modelo -seg devolve contorno; o pré-tag grava `pts`. Caixa num projeto
+    de segmentação é agente velho ou modelo errado — recusa o lote inteiro em
+    vez de gravar uma anotação que o anotador não sabe abrir."""
+    import psycopg
+
+    from .conftest import TEST_DSN
+    from .test_training import SEG, _publicar, _segmentacao_congelada
+    await _segmentacao_congelada(admin)
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        sid = str(conn.execute(
+            "WITH s AS (INSERT INTO sample (project_id, sha256, md5, uri,"
+            "           width, height)"
+            "  SELECT id, 'def', decode(repeat('cd', 16), 'hex'),"
+            "         'gs://bucket/bandas/2.jpg', 640, 480"
+            "    FROM project WHERE slug = %s RETURNING id)"
+            " INSERT INTO sample_source (sample_id, data_source_id)"
+            " SELECT s.id, ds.id FROM s, data_source ds"
+            "  JOIN project p ON p.id = ds.project_id WHERE p.slug = %s"
+            " RETURNING sample_id", (SEG["slug"], SEG["slug"])).fetchone()[0])
+
+    base = f"/v1/projects/{SEG['slug']}"
+    r = await admin.post(f"{base}/runs", json={
+        "dataset_slug": DS["slug"], "version": 1, "experiment": "seg",
+        "base_model": "yolo11n-seg.pt", "epochs": 3})
+    assert r.status_code == 201, r.text
+    tok = (await _device(admin, {"train": True}))["token"]
+    jid = (await client.post("/v1/agent/claim", headers=_h(tok))).json()["job"]["id"]
+    await client.post(f"/v1/agent/jobs/{jid}/model", json={
+        "weights_uri": await _publicar(client, tok, jid, "best.pt"),
+        "sha256": "cd" * 32, "bytes": 1, "metrics": {}}, headers=_h(tok))
+    await client.post(f"/v1/agent/jobs/{jid}/finish",
+                      json={"status": "succeeded"}, headers=_h(tok))
+
+    modelo = (await admin.get(f"{base}/models")).json()[0]["slug"]
+    r = await admin.post(f"{base}/prelabel", json={
+        "model_slug": modelo, "dataset_slug": DS["slug"], "only_missing": True})
+    assert r.status_code == 201, r.text
+    tok, job = await _claim_prelabel(admin, client)
+    url = f"/v1/agent/jobs/{job['id']}/prelabel"
+
+    r = await client.post(url, headers=_h(tok), json={"predicoes": [
+        {"sample_id": sid, "boxes": [
+            {"cls": 0, "cx": .5, "cy": .5, "w": .2, "h": .2, "conf": .9}]}]})
+    assert r.status_code == 422
+
+    pts = [[.1, .1], [.9, .1], [.5, .9]]
+    r = await client.post(url, headers=_h(tok), json={"predicoes": [
+        {"sample_id": sid, "boxes": [{"cls": 0, "pts": pts, "conf": .8}]}]})
+    assert r.status_code == 200, r.text
+    assert r.json()["gravadas"] == 1
+    d = (await admin.get(f"{base}/samples/{sid}")).json()
+    assert d["minha_anotacao"]["boxes"] == [{"cls": 0, "pts": pts, "conf": .8}]
+
+
+async def test_prelabel_de_deteccao_recusa_poligono(admin, client, tmp_path):
+    await _produzir_modelo(admin, client, tmp_path)
+    sid = (await _pendentes(admin))[0]["id"]
+    await admin.post(f"/v1/projects/{PROJ['slug']}/prelabel", json={
+        "model_slug": "detector", "dataset_slug": DS["slug"]})
+    tok, job = await _claim_prelabel(admin, client)
+    r = await client.post(f"/v1/agent/jobs/{job['id']}/prelabel", headers=_h(tok),
+                          json={"predicoes": [{"sample_id": sid, "boxes": [
+                              {"cls": 0, "pts": [[.1, .1], [.9, .1], [.5, .9]]}]}]})
+    assert r.status_code == 422

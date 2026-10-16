@@ -192,8 +192,16 @@ def assign_splits(items: list, policy: dict) -> None:
 
 def build_manifest(items: list, classes: list, origins: list, version: int,
                    description: str, policy: dict, project_slug: str,
-                   dataset_slug: str, roi: dict | None = None) -> tuple[str, dict]:
+                   dataset_slug: str, roi: dict | None = None, *,
+                   tarefa: str = "detect",
+                   dentro_de: dict[str, str] | None = None) -> tuple[str, dict]:
     """Devolve (items.jsonl, meta.json) — meta ainda sem o hash.
+
+    Em segmentação (`tarefa="segment"`) a linha leva `polys` — `[cls, x1, y1,
+    x2, y2, ...]` — no lugar de `boxes`. Chave nova, e não `boxes` com outro
+    tamanho: um agente que só conhece caixa leria o polígono como caixa. A
+    hierarquia ("Dentro de") vai no meta como `{recorte: principal}`; o
+    modelo treina as classes planas, e é quem exibe que recorta uma pela outra.
 
     `roi` (caixa normalizada {x,y,w,h} ou None) viaja no meta.json para o agente
     aplicar o MESMO recorte no treino/avaliação. As caixas do items.jsonl ficam
@@ -227,14 +235,40 @@ def build_manifest(items: list, classes: list, origins: list, version: int,
             f"anotação fica na antiga); retire do dataset a origem dessas "
             f"imagens. Primeiras: {amostra}")
 
+    segmentacao = tarefa == "segment"
     lines = []
     per_class = dict.fromkeys(classes, 0)
     n_train = n_val = 0
     sem_dimensao = 0
+    caixas_como_poligono = 0
     for it in items:
-        boxes = [[int(b["cls"]), round(float(b["cx"]), 6), round(float(b["cy"]), 6),
-                  round(float(b["w"]), 6), round(float(b["h"]), 6)]
-                 for b in (it.get("boxes") or [])]
+        if segmentacao:
+            boxes = []
+            for b in (it.get("boxes") or []):
+                if "pts" not in b:
+                    # Caixa de importação retangular: vira o retângulo. Fora
+                    # do treino o objeto sumiria; como caixa, quebraria o
+                    # rótulo. Contada no stats para não passar despercebida.
+                    caixas_como_poligono += 1
+                    # Cortada na borda da imagem: importação e pré-tag
+                    # aceitam caixa que passa dela, e vértice fora de 0..1
+                    # faz o YOLO descartar a imagem como corrompida.
+                    cx, cy = float(b["cx"]), float(b["cy"])
+                    w2, h2 = float(b["w"]) / 2, float(b["h"]) / 2
+                    x0, x1 = max(cx - w2, 0.0), min(cx + w2, 1.0)
+                    y0, y1 = max(cy - h2, 0.0), min(cy + h2, 1.0)
+                    if x1 <= x0 or y1 <= y0:
+                        continue
+                    pts = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]
+                else:
+                    pts = b["pts"]
+                boxes.append([int(b["cls"])] + [round(float(c), 6)
+                                                for p in pts for c in p])
+        else:
+            boxes = [[int(b["cls"]), round(float(b["cx"]), 6),
+                      round(float(b["cy"]), 6), round(float(b["w"]), 6),
+                      round(float(b["h"]), 6)]
+                     for b in (it.get("boxes") or [])]
         for b in boxes:
             cls = int(b[0])
             if 0 <= cls < len(classes):
@@ -250,7 +284,13 @@ def build_manifest(items: list, classes: list, origins: list, version: int,
             "md5": bytes(it["md5"]).hex(),
             "split": it["split"],
             "w": it.get("width"), "h": it.get("height"),
-            "boxes": boxes}, separators=(",", ":"), ensure_ascii=False))
+            # Em segmentação, `boxes` vai NULO de propósito: o agente de antes
+            # da segmentação lê `it.get("boxes", [])` e, sem a chave, treinaria
+            # tudo como negativo e terminaria "concluído". Com nulo ele quebra
+            # no laço e o job falha à vista, pedindo atualização.
+            **({"polys": boxes, "boxes": None} if segmentacao
+               else {"boxes": boxes})},
+            separators=(",", ":"), ensure_ascii=False))
 
     items_jsonl = "\n".join(lines) + ("\n" if lines else "")
     meta = {
@@ -259,13 +299,16 @@ def build_manifest(items: list, classes: list, origins: list, version: int,
         "dataset": dataset_slug,
         "version": version,
         "descricao": description,
+        "tarefa": tarefa,
         "classes": classes,
+        "dentro_de": dentro_de or {},
         "origens": origins,
         "split_policy": policy,
         "roi": roi,
         "stats": {"imagens": len(items), "train": n_train, "val": n_val,
                   "boxes_por_classe": per_class,
-                  "sem_dimensao": sem_dimensao},
+                  "sem_dimensao": sem_dimensao,
+                  "caixas_como_poligono": caixas_como_poligono},
         "congelado_em": _now_iso(),
         # Gravar quem produziu o arquivo: se o formato mudar ou aparecer um bug
         # na conversão, dá para saber qual versão gerou cada manifesto em vez
@@ -630,8 +673,10 @@ async def congelar(project_slug: str, dataset_slug: str, actor: Principal, *,
     async with db.connection() as conn:
         ds = await _dataset_ou_404(conn, project_slug, dataset_slug)
         schema = await db.fetch_row(
-            "SELECT id, classes FROM label_schema WHERE project_id = %s"
-            " ORDER BY version DESC LIMIT 1", (ds["project_id"],), conn=conn)
+            "SELECT ls.id, ls.classes, p.task_type"
+            "  FROM label_schema ls JOIN project p ON p.id = ls.project_id"
+            " WHERE ls.project_id = %s ORDER BY ls.version DESC LIMIT 1",
+            (ds["project_id"],), conn=conn)
         compativeis = await schemas_compativeis(conn, ds["project_id"])
         itens = await resolve_items(conn, ds["id"],
                                     only_annotated=only_annotated,
@@ -648,6 +693,8 @@ async def congelar(project_slug: str, dataset_slug: str, actor: Principal, *,
 
     # ---- 2. montar, sem conexão na mão ------------------------------------
     classes = [c["name"] for c in schema["classes"]]
+    dentro_de = {c["name"]: classes[c["inside"]] for c in schema["classes"]
+                 if c.get("inside") is not None}
     if not itens:
         raise HTTPException(
             status.HTTP_409_CONFLICT,
@@ -668,7 +715,8 @@ async def congelar(project_slug: str, dataset_slug: str, actor: Principal, *,
     items_jsonl, meta = build_manifest(
         itens, classes, [o["uri"] for o in origens],
         (ultima["version"] + 1) if ultima else 1, descricao, policy,
-        project_slug, dataset_slug, roi=ds["roi"])
+        project_slug, dataset_slug, roi=ds["roi"],
+        tarefa=schema["task_type"], dentro_de=dentro_de)
     items_hash = hashlib.sha256(items_jsonl.encode()).digest()
 
     # Identidade da versão = items + ROI. Com a MESMA lista de imagens, ROIs

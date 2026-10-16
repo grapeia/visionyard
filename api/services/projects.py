@@ -66,11 +66,50 @@ async def listar(user: Principal) -> list[dict[str, Any]]:
             (user.id,), conn=conn)
 
 
+def _vocabulario(atuais: list[dict[str, Any]], novas: list[dict[str, Any]],
+                 task_type: str) -> list[dict[str, Any]]:
+    """As classes de `atuais` com `novas` acrescentadas no fim, já com id.
+
+    `novas` vem como `{"name", "inside"}`, com `inside` sendo o NOME da classe
+    principal — é o que a tela conhece. Gravado, vira o `id` dela: o nome
+    poderia um dia ganhar um caminho de renomear, o índice YOLO não muda.
+
+    "Dentro de" só existe em segmentação, só aponta para classe que já existe
+    (antes desta, na mesma lista ou numa versão anterior) e só para principal:
+    um nível, por ora. Recorte dentro de recorte pediria ao anotador recortar
+    por um contorno que também é recortado, e ninguém pediu isso ainda.
+    """
+    if task_type != "segment" and any(c["inside"] for c in novas):
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            "'Dentro de' só existe em projeto de segmentação")
+    classes = list(atuais)
+    por_nome = {c["name"]: c for c in classes}
+    for c in novas:
+        nova: dict[str, Any] = {"id": len(classes), "name": c["name"]}
+        if c["inside"]:
+            pai = por_nome.get(c["inside"])
+            if pai is None:
+                raise HTTPException(
+                    status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    f"classe '{c['inside']}' não existe para '{c['name']}'"
+                    " ficar dentro dela")
+            if pai.get("inside") is not None:
+                raise HTTPException(
+                    status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    f"'{pai['name']}' já é recorte; 'Dentro de' aponta só"
+                    " para classe principal")
+            nova["inside"] = pai["id"]
+        classes.append(nova)
+        por_nome[nova["name"]] = nova
+    return classes
+
+
 async def criar(user: Principal, *, slug: str, name: str, task_type: str,
-                description: str | None, classes: list[str],
+                description: str | None, classes: list[dict[str, Any]],
                 ip: str | None) -> dict[str, Any]:
     """Projeto + owner + schema v1, na mesma transação."""
-    classes_json = [{"id": i, "name": c} for i, c in enumerate(classes)]
+    classes_json = _vocabulario([], classes, task_type)
+    nomes = [c["name"] for c in classes_json]
     async with db.connection() as conn, conn.transaction():
         existe = await db.fetch_one(
             "SELECT id FROM project WHERE slug = %s", (slug,), conn=conn)
@@ -93,9 +132,9 @@ async def criar(user: Principal, *, slug: str, name: str, task_type: str,
             conn=conn)
         await audit(user, "project.create", "project", str(proj["id"]),
                     project_id=str(proj["id"]),
-                    after={"slug": slug, "classes": classes},
+                    after={"slug": slug, "classes": nomes},
                     ip=ip, conn=conn)
-    return {**proj, "role": "owner", "classes": classes}
+    return {**proj, "role": "owner", "classes": nomes}
 
 
 async def detalhe(project_slug: str, user: Principal) -> dict[str, Any]:
@@ -153,7 +192,8 @@ async def alterar(project_slug: str, actor: Principal, *,
 
 
 async def acrescentar_classes(project_slug: str, actor: Principal, *,
-                              add: list[str], change_note: str | None,
+                              add: list[dict[str, Any]],
+                              change_note: str | None,
                               ip: str | None) -> dict[str, Any]:
     """Acrescenta classe(s) no fim → nova versão de schema, back-compatible.
 
@@ -164,7 +204,7 @@ async def acrescentar_classes(project_slug: str, actor: Principal, *,
     operação para um caminho próprio, com as devidas travas.
     """
     async with db.connection() as conn, conn.transaction():
-        proj = await projeto_ou_404(conn, project_slug)
+        proj = await projeto_ou_404(conn, project_slug, "id, task_type")
         # Serializa por projeto: dois appends simultâneos calculariam a mesma
         # versão e colidiriam no UNIQUE(project_id, version).
         await conn.execute("SELECT pg_advisory_xact_lock(hashtext(%s))",
@@ -176,14 +216,14 @@ async def acrescentar_classes(project_slug: str, actor: Principal, *,
             " ORDER BY version DESC LIMIT 1", (proj["id"],), conn=conn)
         nomes = [c["name"] for c in atual["classes"]]
 
-        ja = [n for n in add if n in nomes]
+        ja = [c["name"] for c in add if c["name"] in nomes]
         if ja:
             raise HTTPException(status.HTTP_409_CONFLICT,
                                 f"classe '{ja[0]}' já existe neste projeto")
 
-        novas = atual["classes"] + [{"id": len(nomes) + i, "name": n}
-                                    for i, n in enumerate(add)]
-        nota = change_note or f"adicionada(s): {', '.join(add)}"
+        novas = _vocabulario(atual["classes"], add, proj["task_type"])
+        nota = change_note or (
+            f"adicionada(s): {', '.join(c['name'] for c in add)}")
         nova = await db.fetch_row(
             "INSERT INTO label_schema (project_id, version, classes,"
             " back_compatible, change_note, created_by)"

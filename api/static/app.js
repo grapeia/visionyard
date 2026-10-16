@@ -78,10 +78,15 @@ $("seletorProjeto").addEventListener("change", async (ev) => {
   if (!$("abaModelos").hidden) { modelos.atual = null; await carregarModelos().catch(erroAviso); }
 });
 
-/** Classes do projeto: o painel de anotação precisa delas. */
+/** Classes e tipo do projeto: o painel de anotação precisa deles. */
 export async function carregarProjeto() {
   const p = await api(`/projects/${estado.projeto}`);
-  estado.classes = ((p.schema || {}).classes || []).map((c) => c.name);
+  const classes = (p.schema || {}).classes || [];
+  estado.classes = classes.map((c) => c.name);
+  // `inside` é o índice da principal que recorta a classe (segmentação);
+  // nulo é principal. Por índice, como no YOLO.
+  estado.dentroDe = classes.map((c) => (c.inside ?? null));
+  estado.tarefa = p.task_type;
 }
 
 // Só 401 leva ao login — e disso `api()` já cuida. Tratar qualquer erro como

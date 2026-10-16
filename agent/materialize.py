@@ -63,6 +63,64 @@ def _reprojetar_boxes(boxes: list, roi: tuple) -> list:
     return out
 
 
+def _recortar(pts: list, x0: float, y0: float, x1: float, y1: float) -> list:
+    """Sutherland–Hodgman: o polígono cortado pelo retângulo, borda a borda."""
+    def corta(pts, dentro, cruza):
+        out = []
+        for i, p in enumerate(pts):
+            q = pts[i - 1]
+            if dentro(p):
+                if not dentro(q):
+                    out.append(cruza(q, p))
+                out.append(p)
+            elif dentro(q):
+                out.append(cruza(q, p))
+        return out
+
+    def em_x(x):
+        return lambda q, p: (x, q[1] + (p[1] - q[1]) * (x - q[0]) / (p[0] - q[0]))
+
+    def em_y(y):
+        return lambda q, p: (q[0] + (p[0] - q[0]) * (y - q[1]) / (p[1] - q[1]), y)
+
+    for dentro, cruza in ((lambda p: p[0] >= x0, em_x(x0)),
+                          (lambda p: p[0] <= x1, em_x(x1)),
+                          (lambda p: p[1] >= y0, em_y(y0)),
+                          (lambda p: p[1] <= y1, em_y(y1))):
+        if not pts:
+            break
+        pts = corta(pts, dentro, cruza)
+    return pts
+
+
+def _area(pts: list) -> float:
+    return abs(sum(pts[i - 1][0] * p[1] - p[0] * pts[i - 1][1]
+                   for i, p in enumerate(pts))) / 2
+
+
+def _reprojetar_polys(polys: list, roi: tuple) -> list:
+    """Polígonos YOLO-seg [cls,x1,y1,...] do quadro cheio → espaço da ROI.
+
+    Diferente da caixa, que entra ou sai pelo centro: o polígono é CORTADO
+    na borda do recorte. A meia-carcaça raramente cabe inteira na ROI, e
+    descartá-la pelo centro tiraria do treino justamente o objeto principal.
+    O que fica sem área (todo fora, ou só tocando a borda) some.
+    """
+    rx, ry, rw, rh = roi
+    out = []
+    for p in polys:
+        cls, xy = int(p[0]), p[1:]
+        pts = _recortar(list(zip(xy[0::2], xy[1::2])), rx, ry, rx + rw, ry + rh)  # noqa: B905 (3.8 não tem strict)
+        if len(pts) < 3 or _area(pts) <= 0:
+            continue
+        novo = [cls]
+        for x, y in pts:
+            novo += [min(max((x - rx) / rw, 0.0), 1.0),
+                     min(max((y - ry) / rh, 0.0), 1.0)]
+        out.append(novo)
+    return out
+
+
 def _faltando(items_jsonl: Path, cache_dir: Path) -> tuple[list[tuple[str, Path]], int]:
     """O que não está no cache, uma vez por arquivo, e quantos itens já estão.
 
@@ -120,7 +178,10 @@ def materializar(items_jsonl: Path, classes: list[str], destino: Path,
             nome = f"{md5}"
             img_cache = _cache_path(cache_dir, md5, uri)
 
-            boxes = it.get("boxes", [])
+            # Segmentação traz `polys` no lugar de `boxes` (ver build_manifest);
+            # as duas viram a mesma linha "cls n n n ...", só muda o tamanho.
+            polys = it.get("polys")
+            boxes = polys if polys is not None else it.get("boxes", [])
             if roi is not None:
                 # recorta e reencoda: bytes diferentes não hardlinkam. As caixas
                 # vão para o espaço do recorte (as fora da ROI somem).
@@ -136,7 +197,8 @@ def materializar(items_jsonl: Path, classes: list[str], destino: Path,
                         y2 = min(max(round((roi[1] + roi[3]) * H), 0), H)
                         im.crop((x1, y1, x2, y2)).save(
                             destino_img, "JPEG", quality=95)
-                boxes = _reprojetar_boxes(boxes, roi)
+                boxes = (_reprojetar_polys(boxes, roi) if polys is not None
+                         else _reprojetar_boxes(boxes, roi))
             else:
                 destino_img = destino / "images" / split / \
                     (nome + img_cache.suffix)
@@ -148,7 +210,7 @@ def materializar(items_jsonl: Path, classes: list[str], destino: Path,
                         shutil.copy2(img_cache, destino_img)
 
             rotulo = destino / "labels" / split / (nome + ".txt")
-            linhas = [f"{int(b[0])} {b[1]:.6f} {b[2]:.6f} {b[3]:.6f} {b[4]:.6f}"
+            linhas = [" ".join([str(int(b[0]))] + [f"{v:.6f}" for v in b[1:]])
                       for b in boxes]
             rotulo.write_text("\n".join(linhas) + ("\n" if linhas else ""))
             n[split] += 1

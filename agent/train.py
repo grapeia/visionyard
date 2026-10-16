@@ -38,6 +38,12 @@ def executar(cli: Client, job: dict, work_dir: Path) -> None:
     # 1. Materializar a versão do dataset a partir do manifesto
     # ------------------------------------------------------------------ #
     meta = cli.manifest_meta(job_id)
+    # Manifesto sem `tarefa` é de antes da segmentação: detecção. Tarefa que
+    # este agente não conhece para aqui — materializar sem entender a linha
+    # treinaria com rótulo vazio e terminaria "concluído".
+    tarefa = meta.get("tarefa", "detect")
+    if tarefa not in ("detect", "segment"):
+        raise RuntimeError(f"tarefa '{tarefa}' desconhecida — atualize o agente")
     classes = meta["classes"]
     roi = roi_tupla(meta.get("roi"))
     log(f"versão {p.version} de {p.dataset_slug}: "
