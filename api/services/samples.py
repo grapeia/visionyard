@@ -10,7 +10,9 @@ intermediário.
 """
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 from typing import Any
 from uuid import UUID
 
@@ -18,6 +20,9 @@ from fastapi import HTTPException, status
 from starlette.concurrency import run_in_threadpool
 
 from .. import db, storage
+from . import parameters
+
+log = logging.getLogger(__name__)
 
 POR_PAGINA = 60
 MINIATURA_MIN = 15   # validade da URL assinada, em minutos
@@ -111,7 +116,7 @@ async def detalhe(project_slug: str, sample_id: UUID,
                   user_id: str) -> dict[str, Any]:
     async with db.connection() as conn:
         s = await db.fetch_one(
-            "SELECT s.id, s.uri, s.width, s.height, s.metadata"
+            "SELECT s.id, s.uri, s.width, s.height, s.metadata, p.task_type"
             "  FROM sample s JOIN project p ON p.id = s.project_id"
             " WHERE p.slug = %s AND s.id = %s", (project_slug, sample_id),
             conn=conn)
@@ -128,10 +133,89 @@ async def detalhe(project_slug: str, sample_id: UUID,
             "SELECT count(*) AS n FROM annotation"
             " WHERE sample_id = %s AND author_id <> %s", (sample_id, user_id),
             conn=conn)
+        origem_sam = (await parameters.valor("sam_image_source", conn=conn)
+                      if s["task_type"] == "segment" else None)
     url = (await run_in_threadpool(
         storage.assinar, [s["uri"]], MINIATURA_MIN)).get(s["uri"])
-    return {**s, "url": url, "minha_anotacao": minha,
+    # De onde o SAM lê os pixels (ver `config.sam_image_source`). Só em
+    # segmentação: nos outros tipos nada na tela lê pixel.
+    url_sam = (None if origem_sam is None else url if origem_sam == "bucket"
+               else f"/v1/projects/{project_slug}/samples/{sample_id}/sam-image")
+    del s["task_type"]
+    return {**s, "url": url, "url_sam": url_sam, "minha_anotacao": minha,
             "outros_anotaram": outros["n"]}
+
+
+LADO_SAM = 1024   # o encoder do SAM trabalha em 1024; mais que isso é tráfego
+# Orçamento por imagem: a redução acontece na API, e sem teto uma foto
+# descomunal ocuparia centenas de MB em buffers. 60 MB e 100 MP cobrem com
+# folga a câmera de celular (12–50 MP) e a industrial.
+LIMITE_BYTES = 60 * 1024 * 1024
+LIMITE_PIXELS = 100_000_000
+# Reduções simultâneas: cada uma usa uma thread e alguns buffers; o resto
+# espera a vez em vez de disputar a RAM da API.
+_reducoes = asyncio.Semaphore(4)
+
+
+async def imagem_sam(project_slug: str, sample_id: UUID) -> bytes:
+    """A imagem para o SAM do navegador, reduzida ao lado de 1024 px.
+
+    Passa pela API para o navegador ler do mesmo endereço da tela — ler os
+    pixels de outra origem exigiria CORS no bucket. É uma imagem por
+    abertura do anotador, e reduzida: a galeria continua indo direto ao GCS
+    (por ela passar pela API a página levava 28 s em vez de 1,7 s).
+    """
+    async with db.connection() as conn:
+        s = await db.fetch_one(
+            "SELECT s.uri FROM sample s JOIN project p ON p.id = s.project_id"
+            " WHERE p.slug = %s AND s.id = %s", (project_slug, sample_id),
+            conn=conn)
+    if s is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "imagem não encontrada")
+    grande = HTTPException(
+        status.HTTP_422_UNPROCESSABLE_ENTITY,
+        "imagem grande demais para o contorno automático — desenhe à mão")
+    async with _reducoes:
+        try:
+            bruto = await run_in_threadpool(storage.ler, s["uri"], LIMITE_BYTES)
+        except storage.GrandeDemais:
+            raise grande from None
+        except Exception:
+            # o texto do GCS cita conta de serviço e caminho interno
+            log.exception("imagem do SAM: falha ao ler %s", s["uri"])
+            raise HTTPException(status.HTTP_502_BAD_GATEWAY,
+                                "não consegui ler a imagem no bucket") from None
+        try:
+            return await run_in_threadpool(_reduzir, bruto)
+        except storage.GrandeDemais:
+            raise grande from None
+        except Exception:
+            # arquivo truncado, formato desconhecido, bomba de descompressão
+            log.exception("imagem do SAM: falha ao decodificar %s", s["uri"])
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                "não consegui decodificar esta imagem — desenhe à mão") from None
+
+
+def _reduzir(bruto: bytes) -> bytes:
+    import io
+
+    from PIL import Image, ImageOps
+    with Image.open(io.BytesIO(bruto)) as arq:
+        # Pelo cabeçalho, antes de decodificar um pixel: o teto global do
+        # Pillow só levanta acima de ~179 MP, e mexer nele seria por processo.
+        if arq.width * arq.height > LIMITE_PIXELS:
+            raise storage.GrandeDemais(f"{arq.width}x{arq.height}")
+        # JPEG decodifica já reduzido (fator de 2 ≥ o pedido): poupa a cópia
+        # em tamanho cheio que o exif_transpose e o convert fariam.
+        arq.draft("RGB", (LADO_SAM, LADO_SAM))
+        # a orientação EXIF de foto de celular: a <img> da tela a aplica, e o
+        # contorno tem de cair sobre a mesma imagem que a pessoa vê
+        im = ImageOps.exif_transpose(arq).convert("RGB")
+        im.thumbnail((LADO_SAM, LADO_SAM))
+        saida = io.BytesIO()
+        im.save(saida, "JPEG", quality=90)
+    return saida.getvalue()
 
 
 async def salvar_anotacao(project_slug: str, sample_id: UUID, user_id: str,

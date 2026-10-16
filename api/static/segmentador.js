@@ -86,9 +86,10 @@ export async function prepararImagem(url, aoMudar) {
     if (seg.url !== url) return;
     seg.situacao = "codificando"; aoMudar();
     etapa = "imagem";
-    // O SAM precisa dos pixels, e a imagem vem do bucket por URL assinada:
-    // `fetch` em modo CORS é o que o bucket precisa liberar. A <img> da tela
-    // não precisa disso, e é por isso que ela abre mesmo quando aqui falha.
+    // O SAM precisa dos pixels. `url` é a rota `sam-image` da API (mesmo
+    // endereço da tela) ou, se o parâmetro `sam_image_source` mandar, a URL
+    // assinada do bucket — e aí é o CORS do bucket que libera este fetch. A
+    // <img> da tela não passa pelo CORS: abre mesmo quando aqui falha.
     const r = await fetch(url, { mode: "cors" });
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const bmp = await createImageBitmap(await r.blob());
@@ -106,9 +107,13 @@ export async function prepararImagem(url, aoMudar) {
   } catch (e) {
     if (seg.url !== url) return;
     seg.situacao = "indisponivel";
+    const pelaApi = url.startsWith("/");
     seg.motivo = etapa === "imagem"
-      ? "o navegador não conseguiu ler os pixels da imagem (o bucket precisa " +
-        "liberar CORS para este endereço). Desenhe à mão: clique nos vértices."
+      ? (pelaApi
+        ? `a API não conseguiu entregar a imagem (${e.message}). `
+        : "o navegador não conseguiu ler os pixels direto do bucket (ele " +
+          "precisa liberar CORS para este endereço, ou mude em Parâmetros " +
+          "para ler pela API). ") + "Desenhe à mão: clique nos vértices."
       : `não consegui ${etapa === "modelo" ? "carregar" : "rodar"} o SAM ` +
         `(${e.message}). Desenhe à mão: clique nos vértices.`;
     console.error("SAM:", e);

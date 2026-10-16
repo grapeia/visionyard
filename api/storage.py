@@ -186,6 +186,27 @@ def assinar_ou_falhar(uris: list[str], minutos: int, metodo: str = "GET",
     return out
 
 
+class GrandeDemais(Exception):
+    """O objeto passa do teto que quem chamou aceita baixar."""
+
+
+def ler(uri: str, max_bytes: int) -> bytes:
+    """Os bytes de um `gs://`, pela credencial da API, até `max_bytes`.
+
+    O teto é conferido no metadado, antes de baixar: sem ele um objeto
+    descomunal iria inteiro para a memória da API. Levanta se não der — quem
+    chama decide o que o usuário vê (o texto do GCS cita a conta)."""
+    if not uri.startswith("gs://"):
+        raise ValueError(f"esperava gs://, veio {uri!r}")
+    bucket, _, chave = uri[5:].partition("/")
+    blob = cliente().bucket(bucket).get_blob(chave)
+    if blob is None:
+        raise FileNotFoundError(uri)
+    if blob.size is not None and blob.size > max_bytes:
+        raise GrandeDemais(f"{blob.size} bytes")
+    return blob.download_as_bytes()
+
+
 def assinar(uris: list[str], minutos: int) -> dict[str, str]:
     """URL assinada para cada `gs://`, para o navegador buscar direto do GCS.
 

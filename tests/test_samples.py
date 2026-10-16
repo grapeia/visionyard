@@ -279,3 +279,112 @@ def test_poligono_instanciado_e_reconhecido():
     from api.routers.samples import AnotacaoIn, Poligono
     a = AnotacaoIn(boxes=[Poligono(cls=0, pts=[(0, 0), (1, 0), (0, 1)])])
     assert a.model_dump()["boxes"][0]["pts"][1] == (1, 0)
+
+
+# --------------------------------------------------------------------------- #
+# Imagem para o SAM: pela API (padrão) ou direto do bucket
+# --------------------------------------------------------------------------- #
+
+def _jpeg(w: int, h: int) -> bytes:
+    import io
+
+    from PIL import Image
+    buf = io.BytesIO()
+    Image.new("RGB", (w, h), (200, 30, 30)).save(buf, "JPEG")
+    return buf.getvalue()
+
+
+async def test_sam_le_a_imagem_pela_api_reduzida(admin, monkeypatch):
+    """Pela API o navegador lê do mesmo endereço da tela: o bucket não precisa
+    liberar CORS. Vai reduzida ao lado de 1024 — é o que o SAM usa, e é o
+    que impede de trafegar pela API a foto de 12 MP inteira."""
+    from api import storage
+    pedidos = []
+
+    def ler(uri, max_bytes):
+        pedidos.append(uri)
+        return _jpeg(3000, 2000)
+    monkeypatch.setattr(storage, "ler", ler)
+
+    sid = await _sample_de_segmentacao(admin)
+    base = f"/v1/projects/{SEG['slug']}/samples/{sid}"
+    d = (await admin.get(base)).json()
+    assert d["url_sam"] == f"{base}/sam-image"
+
+    r = await admin.get(d["url_sam"])
+    assert r.status_code == 200
+    assert r.headers["content-type"] == "image/jpeg"
+    from io import BytesIO
+
+    from PIL import Image
+    assert Image.open(BytesIO(r.content)).size == (1024, 683)
+    assert pedidos == ["gs://bucket/banda.jpg"]
+
+
+async def test_sam_direto_do_bucket_quando_o_parametro_manda(admin, monkeypatch):
+    from api import storage
+    monkeypatch.setattr(storage, "assinar",
+                        lambda uris, minutos: {u: "https://assinada/" + u[5:]
+                                               for u in uris})
+    r = await admin.put("/v1/parameters/sam_image_source",
+                        json={"valor": "bucket"})
+    assert r.status_code == 200, r.text
+    sid = await _sample_de_segmentacao(admin)
+    d = (await admin.get(f"/v1/projects/{SEG['slug']}/samples/{sid}")).json()
+    assert d["url_sam"] == d["url"] == "https://assinada/bucket/banda.jpg"
+
+
+async def test_sam_so_em_projeto_de_segmentacao(admin, tmp_path):
+    await _projeto_com_dados(admin, tmp_path)
+    sid = await _primeiro(admin)
+    d = (await admin.get(f"/v1/projects/{PROJ['slug']}/samples/{sid}")).json()
+    assert d["url_sam"] is None
+
+
+async def test_sam_image_falha_do_gcs_nao_vaza_o_texto(admin, monkeypatch):
+    """O texto do GCS cita conta de serviço e caminho: vai para o log, e a
+    resposta diz só que não deu."""
+    from api import storage
+
+    def ler(uri, max_bytes):
+        raise RuntimeError("403 sa-visionyard@proj.iam.gserviceaccount.com")
+    monkeypatch.setattr(storage, "ler", ler)
+    sid = await _sample_de_segmentacao(admin)
+    r = await admin.get(f"/v1/projects/{SEG['slug']}/samples/{sid}/sam-image")
+    assert r.status_code == 502
+    assert "gserviceaccount" not in r.text
+
+
+async def test_sam_image_de_outro_projeto_e_404(admin):
+    sid = await _sample_de_segmentacao(admin)
+    await admin.post("/v1/projects", json={**SEG, "slug": "outro"})
+    r = await admin.get(f"/v1/projects/outro/samples/{sid}/sam-image")
+    assert r.status_code == 404
+
+
+async def test_sam_image_exige_ser_membro(admin, client):
+    sid = await _sample_de_segmentacao(admin)
+    async with novo_usuario(admin, client, "fora@teste.com") as (fora, _):
+        r = await fora.get(f"/v1/projects/{SEG['slug']}/samples/{sid}/sam-image")
+        assert r.status_code == 404
+
+
+async def test_sam_image_recusa_imagem_grande_demais(admin, monkeypatch):
+    """O orçamento de pixels é conferido no cabeçalho, antes de decodificar:
+    é o que segura a memória da API diante de uma foto descomunal."""
+    from api import storage
+    from api.services import samples as svc
+    monkeypatch.setattr(storage, "ler", lambda uri, m: _jpeg(3000, 2000))
+    monkeypatch.setattr(svc, "LIMITE_PIXELS", 1_000_000)
+    sid = await _sample_de_segmentacao(admin)
+    r = await admin.get(f"/v1/projects/{SEG['slug']}/samples/{sid}/sam-image")
+    assert r.status_code == 422
+    assert "grande demais" in r.json()["detail"]
+
+
+async def test_sam_image_arquivo_corrompido_e_422(admin, monkeypatch):
+    from api import storage
+    monkeypatch.setattr(storage, "ler", lambda uri, m: b"isto nao e um jpeg")
+    sid = await _sample_de_segmentacao(admin)
+    r = await admin.get(f"/v1/projects/{SEG['slug']}/samples/{sid}/sam-image")
+    assert r.status_code == 422

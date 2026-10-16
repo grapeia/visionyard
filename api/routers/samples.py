@@ -15,7 +15,7 @@ from datetime import datetime
 from typing import Annotated, Any, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Path, Query
+from fastapi import APIRouter, Depends, Path, Query, Response
 from pydantic import BaseModel, Discriminator, Field, Tag, field_validator
 
 from ..auth import Principal
@@ -130,6 +130,10 @@ class DetalheDaImagem(BaseModel):
     height: int | None
     metadata: dict[str, Any] | None
     url: str | None
+    # De onde o SAM do anotador lê os pixels: a rota `sam-image` da API, ou a
+    # própria `url` assinada (parâmetro `sam_image_source`). Nulo fora de
+    # segmentação.
+    url_sam: str | None
     minha_anotacao: MinhaAnotacao | None
     # Só a contagem: ver a caixa alheia antes de desenhar a sua enviesa a
     # anotação e destrói a medida de concordância.
@@ -161,6 +165,20 @@ async def listar(project_slug: Annotated[str, Path()], user: CurrentUser,
 async def detalhe(project_slug: Annotated[str, Path()],
                   sample_id: Annotated[UUID, Path()], user: CurrentUser):
     return await svc.detalhe(project_slug, sample_id, user.id)
+
+
+@router.get("/projects/{project_slug}/samples/{sample_id}/sam-image",
+            response_class=Response,
+            responses={200: {"content": {"image/jpeg": {}},
+                             "description": "JPEG reduzido a 1024 px"}},
+            dependencies=[Depends(require_role("viewer"))])
+async def imagem_sam(project_slug: Annotated[str, Path()],
+                     sample_id: Annotated[UUID, Path()]):
+    """A imagem para o contorno automático, do mesmo endereço da tela."""
+    corpo = await svc.imagem_sam(project_slug, sample_id)
+    # `private`: a imagem é do projeto, não vai para cache compartilhado
+    return Response(corpo, media_type="image/jpeg",
+                    headers={"Cache-Control": "private, max-age=300"})
 
 
 @router.put("/projects/{project_slug}/samples/{sample_id}/annotation",

@@ -43,7 +43,7 @@ async def test_so_superusuario(admin, client):
 async def test_lista_diz_de_onde_vem_cada_valor(admin):
     ps = _por_chave((await admin.get("/v1/parameters")).json())
     assert set(ps) == {"buckets", "models_bucket", "models_prefix",
-                       "agent_url_minutes"}
+                       "agent_url_minutes", "sam_image_source"}
     # o conftest define estes dois no ambiente
     assert ps["models_bucket"]["origem"] == "ambiente"
     assert ps["models_bucket"]["valor"] == "modelos-de-teste"
@@ -360,3 +360,18 @@ async def test_rota_de_diagnostico_usa_os_buckets_que_valem(admin, destravado,
     r = await admin.get("/v1/parameters/diagnostico")
     assert r.status_code == 200, r.text
     assert pedidos == [(["da-tela"], "modelos-de-teste")]
+
+
+async def test_imagem_do_sam_e_escolha_entre_duas_opcoes(admin):
+    ps = {p["chave"]: p for p in (await admin.get("/v1/parameters")).json()}
+    p = ps["sam_image_source"]
+    assert p["tipo"] == "opcoes" and p["valor"] == "api"
+    assert [o["valor"] for o in p["opcoes"]] == ["api", "bucket"]
+    r = await admin.put("/v1/parameters/sam_image_source", json={"valor": "s3"})
+    assert r.status_code == 422
+
+
+@pytest.mark.parametrize("valor", [[], {}, 1, None])
+async def test_opcao_de_tipo_errado_e_422(admin, valor):
+    r = await admin.put("/v1/parameters/sam_image_source", json={"valor": valor})
+    assert r.status_code == 422

@@ -42,6 +42,14 @@ function campo(p) {
     return `<textarea id="${id}" rows="3" ${trava}
       placeholder="um por linha">${esc((p.valor || []).join("\n"))}</textarea>`;
   }
+  if (p.tipo === "opcoes") {
+    // uma opção por linha, com o rótulo inteiro à vista: a diferença entre
+    // elas é a explicação, e um <select> a cortaria
+    return `<div class="check-grupo">${(p.opcoes || []).map((o) => `
+      <label class="check"><input type="radio" name="${id}" value="${esc(o.valor)}"
+        ${o.valor === p.valor ? "checked" : ""} ${trava}>
+        <span>${esc(o.rotulo)}</span></label>`).join("")}</div>`;
+  }
   const tipo = p.tipo === "inteiro" ? `type="number" step="1"` : "";
   return `<input id="${id}" ${tipo} value="${esc(p.valor ?? "")}" ${trava}>`;
 }
@@ -76,6 +84,10 @@ function cartaoParametro(p) {
 }
 
 function lerCampo(chave, tipo) {
+  if (tipo === "opcoes") {
+    const marcado = document.querySelector(`input[name="par-${chave}"]:checked`);
+    return marcado ? marcado.value : null;
+  }
   const bruto = $(`par-${chave}`).value;
   if (tipo === "lista") return bruto.split("\n").map((s) => s.trim()).filter(Boolean);
   if (tipo === "inteiro") return bruto.trim() === "" ? null : Number(bruto);

@@ -24,6 +24,7 @@ const anot = { id: null, boxes: [], classe: 0, classes: [], sel: -1,
 export async function abrirAnotador(id) {
   const geracao = ++anot.geracao;
   segm.esquecer();
+  $("anotSam").textContent = "";   // o rótulo da imagem anterior não vale aqui
   const d = await api(`/projects/${estado.projeto}/samples/${id}`);
   if (geracao !== anot.geracao) return;
   anot.id = id;
@@ -74,7 +75,7 @@ export async function abrirAnotador(id) {
   // Sem await: a imagem já está na tela e dá para começar à mão enquanto o
   // encoder roda. Contorno começado à mão continua à mão; os que começarem
   // depois de "SAM pronto" usam o SAM.
-  if (segmentacao()) segm.prepararImagem(d.url, redesenhar);
+  if (segmentacao()) segm.prepararImagem(d.url_sam, redesenhar);
 }
 
 /** Escala que faz a imagem inteira caber na área, sem cortar. */

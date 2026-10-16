@@ -20,6 +20,11 @@ from ..services import parameters as svc
 router = APIRouter(tags=["parameters"])
 
 
+class Opcao(BaseModel):
+    valor: str
+    rotulo: str
+
+
 class Parametro(BaseModel):
     chave: str
     rotulo: str
@@ -28,6 +33,7 @@ class Parametro(BaseModel):
     # lista, texto ou inteiro conforme `tipo`; a validação é do serviço.
     valor: Any
     origem: str              # "ambiente" | "tela" | "padrão"
+    opcoes: list[Opcao]      # só quando `tipo` é "opcoes"
     variavel: str            # o nome que trava o campo, para a tela citar
     alterado_em: datetime | None
     alterado_por: str | None

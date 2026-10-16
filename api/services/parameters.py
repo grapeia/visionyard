@@ -95,13 +95,31 @@ def _inteiro(minimo: int, maximo: int) -> Callable[[Any], int]:
     return validar
 
 
+def _opcao(validas: tuple[tuple[str, str], ...]) -> Callable[[Any], str]:
+    def validar(v: Any) -> str:
+        # o tipo antes: lista ou dict no `in` de um set é TypeError, e 500
+        if not isinstance(v, str) or v not in {valor for valor, _ in validas}:
+            raise _invalido("escolha uma das opções")
+        return v
+    return validar
+
+
 @dataclass(frozen=True)
 class Parametro:
     chave: str
     rotulo: str
     ajuda: str
-    tipo: str               # "lista" | "texto" | "inteiro" — o que a tela desenha
+    tipo: str     # "lista" | "texto" | "inteiro" | "opcoes" — o que a tela desenha
     validar: Callable[[Any], Any]
+    # (valor, rótulo) quando `tipo` é "opcoes"; o rótulo é o que a tela mostra
+    opcoes: tuple[tuple[str, str], ...] = ()
+
+
+SAM_OPCOES = (
+    ("api", "Pela API do visionyard — funciona sem configurar nada no bucket"),
+    ("bucket", "Direto do bucket — poupa a API, mas o bucket precisa liberar "
+               "CORS para o endereço desta tela"),
+)
 
 
 PARAMETROS: dict[str, Parametro] = {p.chave: p for p in (
@@ -120,6 +138,13 @@ PARAMETROS: dict[str, Parametro] = {p.chave: p for p in (
               "publicar. Ela pede na hora de usar, então só precisa cobrir a "
               "transferência de um arquivo.",
               "inteiro", _inteiro(5, 720)),
+    Parametro("sam_image_source", "Imagem para o contorno automático (SAM)",
+              "O contorno automático roda no navegador e precisa ler os pixels "
+              "da foto — mostrar a imagem não precisa, por isso a tela sempre "
+              "as exibiu. Pela API: ela baixa do bucket e entrega reduzida "
+              "(1024 px). Direto: o navegador lê do bucket, o que exige CORS "
+              "liberado lá; sem ele o anotador cai no desenho à mão e avisa.",
+              "opcoes", _opcao(SAM_OPCOES), SAM_OPCOES),
 )}
 
 _cache: dict[str, Any] | None = None
@@ -178,6 +203,7 @@ def _linha(p: Parametro, salvo: dict | None, trav: set[str]) -> dict[str, Any]:
         origem, v = "padrão", getattr(settings, p.chave)
     return {"chave": p.chave, "rotulo": p.rotulo, "ajuda": p.ajuda,
             "tipo": p.tipo, "valor": v, "origem": origem,
+            "opcoes": [{"valor": o, "rotulo": r} for o, r in p.opcoes],
             "variavel": f"VISIONYARD_{p.chave.upper()}",
             "alterado_em": salvo["updated_at"] if salvo else None,
             "alterado_por": salvo["quem"] if salvo else None}

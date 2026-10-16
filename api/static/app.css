@@ -712,6 +712,9 @@ dialog .acoes { display: flex; gap: 8px; justify-content: flex-end; margin-top: 
 #painelParametros { padding: 20px 24px; max-width: 860px; }
 #painelParametros input, #painelParametros textarea { width: 100%;
   margin-top: 8px; }
+/* opção em rádio: o rádio fica do tamanho dele e o rótulo à esquerda; a
+   regra de cima esticaria o rádio na largura do cartão */
+#painelParametros .check input { width: 16px; flex: none; margin-top: 0; }
 #painelParametros textarea { background: var(--aco-900); color: var(--texto);
   border: 1px solid var(--trilho); border-radius: var(--r); padding: 7px 10px;
   font-family: var(--mono); resize: vertical; }

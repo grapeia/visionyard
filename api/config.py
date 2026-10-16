@@ -104,6 +104,14 @@ class Settings(BaseSettings):
     # do treino), então o prazo só precisa cobrir a transferência — não o job.
     agent_url_minutes: int = 60
 
+    # De onde o SAM do anotador lê os pixels da imagem. "api": a API baixa do
+    # bucket e entrega reduzida, do mesmo endereço da tela — funciona sem
+    # configurar nada no bucket. "bucket": o navegador lê direto pela URL
+    # assinada, poupando a API, mas aí o bucket precisa liberar CORS (GET)
+    # para a origem da tela. Mostrar a imagem não depende disto: `<img>` não
+    # passa pelo CORS; ler os pixels por script, sim.
+    sam_image_source: Literal["api", "bucket"] = "api"
+
     # Redes dos proxies reversos que terminam TLS na frente da API (CIDR).
     # Só destes endereços o X-Forwarded-For é aceito — vazio significa "não há
     # proxy", e vale sempre o IP real da conexão. Preencher indevidamente
