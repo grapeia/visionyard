@@ -3,7 +3,7 @@
 import { mostrarAba } from "./abas.js";
 import { $, api, avisar, clamp, clamp01, cor, erroAviso, esc, estado, post } from "./nucleo.js";
 import { hachurarFora } from "./roi.js";
-import { carregarDados, dados, preencherEscopo } from "./rotulagem.js";
+import { carregarDados, dados, desenharGrade, preencherEscopo } from "./rotulagem.js";
 
 const anot = { id: null, boxes: [], classe: 0, classes: [], sel: -1,
                desenhando: null, img: null, indice: -1, sujo: false,
@@ -459,6 +459,7 @@ function fecharAnotador() {
   $("anotImagem").src = "";
   anot.arrasto = null;
   $("anotCanvas").style.cursor = "crosshair";
+  desenharGrade();
 }
 
 async function salvarAnotacao({ silencioso = false } = {}) {

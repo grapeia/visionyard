@@ -58,16 +58,24 @@ export async function carregarDados() {
   $("paginaAnterior").disabled = d.pagina === 0;
   $("paginaProxima").disabled = d.itens.length < d.por_pagina;
 
-  if (!d.itens.length) {
+  desenharGrade();
+  if (d.itens.length && !d.assina)
+    avisar("sem miniaturas: a credencial não assina URL", true);
+}
+
+/** Redesenha a grade a partir de `dados.itens`, sem ir ao servidor. O anotador
+ *  atualiza os itens ao salvar, e é isto que faz a mudança aparecer ao voltar
+ *  para a grade — sem isto ela só mudava com um reload da página. */
+export function desenharGrade() {
+  if (!dados.itens.length) {
     $("grade").innerHTML = `<div class="vazio"><p>Nenhuma imagem aqui.</p>
       <p class="dica">Catalogue um prefixo do bucket pela aba Datasets,
          em "Adicionar origem".</p></div>`;
     return;
   }
-  $("grade").innerHTML = d.itens.map(cartao).join("");
+  $("grade").innerHTML = dados.itens.map(cartao).join("");
   $("grade").querySelectorAll("[data-abrir]").forEach((b) =>
     b.addEventListener("click", () => abrirAnotador(b.dataset.abrir)));
-  if (!d.assina) avisar("sem miniaturas: a credencial não assina URL", true);
 }
 
 function cartao(it) {
