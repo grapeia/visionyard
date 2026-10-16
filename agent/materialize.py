@@ -18,11 +18,12 @@ from __future__ import annotations
 
 import json
 import shutil
-from collections.abc import Callable
 from pathlib import Path
+from typing import Callable, List, Tuple  # noqa: UP035
 
 # (pares (uri, destino), progresso(n baixadas)) → baixa todos ou levanta.
-Baixador = Callable[[list[tuple[str, Path]], Callable[[int], None]], None]
+# Alias avaliado no import: o future não adia essa expressão no Python 3.8.
+Baixador = Callable[[List[Tuple[str, Path]], Callable[[int], None]], None]  # noqa: UP006
 
 
 def _cache_path(cache_dir: Path, md5: str, uri: str) -> Path:
