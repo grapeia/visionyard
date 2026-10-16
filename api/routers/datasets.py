@@ -222,18 +222,30 @@ async def add_origin(project_slug: Annotated[str, P()],
                               source_id=source_id, ip=auth.client_ip(request))
 
 
+class ImpactoDaRemocao(BaseModel):
+    imagens: int
+    anotacoes: int
+    em_outro_dataset: bool
+
+
+@router.get("/projects/{project_slug}/datasets/{dataset_slug}/sources/{source_id}/impacto",
+            response_model=ImpactoDaRemocao,
+            dependencies=[Depends(require_role("engineer"))])
+async def origin_removal_impact(project_slug: Annotated[str, P()],
+                                dataset_slug: Annotated[str, P()],
+                                source_id: str):
+    return await svc.impacto_da_remocao(project_slug, dataset_slug,
+                                        source_id=source_id)
+
+
 @router.delete("/projects/{project_slug}/datasets/{dataset_slug}/sources/{source_id}",
                status_code=status.HTTP_204_NO_CONTENT)
 async def remove_origin(project_slug: Annotated[str, P()],
                         dataset_slug: Annotated[str, P()], source_id: str,
                         request: Request,
                         actor: Annotated[Principal, Depends(require_role("engineer"))]):
-    """Remove a origem da definição.
-
-    Não apaga sample nem anotação, e não toca nas versões já congeladas: elas
-    continuam treináveis e reproduzíveis. Só as próximas versões deixarão de
-    incluir essas imagens.
-    """
+    """Remove a origem e as imagens que só ela trazia ao projeto (ver
+    `services/datasets.py: desvincular_origem`). Versão congelada não muda."""
     await svc.desvincular_origem(project_slug, dataset_slug, actor,
                                  source_id=source_id,
                                  ip=auth.client_ip(request))

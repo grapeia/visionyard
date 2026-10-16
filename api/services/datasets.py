@@ -418,6 +418,9 @@ async def vincular_origem(project_slug: str, dataset_slug: str,
                           ip: str | None) -> None:
     async with db.connection() as conn, conn.transaction():
         ds = await _dataset_ou_404(conn, project_slug, dataset_slug)
+        # Espera uma remoção em curso, em vez de vincular por cima da conta
+        # de "ninguém mais usa" que ela fez (ver `travar_origens`).
+        await travar_origens(conn, str(ds["project_id"]))
         src = await db.fetch_one(
             "SELECT id FROM data_source WHERE id = %s AND project_id = %s",
             (source_id, ds["project_id"]), conn=conn)
@@ -433,24 +436,120 @@ async def vincular_origem(project_slug: str, dataset_slug: str,
                     after={"source": source_id}, ip=ip, conn=conn)
 
 
+# As imagens que só esta origem mantém no projeto, se ela sair deste dataset.
+#
+# Fica a imagem que outro dataset ainda alcança — pela mesma origem ou por
+# outra a que ela também pertença (`sample_source` é N:N) — e a que entrou em
+# versão congelada, porque o manifesto aponta para ela e versão não muda.
+_SO_DESTA_ORIGEM = """
+    SELECT ss.sample_id FROM sample_source ss
+     WHERE ss.data_source_id = %(src)s
+       AND NOT EXISTS (SELECT 1 FROM dataset_source x
+                        WHERE x.data_source_id = %(src)s
+                          AND x.dataset_id <> %(ds)s)
+       AND NOT EXISTS (SELECT 1 FROM sample_source o
+                         JOIN dataset_source x
+                           ON x.data_source_id = o.data_source_id
+                        WHERE o.sample_id = ss.sample_id
+                          AND o.data_source_id <> %(src)s)
+       AND NOT EXISTS (SELECT 1 FROM dataset_version_item i
+                        WHERE i.sample_id = ss.sample_id)"""
+
+
+async def travar_origens(conn: db.Conn, project_id: str) -> None:
+    """Serializa, por projeto, quem mexe em origem: vincular, remover e
+    enfileirar importação.
+
+    Por projeto e não por origem porque a conta de "ninguém mais usa esta
+    imagem" atravessa origens: a imagem que está em A e em B se salva se B for
+    vinculada a outro dataset agora — e travar só A deixava esse vínculo passar
+    entre a conta e o DELETE, apagando imagem que um dataset acabara de ganhar.
+    """
+    await conn.execute("SELECT pg_advisory_xact_lock(hashtext(%s))",
+                       (f"origens:{project_id}",))
+
+
+async def _origem_do_dataset(conn: db.Conn, ds: dict[str, Any],
+                             source_id: str) -> None:
+    vinculo = await db.fetch_one(
+        "SELECT 1 FROM dataset_source"
+        " WHERE dataset_id = %s AND data_source_id = %s",
+        (ds["id"], source_id), conn=conn)
+    if vinculo is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND,
+                            "origem não está neste dataset")
+
+
+async def impacto_da_remocao(project_slug: str, dataset_slug: str, *,
+                             source_id: str) -> dict[str, Any]:
+    """O que sai do projeto se a origem sair deste dataset — para a tela
+    pedir confirmação com números, antes de apagar anotação de alguém."""
+    async with db.connection() as conn:
+        ds = await _dataset_ou_404(conn, project_slug, dataset_slug)
+        await _origem_do_dataset(conn, ds, source_id)
+        params = {"src": source_id, "ds": ds["id"]}
+        n = await db.fetch_row(
+            f"SELECT count(*) AS imagens,"
+            f"       (SELECT count(*) FROM annotation a"
+            f"         WHERE a.sample_id IN ({_SO_DESTA_ORIGEM})) AS anotacoes"
+            f"  FROM ({_SO_DESTA_ORIGEM}) alvo", params, conn=conn)
+        outro = await db.fetch_one(
+            "SELECT 1 FROM dataset_source"
+            " WHERE data_source_id = %(src)s AND dataset_id <> %(ds)s",
+            params, conn=conn)
+    return {"imagens": n["imagens"], "anotacoes": n["anotacoes"],
+            "em_outro_dataset": outro is not None}
+
+
 async def desvincular_origem(project_slug: str, dataset_slug: str,
                              actor: Principal, *, source_id: str,
                              ip: str | None) -> None:
-    """Remove a origem da definição.
+    """Remove a origem do dataset e, com ela, as imagens que só ela trazia.
 
-    Não apaga sample nem anotação, e não toca nas versões já congeladas: elas
-    continuam treináveis e reproduzíveis. Só as próximas versões deixarão de
-    incluir essas imagens.
+    Quem remove uma origem espera que as imagens saiam do projeto; antes
+    saíam só do dataset e seguiam na Rotulagem, sem caminho na tela para
+    tirá-las de lá. Fica o que outro dataset ainda usa e o que entrou em versão
+    congelada (`_SO_DESTA_ORIGEM`). Apagar o sample leva as anotações dele
+    (`ON DELETE CASCADE`); o `annotation_history` sobrevive. O bucket não é
+    tocado, e a linha de `data_source` fica: os jobs de importação apontam
+    para ela, e adicionar o mesmo prefixo de novo a reaproveita.
     """
     async with db.connection() as conn, conn.transaction():
         ds = await _dataset_ou_404(conn, project_slug, dataset_slug)
+        await travar_origens(conn, str(ds["project_id"]))
+        # O lock do congelamento deste dataset. Ele não basta sozinho — o
+        # freeze resolve os itens antes de travar —, mas é sob ele que o
+        # freeze confere que as imagens ainda existem, e assim a conferência
+        # não cruza com este DELETE no meio.
+        await conn.execute("SELECT pg_advisory_xact_lock(hashtext(%s))",
+                           (str(ds["id"]),))
+        await _origem_do_dataset(conn, ds, source_id)
+        # A importação grava uma imagem por transação, sem lock nenhum entre
+        # elas: removida a origem no meio, as imagens seguintes voltavam ao
+        # projeto sem dataset — ou o job morria ao vincular sample apagado.
+        # Job enfileirado depois daqui é reimportação pedida de novo, e
+        # `importar` toma o mesmo lock para não cair entre esta conta e o fim.
+        importando = await db.fetch_one(
+            "SELECT 1 FROM job WHERE type = 'import' AND data_source_id = %s"
+            "   AND status IN ('queued','running')", (source_id,), conn=conn)
+        if importando:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                "há uma importação desta origem em andamento — espere terminar"
+                " (aba Jobs) e remova de novo")
+        params = {"src": source_id, "ds": ds["id"], "p": ds["project_id"]}
+        apagadas = await db.fetch_row(
+            f"WITH fora AS (DELETE FROM sample WHERE project_id = %(p)s"
+            f"                AND id IN ({_SO_DESTA_ORIGEM}) RETURNING id)"
+            f" SELECT count(*) AS n FROM fora", params, conn=conn)
         await db.execute(
             "DELETE FROM dataset_source"
             " WHERE dataset_id=%s AND data_source_id=%s",
             (ds["id"], source_id), conn=conn)
         await audit(actor, "dataset.origin.remove", "dataset",
                     str(ds["id"]), project_id=str(ds["project_id"]),
-                    before={"source": source_id}, ip=ip, conn=conn)
+                    before={"source": source_id},
+                    after={"imagens_apagadas": apagadas["n"]}, ip=ip, conn=conn)
 
 
 async def previa(project_slug: str, dataset_slug: str,
@@ -614,6 +713,19 @@ async def congelar(project_slug: str, dataset_slug: str, actor: Principal, *,
             (ds["id"],), conn=conn)
         version = (atual["version"] + 1) if atual else 1
         meta["version"] = version
+
+        # Os itens vêm da fase 1, sem lock. Remover uma origem apaga as
+        # imagens que só ela trazia: se isso aconteceu no meio, o INSERT de
+        # `dataset_version_item` violaria a FK de `sample` e viraria 500.
+        ids = [it["sample_id"] for it in itens]
+        existem = await db.fetch_row(
+            "SELECT count(*) AS n FROM sample WHERE id = ANY(%s)", (ids,),
+            conn=conn)
+        if existem["n"] != len(set(ids)):
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                "imagens deste dataset saíram durante o congelamento (origem"
+                " removida) — congele de novo")
 
         igual = await db.fetch_one(
             "SELECT version FROM dataset_version"

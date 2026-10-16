@@ -217,14 +217,26 @@ export async function esperarJob(jobId) {
 }
 
 async function removerOrigem(id, uri) {
-  if (!confirm(`Remover ${uri} deste dataset?\n\n` +
-      "As imagens e anotações continuam no projeto, e as versões já congeladas " +
-      "não mudam. Só as próximas versões deixam de incluir essas imagens."))
-    return;
+  const url = `/projects/${estado.projeto}/datasets/${estado.atual}/sources/${id}`;
+  let imp;
+  try { imp = await api(`${url}/impacto`); }
+  catch (e) { avisar(e.message, true); return; }
+  const efeito = imp.em_outro_dataset
+    ? "Outro dataset também usa esta origem: as imagens continuam no projeto."
+    : imp.imagens
+      ? `${num(imp.imagens)} imagens saem do projeto` +
+        (imp.anotacoes ? `, com ${num(imp.anotacoes)} anotações — sem volta.` : ".") +
+        "\nOs arquivos no bucket não são tocados; adicionar a origem de novo" +
+        " reimporta as imagens, mas as anotações feitas aqui não voltam."
+      : "Nenhuma imagem sai do projeto: as desta origem continuam em uso" +
+        " (versão congelada, ou outro dataset por esta ou por outra origem).";
+  if (!confirm(`Remover ${uri} deste dataset?\n\n${efeito}\n\n` +
+      "Versões já congeladas não mudam.")) return;
   try {
-    await api(`/projects/${estado.projeto}/datasets/${estado.atual}/sources/${id}`,
-              { method: "DELETE" });
-    avisar("Origem removida da definição.");
+    await api(url, { method: "DELETE" });
+    avisar(imp.imagens && !imp.em_outro_dataset
+      ? `Origem removida · ${num(imp.imagens)} imagens fora do projeto.`
+      : "Origem removida do dataset.");
     await abrirDataset(estado.atual);
   } catch (e) { avisar(e.message, true); }
 }

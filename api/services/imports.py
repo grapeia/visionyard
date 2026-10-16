@@ -35,6 +35,7 @@ from ..config import settings
 from ..importers.base import Importer, ImportReport
 from ..importers.gcs_prefix import GCSPrefixImporter
 from ..importers.label_studio import LabelStudioImporter
+from .datasets import travar_origens
 from .projects import projeto_ou_404 as _projeto_ou_404
 
 # Recolher deixa a mensagem na tela de quem importou, que a lê com papel
@@ -362,6 +363,9 @@ async def pedir(project_slug: str, actor: Principal, payload: dict[str, Any],
     importador = construir_importador(payload)
     async with db.connection() as conn, conn.transaction():
         proj = await _projeto_ou_404(conn, project_slug)
+        # Não enfileira por baixo de uma remoção de origem em curso, que
+        # acabou de conferir que não há importação desta origem na fila.
+        await travar_origens(conn, str(proj["id"]))
         gcs = payload["kind"] == "gcs_prefix"
         uri = (f"gs://{payload['bucket'].strip('/')}"
                f"/{payload.get('prefix', '').lstrip('/')}"

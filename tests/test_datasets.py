@@ -317,7 +317,12 @@ async def test_dataset_sem_anotacao_nao_congela(admin, tmp_path):
 
 
 async def test_remover_origem_preserva_versao_congelada(admin, tmp_path):
-    """Remover é 'parar de incluir', nunca destruir."""
+    """Remover apaga o que só aquela origem trazia — menos o que já congelou.
+
+    A versão é imutável e o manifesto aponta para as imagens dela: as 5
+    anotadas entraram na v1 e ficam, com as anotações. A sexta, sem anotação,
+    nunca entrou em versão nenhuma e sai do projeto junto com a origem.
+    """
     await _projeto_com_dados(admin, tmp_path)
     await admin.post(f"/v1/projects/{PROJ['slug']}/datasets", json=DS)
     src = await _source_id(PROJ["slug"])
@@ -332,7 +337,52 @@ async def test_remover_origem_preserva_versao_congelada(admin, tmp_path):
     assert d["origens"] == []
     assert len(d["versoes"]) == 1              # a versão continua lá
     assert d["versoes"][0]["stats"]["imagens"] == 5
-    # e os samples e anotações não foram apagados
+    p = (await admin.get(f"/v1/projects/{PROJ['slug']}")).json()
+    assert p["counts"]["samples"] == 5
+    assert p["counts"]["annotations"] == 5
+
+
+async def test_remover_origem_apaga_as_imagens_dela(admin, tmp_path):
+    """Quem remove a origem espera que as imagens saiam do projeto.
+
+    Antes ficavam: sumiam do dataset e continuavam na Rotulagem, em "Todas as
+    imagens", sem nenhum caminho na tela para tirá-las de lá. O bucket não é
+    tocado — sai só o catálogo, e adicionar a origem de novo as reimporta.
+    """
+    await _projeto_com_dados(admin, tmp_path)
+    await admin.post(f"/v1/projects/{PROJ['slug']}/datasets", json=DS)
+    src = await _source_id(PROJ["slug"])
+    base = f"/v1/projects/{PROJ['slug']}/datasets/{DS['slug']}"
+    await admin.put(f"{base}/sources/{src}")
+
+    r = await admin.get(f"{base}/sources/{src}/impacto")
+    assert r.status_code == 200, r.text
+    assert r.json() == {"imagens": 6, "anotacoes": 5, "em_outro_dataset": False}
+
+    assert (await admin.delete(f"{base}/sources/{src}")).status_code == 204
+    p = (await admin.get(f"/v1/projects/{PROJ['slug']}")).json()
+    assert p["counts"]["samples"] == 0
+    assert p["counts"]["annotations"] == 0
+    r = await admin.get(f"/v1/projects/{PROJ['slug']}/samples")
+    assert r.json()["total"] == 0
+
+
+async def test_remover_origem_usada_por_outro_dataset_nao_apaga(admin, tmp_path):
+    """A imagem é do projeto: enquanto outro dataset a usa, ela fica."""
+    await _projeto_com_dados(admin, tmp_path)
+    await admin.post(f"/v1/projects/{PROJ['slug']}/datasets", json=DS)
+    await admin.post(f"/v1/projects/{PROJ['slug']}/datasets",
+                     json={**DS, "slug": "outro", "name": "Outro"})
+    src = await _source_id(PROJ["slug"])
+    base = f"/v1/projects/{PROJ['slug']}/datasets"
+    await admin.put(f"{base}/{DS['slug']}/sources/{src}")
+    await admin.put(f"{base}/outro/sources/{src}")
+
+    r = await admin.get(f"{base}/{DS['slug']}/sources/{src}/impacto")
+    assert r.json() == {"imagens": 0, "anotacoes": 0, "em_outro_dataset": True}
+
+    assert (await admin.delete(
+        f"{base}/{DS['slug']}/sources/{src}")).status_code == 204
     p = (await admin.get(f"/v1/projects/{PROJ['slug']}")).json()
     assert p["counts"]["samples"] == 6
     assert p["counts"]["annotations"] == 5
@@ -559,3 +609,56 @@ async def test_congelar_nao_segura_transacao_enquanto_monta_o_manifesto(
     assert r.status_code == 201, r.text
     assert visto["ociosas"] == 0, (
         "o congelamento montou o manifesto com transação aberta")
+
+
+async def test_congelar_recusa_se_imagem_saiu_no_meio(admin, tmp_path,
+                                                      monkeypatch):
+    """O congelamento lê as imagens na fase 1 e só trava o dataset na fase 3.
+
+    Se a origem sai no meio — e agora sair apaga as imagens —, o INSERT em
+    `dataset_version_item` apontaria para sample apagado: violação de FK e 500.
+    Sob o lock ele confere que tudo o que vai gravar ainda existe, e recusa.
+    """
+    from api.services import datasets as svc
+
+    await _projeto_com_dados(admin, tmp_path)
+    await admin.post(f"/v1/projects/{PROJ['slug']}/datasets", json=DS)
+    src = await _source_id(PROJ["slug"])
+    base = f"/v1/projects/{PROJ['slug']}/datasets/{DS['slug']}"
+    await admin.put(f"{base}/sources/{src}")
+
+    original = svc.build_manifest
+
+    def remove_no_meio(*a, **kw):
+        with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+            conn.execute("DELETE FROM sample WHERE id = (SELECT min(s.id::text)::uuid"
+                         " FROM sample s JOIN annotation a ON a.sample_id = s.id)")
+        return original(*a, **kw)
+
+    monkeypatch.setattr(svc, "build_manifest", remove_no_meio)
+    r = await admin.post(f"{base}/freeze", json={"descricao": "v1"})
+    assert r.status_code == 409, r.text
+    assert "congele de novo" in r.json()["detail"]
+    assert (await admin.get(base)).json()["versoes"] == []
+
+
+async def test_nao_remove_origem_com_importacao_em_andamento(admin, tmp_path):
+    """A importação grava uma imagem por transação: removida a origem no meio,
+    as imagens seguintes voltavam ao projeto sem dataset nenhum — ou o job
+    falhava ao vincular um sample já apagado."""
+    await _projeto_com_dados(admin, tmp_path)
+    await admin.post(f"/v1/projects/{PROJ['slug']}/datasets", json=DS)
+    src = await _source_id(PROJ["slug"])
+    base = f"/v1/projects/{PROJ['slug']}/datasets/{DS['slug']}"
+    await admin.put(f"{base}/sources/{src}")
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        conn.execute(
+            "INSERT INTO job (project_id, type, payload, status, data_source_id)"
+            " SELECT project_id, 'import', '{}', 'running', id"
+            "   FROM data_source WHERE id = %s", (src,))
+
+    r = await admin.delete(f"{base}/sources/{src}")
+    assert r.status_code == 409, r.text
+    assert "importação" in r.json()["detail"]
+    p = (await admin.get(f"/v1/projects/{PROJ['slug']}")).json()
+    assert p["counts"]["samples"] == 6
