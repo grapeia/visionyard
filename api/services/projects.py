@@ -257,3 +257,74 @@ async def arquivar(project_slug: str, actor: Principal, *,
                                 "projeto já arquivado")
         await audit(actor, "project.archive", "project", str(row["id"]),
                     project_id=str(row["id"]), ip=ip, conn=conn)
+
+
+# ---------------------------------------------------------------- gabarito --
+
+async def gabaritos(project_slug: str) -> list[dict[str, Any]]:
+    """Os gabaritos de corte do projeto, um por classe principal."""
+    async with db.connection() as conn:
+        proj = await projeto_ou_404(conn, project_slug)
+        return await db.fetch_all(
+            "SELECT class_index, lines, seeds, shapes, updated_at"
+            "  FROM segment_template"
+            " WHERE project_id = %s ORDER BY class_index", (proj["id"],),
+            conn=conn)
+
+
+async def gravar_gabarito(project_slug: str, actor: Principal, *,
+                          class_index: int, lines: list[Any],
+                          seeds: list[dict[str, Any]],
+                          shapes: list[dict[str, Any]],
+                          ip: str | None) -> dict[str, Any]:
+    """Grava (substituindo) o gabarito de cortes de uma classe principal.
+
+    Confere contra o schema atual o que o anotador não tem como garantir: que
+    a classe é principal e que cada semente e cada laço é de um recorte DELA.
+    Classe de fora daria ao pedaço da banda uma classe que não está "dentro
+    de" banda, e o anotador a gravaria assim.
+    """
+    async with db.connection() as conn, conn.transaction():
+        proj = await projeto_ou_404(conn, project_slug, "id, task_type")
+        if proj["task_type"] != "segment":
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
+                                "gabarito de cortes só existe em projeto de "
+                                "segmentação")
+        schema = await db.fetch_row(
+            "SELECT classes FROM label_schema WHERE project_id = %s"
+            " ORDER BY version DESC LIMIT 1", (proj["id"],), conn=conn)
+        classes = schema["classes"]
+        if class_index >= len(classes):
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
+                                f"classe {class_index} não existe")
+        principal = classes[class_index]
+        if principal.get("inside") is not None:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
+                                f"'{principal['name']}' é recorte: gabarito é "
+                                "de classe principal")
+        filhas = {i for i, c in enumerate(classes)
+                  if c.get("inside") == principal["id"]}
+        fora = [x["cls"] for x in [*seeds, *shapes] if x["cls"] not in filhas]
+        if fora:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
+                                f"a classe {fora[0]} não está \"dentro de\" "
+                                f"'{principal['name']}'")
+        row = await db.fetch_row(
+            "INSERT INTO segment_template"
+            " (project_id, class_index, lines, seeds, shapes, updated_by)"
+            " VALUES (%s, %s, %s::jsonb, %s::jsonb, %s::jsonb, %s)"
+            " ON CONFLICT (project_id, class_index) DO UPDATE SET"
+            "   lines = EXCLUDED.lines, seeds = EXCLUDED.seeds,"
+            "   shapes = EXCLUDED.shapes,"
+            "   updated_by = EXCLUDED.updated_by, updated_at = now()"
+            " RETURNING class_index, lines, seeds, shapes, updated_at",
+            (proj["id"], class_index, json.dumps(lines), json.dumps(seeds),
+             json.dumps(shapes), actor.id), conn=conn)
+        # o alvo é o projeto: a chave do gabarito é composta, e `target_id`
+        # é uuid; a classe vai no `after`
+        await audit(actor, "template.save", "project", str(proj["id"]),
+                    project_id=str(proj["id"]),
+                    after={"class": principal["name"], "lines": len(lines),
+                           "seeds": len(seeds), "shapes": len(shapes)},
+                    ip=ip, conn=conn)
+    return row

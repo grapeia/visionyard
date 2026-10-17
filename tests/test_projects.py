@@ -464,3 +464,126 @@ async def test_dentro_de_duplicado_por_nome_recusa(admin):
     r = await admin.post("/v1/projects", json={
         **SEG, "classes": ["banda", {"name": "banda", "inside": None}]})
     assert r.status_code == 422
+
+
+# --------------------------------------------------------------------------- #
+# Gabarito de cortes: as linhas e as sementes que o anotador aplica numa
+# principal nova
+# --------------------------------------------------------------------------- #
+
+CORTES = {**SEG, "classes": ["banda", {"name": "dianteiro", "inside": "banda"},
+                             {"name": "traseiro", "inside": "banda"},
+                             "rabo", {"name": "ponta", "inside": "rabo"}]}
+GABARITO = {"lines": [[[-0.1, 0.45], [0.5, 0.5], [1.1, 0.48]]],
+            "seeds": [{"pt": [0.5, 0.2], "cls": 2}, {"pt": [0.5, 0.8], "cls": 1}],
+            "shapes": []}
+# Só laços (picanha, maminha): regiões dentro da banda, sem corte nenhum
+LACOS = {"lines": [], "seeds": [],
+         "shapes": [{"cls": 1, "pts": [[0.2, 0.2], [0.4, 0.2], [0.3, 0.4]]}]}
+
+
+async def test_gabarito_grava_le_e_substitui(admin):
+    await admin.post("/v1/projects", json=CORTES)
+    assert (await admin.get(f"/v1/projects/{SEG['slug']}/templates")).json() == []
+
+    r = await admin.put(f"/v1/projects/{SEG['slug']}/templates/0", json=GABARITO)
+    assert r.status_code == 200, r.text
+    assert r.json()["class_index"] == 0
+    assert r.json()["lines"] == GABARITO["lines"]
+    assert r.json()["seeds"] == GABARITO["seeds"]
+
+    # um por principal: gravar de novo substitui
+    outro = {**GABARITO, "lines": [[[0, 0.3], [1, 0.3]]]}
+    assert (await admin.put(f"/v1/projects/{SEG['slug']}/templates/0",
+                            json=outro)).status_code == 200
+    lista = (await admin.get(f"/v1/projects/{SEG['slug']}/templates")).json()
+    assert [g["class_index"] for g in lista] == [0]
+    assert lista[0]["lines"] == outro["lines"]
+
+
+async def test_gabarito_so_em_segmentacao(admin):
+    await admin.post("/v1/projects", json=PROJ)
+    r = await admin.put(f"/v1/projects/{PROJ['slug']}/templates/0",
+                        json={"lines": [[[0, 0], [1, 1]]], "seeds": []})
+    assert r.status_code == 422
+    assert "segmentação" in r.json()["detail"]
+
+
+@pytest.mark.parametrize("indice,trecho", [
+    (1, "principal"),          # dianteiro é recorte
+    (9, "não existe"),
+])
+async def test_gabarito_so_de_classe_principal(admin, indice, trecho):
+    await admin.post("/v1/projects", json=CORTES)
+    r = await admin.put(f"/v1/projects/{SEG['slug']}/templates/{indice}",
+                        json=GABARITO)
+    assert r.status_code == 422
+    assert trecho in r.json()["detail"]
+
+
+@pytest.mark.parametrize("cls", [0, 4])    # a própria banda; ponta é do rabo
+async def test_semente_so_de_recorte_da_principal(admin, cls):
+    """Semente com classe de fora daria ao pedaço da banda uma classe que não
+    está "dentro de" banda — o anotador a gravaria assim."""
+    await admin.post("/v1/projects", json=CORTES)
+    r = await admin.put(f"/v1/projects/{SEG['slug']}/templates/0", json={
+        **GABARITO, "seeds": [{"pt": [0.5, 0.5], "cls": cls}]})
+    assert r.status_code == 422
+    assert "dentro de" in r.json()["detail"]
+
+
+async def test_gabarito_so_de_lacos(admin):
+    await admin.post("/v1/projects", json=CORTES)
+    r = await admin.put(f"/v1/projects/{SEG['slug']}/templates/0", json=LACOS)
+    assert r.status_code == 200, r.text
+    assert r.json()["shapes"] == LACOS["shapes"]
+    assert r.json()["lines"] == []
+
+
+@pytest.mark.parametrize("corpo,trecho", [
+    ({"lines": [], "seeds": [], "shapes": []}, "vazio"),
+    # laço com classe de fora da banda (ponta é do rabo)
+    ({**LACOS, "shapes": [{"cls": 4, "pts": [[0.2, 0.2], [0.4, 0.2], [0.3, 0.4]]}]},
+     "dentro de"),
+])
+async def test_gabarito_vazio_ou_laco_de_fora_recusa(admin, corpo, trecho):
+    await admin.post("/v1/projects", json=CORTES)
+    r = await admin.put(f"/v1/projects/{SEG['slug']}/templates/0", json=corpo)
+    assert r.status_code == 422, r.text
+    assert trecho in r.text
+
+
+@pytest.mark.parametrize("lines", [
+    [[[0.1, 0.1]]],                       # linha de um ponto
+    [[[0.1, 0.1], [50, 0.2]]],            # coordenada absurda
+])
+async def test_gabarito_linhas_invalidas(admin, lines):
+    await admin.post("/v1/projects", json=CORTES)
+    r = await admin.put(f"/v1/projects/{SEG['slug']}/templates/0",
+                        json={**GABARITO, "lines": lines})
+    assert r.status_code == 422
+
+
+@pytest.mark.parametrize("pt", [["NaN", 0.5], [0.5, 50]])
+async def test_semente_fora_do_quadro_recusa(admin, pt):
+    """NaN passava pelo pydantic e estourava no cast para jsonb: 500."""
+    await admin.post("/v1/projects", json=CORTES)
+    r = await admin.put(f"/v1/projects/{SEG['slug']}/templates/0", json={
+        **GABARITO, "seeds": [{"pt": pt, "cls": 1}]})
+    assert r.status_code == 422, r.text
+
+
+async def test_gabarito_annotator_grava_viewer_nao(admin, client):
+    await admin.post("/v1/projects", json=CORTES)
+    async with novo_usuario(admin, client, "vera@teste.com") as (vera, _):
+        await admin.put(f"/v1/projects/{SEG['slug']}/members",
+                        json={"email": "vera@teste.com", "role": "viewer"})
+        r = await vera.get(f"/v1/projects/{SEG['slug']}/templates")
+        assert r.status_code == 200
+        r = await vera.put(f"/v1/projects/{SEG['slug']}/templates/0", json=GABARITO)
+        assert r.status_code == 403
+
+        await admin.put(f"/v1/projects/{SEG['slug']}/members",
+                        json={"email": "vera@teste.com", "role": "annotator"})
+        r = await vera.put(f"/v1/projects/{SEG['slug']}/templates/0", json=GABARITO)
+        assert r.status_code == 200, r.text

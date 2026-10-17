@@ -24,14 +24,23 @@ const anot = { id: null, boxes: [], classe: 0, classes: [], sel: -1,
 export async function abrirAnotador(id) {
   const geracao = ++anot.geracao;
   segm.esquecer();
-  $("anotSam").textContent = "";   // o rótulo da imagem anterior não vale aqui
+  $("anotSam").hidden = true;      // o estado da imagem anterior não vale aqui
   const d = await api(`/projects/${estado.projeto}/samples/${id}`);
   if (geracao !== anot.geracao) return;
   anot.id = id;
   anot.classes = (estado.classes || []).map((c, i) => ({ nome: c, cor: cor(i) }));
+  anot.dentroDe = estado.dentroDe || [];
   anot.boxes = (d.minha_anotacao && d.minha_anotacao.boxes) || [];
   anot.sel = -1;
   anot.classe = 0;
+  if (segmentacao()) {
+    segm.prepararCaixas(anot);
+    anot.classe = segm.classesVisiveis(anot)[0] ?? 0;
+    if (segm.temRecortes(anot)) {
+      segm.carregarRecorte().catch(() => {});
+      carregarGabaritos().catch(() => {});
+    }
+  }
   anot.sujo = false;
   anot.indice = dados.itens.findIndex((x) => x.id === id);
   $("anotNomes").checked = anot.nomes;
@@ -48,13 +57,25 @@ export async function abrirAnotador(id) {
     ? `${d.outros_anotaram} outro(s) rotulador(es) já anotaram esta imagem. ` +
       `As caixas deles não aparecem: ver antes de desenhar enviesa a sua.`
     : "";
+  // No topo só o número: o como-usar mora no "?"
   $("anotDica").innerHTML =
-    `<span class="anot-progresso">${anot.indice + 1}/${dados.itens.length}` +
-    ` · pág ${dados.pagina + 1} · ${segmentacao()
-      ? "clique no objeto · Enter aceita · Esc descarta"
-      : "arraste as alças p/ ajustar"}</span>`;
+    `<span class="anot-progresso" title="página ${dados.pagina + 1}">` +
+    `${anot.indice + 1}/${dados.itens.length}</span>`;
   $("anotRotuloLista").textContent = segmentacao() ? "Contornos" : "Caixas";
+  $("anotAjuda").hidden = false;
+  $("anotEtapas").hidden = !segmentacao();
+  document.querySelector('#anotEtapas [data-etapa="recortes"]').disabled =
+    !segm.temRecortes(anot);
   $("anotador").hidden = false;
+
+  // Sem await, e antes de esperar a foto: o SAM lê a dele (`url_sam`, já
+  // reduzida), e com a pré-carga fica pronto antes de a foto cheia chegar.
+  // Contorno começado à mão continua à mão; os que começarem depois de
+  // "SAM pronto" usam o SAM.
+  if (segmentacao()) {
+    segm.prepararImagem(d.url_sam, redesenhar, id)
+      .then(() => preCarregarProxima(geracao)).catch(() => {});
+  }
 
   const img = $("anotImagem");
   anot.img = img;
@@ -72,10 +93,16 @@ export async function abrirAnotador(id) {
   renderImagem();
   $("anotTela").scrollTo(0, 0);
   desenharClasses();
-  // Sem await: a imagem já está na tela e dá para começar à mão enquanto o
-  // encoder roda. Contorno começado à mão continua à mão; os que começarem
-  // depois de "SAM pronto" usam o SAM.
-  if (segmentacao()) segm.prepararImagem(d.url_sam, redesenhar);
+}
+
+/** Depois que a imagem atual ficou pronta, a próxima da página já vai sendo
+ *  codificada: ao apertar `e`, o SAM está pronto em vez de levar ~4 s. */
+async function preCarregarProxima(geracao) {
+  const prox = dados.itens[anot.indice + 1];
+  if (!prox || geracao !== anot.geracao) return;
+  const d = await api(`/projects/${estado.projeto}/samples/${prox.id}`);
+  if (geracao !== anot.geracao) return;
+  segm.preCarregar(prox.id, d.url_sam);
 }
 
 /** Escala que faz a imagem inteira caber na área, sem cortar. */
@@ -130,30 +157,165 @@ $("anotTela").addEventListener("wheel", (ev) => {
   tela.scrollTop = fy * cv.height - (ev.clientY - telaR.top);
 }, { passive: false });
 
+/** As classes que a lista e os números oferecem agora. Na segmentação,
+ *  depende da etapa: principais no contorno, as da principal nos recortes. */
+const classesNaLista = () => (segmentacao() ? segm.classesVisiveis(anot)
+                                            : anot.classes.map((_, i) => i));
+
+/** Escolher a classe com algo selecionado reclassifica o selecionado. */
+function escolherClasse(i) {
+  anot.classe = i;
+  if (anot.sel >= 0) {
+    if (segmentacao()) {
+      const erro = segm.reclassificar(anot, i);
+      if (erro) avisar(erro, true);
+    } else {
+      anot.boxes[anot.sel].cls = i; anot.sujo = true;
+    }
+  }
+  desenharClasses(); redesenhar();
+}
+
 function desenharClasses() {
-  $("anotClasses").innerHTML = anot.classes.map((c, i) => `
+  const lista = classesNaLista();
+  anot.chaveClasses = lista.join() + "|" + anot.classe;
+  $("anotClasses").innerHTML = lista.map((i, k) => `
     <li><button data-classe="${i}" aria-current="${i === anot.classe}">
-      <span class="cor" style="background:${c.cor}"></span>
-      ${esc(c.nome)}<span class="tecla">${i + 1}</span></button></li>`).join("");
+      <span class="cor" style="background:${anot.classes[i].cor}"></span>
+      ${esc(anot.classes[i].nome)}<span class="tecla">${k + 1}</span></button></li>`).join("");
   $("anotClasses").querySelectorAll("[data-classe]").forEach((b) =>
-    b.addEventListener("click", () => {
-      anot.classe = Number(b.dataset.classe);
-      // trocar a classe com uma caixa selecionada reclassifica ela
-      if (anot.sel >= 0) { anot.boxes[anot.sel].cls = anot.classe;
-                           anot.sujo = true; redesenhar(); }
-      desenharClasses();
+    b.addEventListener("click", () => escolherClasse(Number(b.dataset.classe))));
+}
+
+/** O que muda com a etapa e o SAM: o ponto de estado no topo, os botões de
+ *  etapa/ferramenta, a lista de classes e o texto da ajuda aberta. */
+function atualizarBarra() {
+  const ponto = $("anotSam");
+  ponto.hidden = !segmentacao();
+  if (segmentacao()) {
+    const s = segm.seg;
+    ponto.dataset.estado = s.manual ? "manual" : s.situacao;
+    ponto.title = !s.manual && s.situacao === "indisponivel" ? s.motivo
+      : segm.situacaoSam() || "SAM";
+    document.querySelectorAll("#anotEtapas [data-etapa]").forEach((b) =>
+      b.setAttribute("aria-pressed", String(b.dataset.etapa === s.etapa)));
+    $("anotFerramentas").hidden = s.etapa !== "recortes";
+    $("anotGabarito").hidden = s.etapa !== "recortes";
+    document.querySelectorAll("#anotFerramentas [data-ferramenta]").forEach((b) =>
+      b.setAttribute("aria-pressed", String(b.dataset.ferramenta === s.ferramenta)));
+    if (classesNaLista().join() + "|" + anot.classe !== anot.chaveClasses) desenharClasses();
+  }
+  if (!$("anotAjudaTexto").hidden) $("anotAjudaTexto").textContent = textoAjuda();
+}
+
+const textoAjuda = () => (segmentacao() ? segm.ajuda()
+  : "Arraste para desenhar a caixa · arraste as alças para ajustar · " +
+    "número troca a classe · d apaga.\nq/e anterior e próxima (salva) · " +
+    "w pré-rotula com o modelo · roda do mouse dá zoom.");
+
+function alternarAjuda() {
+  const t = $("anotAjudaTexto");
+  t.hidden = !t.hidden;
+  $("anotAjuda").setAttribute("aria-expanded", String(!t.hidden));
+  if (!t.hidden) t.textContent = textoAjuda();
+}
+$("anotAjuda").addEventListener("click", alternarAjuda);
+
+document.querySelectorAll("#anotEtapas [data-etapa]").forEach((b) =>
+  b.addEventListener("click", () => {
+    b.blur();   // com foco, o Enter de aceitar o contorno clicaria o botão
+    const erro = segm.mudarEtapa(b.dataset.etapa, anot);
+    if (erro) avisar(erro, true);
+    redesenhar();
+  }));
+document.querySelectorAll("#anotGabarito [data-gabarito]").forEach((b) =>
+  b.addEventListener("click", () => {
+    b.blur();
+    const acao = b.dataset.gabarito;
+    if (acao === "salvar") { salvarGabarito().catch(erroAviso); return; }
+    const erro = acao === "aplicar" ? segm.aplicarGabarito(anot) : segm.espelhar(anot);
+    if (erro) avisar(erro, true);
+    redesenhar();
+  }));
+
+/** Grava os cortes da principal ativa como gabarito da classe dela. */
+async function salvarGabarito() {
+  const g = segm.montarGabarito(anot);
+  if (g.erro) { avisar(g.erro, true); return; }
+  if (segm.seg.gabaritos.has(g.classe) &&
+      !confirm("Já há um gabarito para esta classe. Substituir pelos cortes desta?"))
+    return;
+  await api(`/projects/${estado.projeto}/templates/${g.classe}`,
+            { method: "PUT", body: JSON.stringify(g.corpo) });
+  await carregarGabaritos(true);
+  avisar(`gabarito de ${anot.classes[g.classe].nome} salvo — t aplica noutra imagem`);
+}
+
+/** Os gabaritos do projeto, uma vez por projeto (ou de novo depois de salvar). */
+async function carregarGabaritos(forcar = false) {
+  if (!forcar && estado.gabaritosDe === estado.projeto) return;
+  const projeto = estado.projeto;
+  const lista = await api(`/projects/${projeto}/templates`);
+  if (projeto !== estado.projeto) return;
+  segm.definirGabaritos(lista);
+  estado.gabaritosDe = projeto;
+}
+
+document.querySelectorAll("#anotFerramentas [data-ferramenta]").forEach((b) =>
+  b.addEventListener("click", () => {
+    b.blur();
+    segm.mudarFerramenta(b.dataset.ferramenta, anot);
+    redesenhar();
+  }));
+
+/** A lista lateral na segmentação: cada principal seguida dos recortes
+ *  dela; "editar" destrava a principal para mexer nos vértices. */
+function listarContornos() {
+  const s = segm.seg, ordem = [];
+  anot.boxes.forEach((b, i) => {
+    if (!segm.ehPrincipal(b, anot)) return;
+    ordem.push(i);
+    anot.boxes.forEach((f, j) => { if (f.dono === b) ordem.push(j); });
+  });
+  // recorte sem principal que o contenha (contorno apagado por fora, dado
+  // antigo): aparece no fim, para poder ser apagado
+  anot.boxes.forEach((_, i) => { if (!ordem.includes(i)) ordem.push(i); });
+  $("anotCaixas").innerHTML = ordem.length ? ordem.map((i) => {
+    const b = anot.boxes[i], principal = segm.ehPrincipal(b, anot);
+    const nome = b.cls === null ? "sem classe" : (anot.classes[b.cls] || {}).nome || b.cls;
+    const cls = [i === anot.sel && "selecionada", !principal && "recorte",
+                 b.cls === null && "sem-classe", b === s.editando && "editando"]
+      .filter(Boolean).join(" ");
+    const editar = principal && s.etapa === "contorno" && b !== s.editando
+      ? `<button class="discreto" data-editar="${i}">editar</button>` : "";
+    return `<li class="${cls}" data-caixa="${i}">
+      <span class="cor" style="background:${b.cls === null ? "none" : cor(b.cls)}"></span>
+      <span class="nome">${esc(nome)}</span>
+      <span class="acoes">${editar}
+        <button class="discreto" data-apagar="${i}">apagar</button></span></li>`;
+  }).join("")
+    : `<li class="vazio">nenhum contorno — salvar assim marca a imagem como
+         "olhei, não há nada"</li>`;
+  $("anotCaixas").querySelectorAll("[data-caixa]").forEach((li) =>
+    li.addEventListener("click", (ev) => {
+      const alvo = ev.target.dataset;
+      if (alvo.apagar !== undefined) segm.apagar(anot, Number(alvo.apagar));
+      else if (alvo.editar !== undefined) segm.editar(anot, Number(alvo.editar));
+      else anot.sel = Number(li.dataset.caixa);
+      redesenhar();
     }));
 }
 
 function listarCaixas() {
+  if (segmentacao()) { listarContornos(); return; }
   $("anotCaixas").innerHTML = anot.boxes.length
     ? anot.boxes.map((b, i) => `
         <li class="${i === anot.sel ? "selecionada" : ""}" data-caixa="${i}">
           <span class="cor" style="background:${cor(b.cls)}"></span>
           ${esc((anot.classes[b.cls] || {}).nome || b.cls)}
           <button class="discreto" data-apagar="${i}">apagar</button></li>`).join("")
-    : `<li class="vazio">nenhum${segmentacao() ? " contorno" : "a caixa"} —
-         salvar assim marca a imagem como "olhei, não há nada"</li>`;
+    : `<li class="vazio">nenhuma caixa — salvar assim marca a imagem como
+         "olhei, não há nada"</li>`;
   $("anotCaixas").querySelectorAll("[data-caixa]").forEach((li) =>
     li.addEventListener("click", (ev) => {
       if (ev.target.dataset.apagar !== undefined) return;
@@ -183,8 +345,7 @@ function redesenhar() {
     cx.strokeRect(rx, ry, rw, rh);
     cx.setLineDash([]);
   }
-  $("anotSam").textContent = segmentacao() ? segm.situacaoSam() : "";
-  $("anotSam").title = segm.seg.situacao === "indisponivel" ? segm.seg.motivo : "";
+  atualizarBarra();
   if (segmentacao()) {
     segm.desenhar(cx, cv, anot);
     listarCaixas();
@@ -332,11 +493,11 @@ $("anotCanvas").addEventListener("pointermove", (ev) => {
 // Ponteiro cancelado (toque interrompido, captura perdida) não manda
 // pointerup: sem isto o arrasto seguia preso ao próximo movimento.
 $("anotCanvas").addEventListener("pointercancel", () => {
-  segm.soltar(); anot.arrasto = null; anot.desenhando = null; redesenhar();
+  segm.soltar(); redesenhar(); anot.arrasto = null; anot.desenhando = null; redesenhar();
 });
 
-$("anotCanvas").addEventListener("pointerup", () => {
-  if (segmentacao()) { segm.soltar(); return; }
+$("anotCanvas").addEventListener("pointerup", (ev) => {
+  if (segmentacao()) { segm.soltar(posCanvas(ev), ctxSeg()); return; }
   if (anot.arrasto) {
     // resize por um lado só pode ter cruzado o oposto: normaliza w/h > 0
     if (anot.sel >= 0) normalizarCaixa(anot.boxes[anot.sel]);
@@ -405,23 +566,21 @@ document.addEventListener("keydown", (ev) => {
   if (segmentacao() && segm.tecla(ev, anot, redesenhar, avisar)) return;
   if (ev.key === "Escape") { fecharAnotador(); return; }
 
+  if (ev.key === "?") { alternarAjuda(); return; }
   if (k === "d" || ev.key === "Delete" || ev.key === "Backspace") {
     if (anot.sel < 0) return;
     ev.preventDefault();
-    anot.boxes.splice(anot.sel, 1);
-    anot.sel = -1; anot.sujo = true; redesenhar();
+    if (segmentacao()) segm.apagar(anot, anot.sel);
+    else { anot.boxes.splice(anot.sel, 1); anot.sel = -1; anot.sujo = true; }
+    redesenhar();
     return;
   }
   if (k === "q") { ev.preventDefault(); irParaImagem(-1).catch(erroAviso); return; }
   if (k === "e") { ev.preventDefault(); irParaImagem(+1).catch(erroAviso); return; }
   if (k === "w") { ev.preventDefault(); prerotular(); return; }
 
-  const n = Number(ev.key);
-  if (n >= 1 && n <= anot.classes.length) {
-    anot.classe = n - 1;
-    if (anot.sel >= 0) { anot.boxes[anot.sel].cls = anot.classe; anot.sujo = true; }
-    desenharClasses(); redesenhar();
-  }
+  const n = Number(ev.key), lista = classesNaLista();
+  if (n >= 1 && n <= lista.length) escolherClasse(lista[n - 1]);
 });
 
 /** Anterior/próxima dentro da página, buscando a página vizinha na borda.
@@ -430,10 +589,10 @@ document.addEventListener("keydown", (ev) => {
  * gravar uma anotação vazia, que no modelo significa "olhei e não há nada".
  */
 async function irParaImagem(passo) {
-  if (segmentacao() && segm.seg.rascunho) {
-    avisar("há um contorno em rascunho — Enter aceita, Esc descarta", true);
-    return;
-  }
+  const pendente = segmentacao() && segm.pendencia(anot);
+  if (pendente) { segm.apontarPendencia(anot); redesenhar(); avisar(pendente, true); return; }
+  // marca `sujo` se recortou algo; sem a ferramenta, não sai da imagem
+  if (segmentacao() && !segm.travar(anot)) return;
   if (anot.sujo) await salvarAnotacao({ silencioso: true });
 
   let i = anot.indice + passo;
@@ -493,7 +652,9 @@ async function prerotular() {
              "aplicado por cima do seu desenho");
       return;
     }
-    anot.boxes = boxes; anot.sel = -1; anot.sujo = false; redesenhar();
+    anot.boxes = boxes; anot.sel = -1; anot.sujo = false;
+    if (segmentacao()) segm.prepararCaixas(anot);
+    redesenhar();
     avisar(`${boxes.length} ${segmentacao() ? "contorno(s)" : "caixa(s)"}` +
            " do modelo — corrija e salve");
   } catch (e) { avisar(e.message, true); }
@@ -534,9 +695,15 @@ function fecharAnotador() {
 }
 
 async function salvarAnotacao({ silencioso = false } = {}) {
+  // a principal em edição trava antes: é ao travar que os recortes dela são
+  // cortados pelo contorno novo
+  if (segmentacao() && !segm.travar(anot))
+    throw new Error("a principal em edição não pôde travar — nada foi gravado");
   await api(`/projects/${estado.projeto}/samples/${anot.id}/annotation`,
             { method: "PUT",
-              body: JSON.stringify({ boxes: anot.boxes, status: "submitted" }) });
+              body: JSON.stringify({
+                boxes: segmentacao() ? segm.paraGravar(anot) : anot.boxes,
+                status: "submitted" }) });
   anot.sujo = false;
   // reflete na grade sem recarregar a página inteira
   const item = dados.itens[anot.indice];
@@ -546,9 +713,13 @@ async function salvarAnotacao({ silencioso = false } = {}) {
 }
 
 $("anotSalvar").addEventListener("click", async () => {
-  // gravar com um contorno em rascunho o perderia sem aviso
-  if (segmentacao() && segm.seg.rascunho)
-    return avisar("há um contorno em rascunho — Enter aceita, Esc descarta", true);
+  // gravar com um contorno em rascunho o perderia sem aviso, e pedaço sem
+  // classe a API recusaria
+  const pendente = segmentacao() && segm.pendencia(anot);
+  if (pendente) {
+    segm.apontarPendencia(anot); redesenhar();
+    return avisar(pendente, true);
+  }
   const botao = $("anotSalvar");
   botao.disabled = true;
   try {

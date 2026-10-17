@@ -174,12 +174,15 @@
     <label class="alternar"><input type="checkbox" id="anotNomes" checked>
       nomes nas caixas</label>
     <span class="anot-dica" id="anotDica"></span>
-    <span class="anot-dica" id="anotSam"></span>
+    <span class="sam-ponto" id="anotSam" hidden></span>
+    <button id="anotAjuda" class="ajuda" title="como usar" aria-expanded="false"
+            hidden>?</button>
     <button id="anotAnterior" title="anterior (q)">q ←</button>
     <button id="anotPretag" title="pré-rotular esta imagem com o modelo (w)">w pré</button>
     <button id="anotSalvar" class="primario" title="salvar e próxima (e)">
       Salvar e próxima <span class="tecla-inline">e</span></button>
   </header>
+  <div class="anot-ajuda-texto" id="anotAjudaTexto" hidden></div>
   <div class="anot-corpo">
     <div class="anot-tela" id="anotTela">
       <div class="anot-zoom" id="anotZoom">
@@ -188,12 +191,40 @@
       </div>
     </div>
     <aside class="anot-lado">
+      <div id="anotEtapas" hidden>
+        <div class="etapas">
+          <button data-etapa="contorno" title="contorno principal, com o SAM (c)">
+            Contorno <span class="tecla">c</span></button>
+          <button data-etapa="recortes" title="dividir a principal em regiões (r)">
+            Recortes <span class="tecla">r</span></button>
+        </div>
+        <div class="etapas" id="anotFerramentas" hidden>
+          <button data-ferramenta="fatiar"
+                  title="arraste uma linha atravessando o contorno (f)">
+            Fatiar <span class="tecla">f</span></button>
+          <button data-ferramenta="desenhar"
+                  title="arraste em volta da região; o que passar da borda é cortado (g)">
+            Desenhar <span class="tecla">g</span></button>
+        </div>
+      </div>
       <span class="rotulo">Classes</span>
       <ul class="classes" id="anotClasses"></ul>
       <span class="rotulo" style="margin-top:20px;display:block"
             id="anotRotuloLista">Caixas</span>
       <ul class="caixas" id="anotCaixas"></ul>
       <p class="dica" id="anotOutros"></p>
+      <div class="etapas" id="anotGabarito" hidden>
+        <span class="rotulo">Gabarito</span>
+        <button data-gabarito="aplicar"
+                title="aplica o gabarito de cortes desta principal (t)">
+          Aplicar <span class="tecla">t</span></button>
+        <button data-gabarito="espelhar"
+                title="vira o gabarito na horizontal — a outra meia-carcaça (x)">
+          Espelhar <span class="tecla">x</span></button>
+        <button data-gabarito="salvar"
+                title="guarda os cortes desta principal como gabarito do projeto">
+          Salvar gabarito</button>
+      </div>
     </aside>
   </div>
 </div>

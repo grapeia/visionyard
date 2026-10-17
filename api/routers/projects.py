@@ -12,7 +12,7 @@ from typing import Annotated, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Path, Request, status
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .. import auth
 from ..auth import Principal
@@ -96,6 +96,75 @@ class SchemaAppendIn(BaseModel):
     @classmethod
     def _add(cls, v: list[str | ClasseNova]) -> list[str | ClasseNova]:
         return _nomes_unicos(v, "classes duplicadas na lista")
+
+
+Ponto = tuple[float, float]
+
+
+def _no_quadro(p: Ponto) -> Ponto:
+    # A comparação também barra NaN (toda comparação com NaN é falsa), que o
+    # pydantic aceita como float e o cast para jsonb recusa — virava 500.
+    if any(not -1.0 <= c <= 2.0 for c in p):
+        raise ValueError("ponto longe demais da principal")
+    return p
+
+
+class Semente(BaseModel):
+    """O ponto que diz a classe do pedaço do gabarito que o contém."""
+    pt: Ponto
+    cls: int = Field(ge=0)
+
+    @field_validator("pt")
+    @classmethod
+    def _pt(cls, v: Ponto) -> Ponto:
+        return _no_quadro(v)
+
+
+class Regiao(BaseModel):
+    """Laço do gabarito: região desenhada dentro da principal, com classe."""
+    cls: int = Field(ge=0)
+    pts: list[Ponto] = Field(min_length=3, max_length=500)
+
+    @field_validator("pts")
+    @classmethod
+    def _pts(cls, v: list[Ponto]) -> list[Ponto]:
+        for p in v:
+            _no_quadro(p)
+        return v
+
+
+class GabaritoIn(BaseModel):
+    # Coordenadas no quadro 0–1 da caixa da principal. A linha pode passar
+    # um pouco da caixa (o corte começa fora da banda), mas não muito: valor
+    # absurdo é erro de conversão, não corte. Linhas e laços são opcionais
+    # cada um — picanha e maminha são só laço —, mas não os dois vazios.
+    lines: list[list[Ponto]] = Field(max_length=50)
+    seeds: list[Semente] = Field(max_length=200)
+    shapes: list[Regiao] = Field(default_factory=list, max_length=100)
+
+    @model_validator(mode="after")
+    def _algo(self) -> GabaritoIn:
+        if not self.lines and not self.shapes:
+            raise ValueError("gabarito vazio: sem corte e sem região")
+        return self
+
+    @field_validator("lines")
+    @classmethod
+    def _linhas(cls, v: list[list[Ponto]]) -> list[list[Ponto]]:
+        for linha in v:
+            if not 2 <= len(linha) <= 500:
+                raise ValueError("cada linha tem de 2 a 500 pontos")
+            for p in linha:
+                _no_quadro(p)
+        return v
+
+
+class Gabarito(BaseModel):
+    class_index: int
+    lines: list[list[Ponto]]
+    seeds: list[Semente]
+    shapes: list[Regiao]
+    updated_at: datetime
 
 
 class ProjetoNaLista(BaseModel):
@@ -233,6 +302,32 @@ async def append_classes(
                                          add=[como_dict(c) for c in body.add],
                                          change_note=body.change_note,
                                          ip=auth.client_ip(request))
+
+
+@router.get("/projects/{project_slug}/templates", response_model=list[Gabarito],
+            dependencies=[Depends(require_role("viewer"))])
+async def list_templates(project_slug: Annotated[str, Path()]):
+    """Gabaritos de corte (segmentação), um por classe principal."""
+    return await svc.gabaritos(project_slug)
+
+
+@router.put("/projects/{project_slug}/templates/{class_index}",
+            response_model=Gabarito)
+async def put_template(
+        body: GabaritoIn, project_slug: Annotated[str, Path()],
+        class_index: Annotated[int, Path(ge=0)], request: Request,
+        actor: Annotated[Principal, Depends(require_role("annotator"))]):
+    """Grava o gabarito de cortes de uma classe principal, substituindo o
+    anterior. `annotator` e não `engineer`: quem monta o gabarito é quem
+    recorta as bandas, e ele só agiliza o começo — o que se grava como
+    anotação continua passando pelo olho de quem anota."""
+    return await svc.gravar_gabarito(
+        project_slug, actor, class_index=class_index,
+        lines=[[list(p) for p in linha] for linha in body.lines],
+        seeds=[{"pt": list(s.pt), "cls": s.cls} for s in body.seeds],
+        shapes=[{"cls": r.cls, "pts": [list(p) for p in r.pts]}
+                for r in body.shapes],
+        ip=auth.client_ip(request))
 
 
 @router.post("/projects/{project_slug}/archive",
