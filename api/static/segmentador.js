@@ -50,7 +50,11 @@ export const seg = {
   // ordem. É isso que deixa arrastar um ponto da linha e refazer tudo.
   cortes: new Map(),
   arrastoLinha: null,     // { linha, vertice, referencia }
-  arrastoLaco: null,      // { peca, vertice }: vértice do laço selecionado
+  // { peca, vertice } (vértice do laço selecionado) ou { peca, mover, px0,
+  // solto } (o laço inteiro)
+  arrastoLaco: null,
+  borracha: false,        // arrastar apaga os vértices sob o círculo
+  apagando: null,         // { peca }: o polígono que a borracha está comendo
   escala: [1000, 1000],   // a imagem em 1000 de largura, para o mínimo do fatiar
   gabaritos: new Map(),   // índice da classe principal → { lines, seeds }
 };
@@ -65,6 +69,7 @@ export function esquecer() {
   seg.etapa = "contorno"; seg.editando = null; seg.ativa = null;
   seg.traco = null; seg.desfazer = [];
   seg.cortes = new Map(); seg.arrastoLinha = null; seg.arrastoLaco = null;
+  seg.apagando = null;
   if (seg.situacao === "pronto" || seg.situacao === "codificando")
     seg.situacao = "parado";
 }
@@ -504,7 +509,12 @@ export function mudarEtapa(etapa, anot) {
  *  aperta em seguida, para escolher a classe do próximo laço, reclassifica
  *  o pedaço que ficou selecionado. */
 export function mudarFerramenta(f, anot) {
-  seg.ferramenta = f; seg.traco = null; anot.sel = -1;
+  seg.ferramenta = f; seg.traco = null; anot.sel = -1; seg.borracha = false;
+}
+
+/** Liga e desliga a borracha; ela vale nas duas etapas. */
+export function alternarBorracha() {
+  seg.borracha = !seg.borracha; seg.traco = null;
 }
 
 /** Ponto de desfazer dos recortes: a lista e a classe de cada item. Basta
@@ -525,6 +535,7 @@ function desfazer(anot) {
   // Ctrl+Z com a alça ainda segura: o índice da linha arrastada pode não
   // existir mais nos cortes restaurados
   seg.arrastoLinha = null; seg.arrastoLaco = null; seg.traco = null;
+  seg.apagando = null;
   anot.sel = -1; anot.sujo = true;
   if (seg.ativa && !anot.boxes.includes(seg.ativa)) seg.ativa = null;
   return true;
@@ -536,7 +547,7 @@ function desfazer(anot) {
 export function reclassificar(anot, cls) {
   // No meio de um arrasto o ponto de desfazer guardaria o objeto que o
   // arrasto continua mexendo, e o Ctrl+Z voltaria uma geometria de depois.
-  if (seg.arrastoLaco || seg.arrastoLinha) return null;
+  if (seg.arrastoLaco || seg.arrastoLinha || seg.apagando) return null;
   const b = anot.boxes[anot.sel];
   if (!b || b.cls === cls) return null;
   if (ehPrincipal(b, anot)) {
@@ -679,6 +690,11 @@ export function espelhar(anot) {
  *  { anot, cv, aoMudar } — `aoMudar` redesenha. */
 export function apertar(ev, p, { anot, cv, aoMudar }) {
   seg.escala = [1000, (1000 * cv.height) / (cv.width || 1)];
+  if (seg.borracha) {
+    if (seg.rascunho) avisar("aceite (Enter) ou descarte (Esc) o rascunho antes de apagar vértices", true);
+    else if (ev.button === 0) comecarBorracha(p, { anot, cv });
+    aoMudar(); return;
+  }
   if (seg.etapa === "recortes") {
     const laco = lacoSelecionado(anot);
     const v = laco ? verticeEm(p, laco, cv) : -1;
@@ -706,6 +722,14 @@ export function apertar(ev, p, { anot, cv, aoMudar }) {
         aoMudar(); return;
       }
       seg.arrastoLinha = { ...alvo, referencia: fatias(seg.ativa, anot) };
+      return;
+    }
+    // Dentro do laço selecionado, arrastar o leva inteiro. A cópia (e o
+    // ponto de desfazer) só quando ele andar de fato: parado, é clique.
+    if (laco && ev.button === 0 && !ev.shiftKey &&
+        dentroDe(p.x / cv.width, p.y / cv.height, laco.pts)) {
+      seg.arrastoLaco = { peca: laco, mover: [p.x / cv.width, p.y / cv.height],
+                          px0: [p.x, p.y], solto: false };
       return;
     }
     // o gesto só se decide ao soltar: curto é clique, longo é traço
@@ -749,15 +773,27 @@ export function apertar(ev, p, { anot, cv, aoMudar }) {
       anot.sel = anot.boxes.indexOf(ed);
       // `px0`: o polígono só anda depois de 3 px de arrasto. Sem isso o
       // tremor entre os dois cliques de um duplo clique na aresta o movia.
-      seg.arrasto = { mover: [x, y], px0: [p.x, p.y], solto: false };
+      seg.arrasto = { mover: [x, y], px0: [p.x, p.y], solto: false, alvo: ed };
       aoMudar(); return;
     }
     // clique fora da que está em edição: ela trava e começa a próxima
     if (!travar(anot)) return;
   }
   if (ev.button === 2) return;
-  // Começa um contorno novo, mesmo em cima de uma principal travada: é o
-  // que deixa marcar a segunda colada (ou dentro) da primeira.
+  // Em cima de uma principal travada, o gesto só se decide ao soltar:
+  // arrastado, a leva inteira (com os recortes); parado, é clique e começa
+  // um contorno novo ali — é o que deixa marcar a segunda dentro da primeira.
+  const travada = !ev.shiftKey && principalSob(x, y, anot);
+  if (travada) {
+    seg.arrasto = { mover: [x, y], px0: [p.x, p.y], solto: false, alvo: travada };
+    return;
+  }
+  comecarContorno(x, y, anot, aoMudar);
+}
+
+/** Começa um contorno novo no ponto, mesmo em cima de uma principal
+ *  travada: é o que deixa marcar a segunda colada (ou dentro) da primeira. */
+function comecarContorno(x, y, anot, aoMudar) {
   anot.sel = -1;
   seg.rascunho = usaSam()
     ? { sam: true, pontos: [{ x, y, positivo: true }], pts: null }
@@ -767,7 +803,26 @@ export function apertar(ev, p, { anot, cv, aoMudar }) {
 }
 
 export function mover(p, { anot, cv, aoMudar }) {
+  if (seg.apagando) { apagarSob(p, anot, cv); aoMudar(); return true; }
   const lc = seg.arrastoLaco;
+  if (lc && lc.mover) {
+    if (!lc.solto && Math.hypot(p.x - lc.px0[0], p.y - lc.px0[1]) < 3) return true;
+    if (!lc.solto) {
+      lc.solto = true;
+      // cópia no lugar do original, como no arrasto de vértice
+      const i = anot.boxes.indexOf(lc.peca);
+      if (i < 0) { seg.arrastoLaco = null; return true; }
+      guardar(anot);
+      lc.peca = { ...lc.peca, pts: lc.peca.pts.map((q) => [...q]) };
+      anot.boxes[i] = lc.peca;
+    }
+    const x = clamp01(p.x / cv.width), y = clamp01(p.y / cv.height);
+    const [dx, dy] = deslocamento(lc.peca.pts, x - lc.mover[0], y - lc.mover[1]);
+    lc.peca.pts = lc.peca.pts.map(([vx, vy]) => [vx + dx, vy + dy]);
+    lc.mover = [lc.mover[0] + dx, lc.mover[1] + dy];
+    anot.sujo = true; aoMudar();
+    return true;
+  }
   if (lc) {
     lc.peca.pts[lc.vertice] = [clamp01(p.x / cv.width), clamp01(p.y / cv.height)];
     anot.sujo = true; aoMudar();
@@ -788,34 +843,174 @@ export function mover(p, { anot, cv, aoMudar }) {
     if (Math.hypot(p.x - ux, p.y - uy) >= 3) { t.px.push([p.x, p.y]); aoMudar(); }
     return true;
   }
-  const a = seg.arrasto, b = seg.editando;
+  const a = seg.arrasto, b = a && (a.alvo || seg.editando);
   if (!a || !b) return false;
   const x = clamp01(p.x / cv.width), y = clamp01(p.y / cv.height);
   if (a.vertice !== undefined) {
     b.pts[a.vertice] = [x, y];
   } else {
     if (!a.solto && Math.hypot(p.x - a.px0[0], p.y - a.px0[1]) < 3) return true;
+    if (!a.solto) { anot.sel = anot.boxes.indexOf(b); seg.desfazer = []; }
     a.solto = true;
-    // move o polígono inteiro, sem deixar vértice sair da imagem
-    let dx = x - a.mover[0], dy = y - a.mover[1];
-    for (const [vx, vy] of b.pts) {
-      dx = Math.max(-vx, Math.min(1 - vx, dx));
-      dy = Math.max(-vy, Math.min(1 - vy, dy));
-    }
-    b.pts = b.pts.map(([vx, vy]) => [vx + dx, vy + dy]);
+    const [dx, dy] = deslocamento(b.pts, x - a.mover[0], y - a.mover[1]);
+    transladar(anot, b, dx, dy);
     a.mover = [a.mover[0] + dx, a.mover[1] + dy];
   }
   anot.sujo = true; aoMudar();
   return true;
 }
 
+/** O (dx, dy) pedido, encurtado para nenhum vértice sair da imagem. */
+function deslocamento(pts, dx, dy) {
+  for (const [vx, vy] of pts) {
+    dx = Math.max(-vx, Math.min(1 - vx, dx));
+    dy = Math.max(-vy, Math.min(1 - vy, dy));
+  }
+  return [dx, dy];
+}
+
+/** Leva a principal `p` com tudo o que é dela: recortes, e a base e as
+ *  linhas dos cortes vivos — senão o próximo `refazer` cortaria os pedaços
+ *  onde a principal estava. Troca `pts` em vez de mexer no array, e uma vez
+ *  por objeto: a base guarda objetos que também estão em `anot.boxes` (o
+ *  pedaço que a linha não atravessou é o mesmo de antes). */
+function transladar(anot, p, dx, dy) {
+  const vistos = new Set();
+  const mexer = (b) => {
+    if (vistos.has(b)) return;
+    vistos.add(b);
+    b.pts = b.pts.map(([x, y]) => [x + dx, y + dy]);
+  };
+  mexer(p);
+  recortesDe(p, anot).forEach(mexer);
+  const c = seg.cortes.get(p);
+  if (c) {
+    c.base.forEach(mexer);
+    c.linhas = c.linhas.map((l) => l.map(([x, y]) => [x + dx, y + dy]));
+  }
+}
+
+/** A principal sob o ponto (0–1) — a menor, que é a de cima —, ou nula. */
+function principalSob(x, y, anot) {
+  let melhor = null, menor = Infinity;
+  for (const b of principais(anot)) {
+    if (!dentroDe(x, y, b.pts)) continue;
+    const s = area(b.pts);
+    if (s < menor) { menor = s; melhor = b; }
+  }
+  return melhor;
+}
+
+// ---------------------------------------------------------- borracha --
+//
+// Arrastar com a borracha apaga os vértices que o círculo cobre, ligando os
+// vizinhos em linha reta: é o que limpa o serrilhado que o SAM deixa numa
+// borda. Vale para a principal em edição (ou a travada em que se clicou,
+// que passa a ser editada) e, nos recortes, para os laços — as fatias saem
+// das linhas, e é nas linhas que se mexe.
+
+const RAIO_BORRACHA = 10;   // px, o mesmo do círculo do cursor
+
+/** O círculo da borracha em `p` alcança `b`: dentro dele, ou com a borda a
+ *  menos de um raio — a borracha se usa justamente em cima da borda. */
+function sob(p, b, cv) {
+  if (dentroDe(p.x / cv.width, p.y / cv.height, b.pts)) return true;
+  return b.pts.some((v, i) => {
+    const [ax, ay] = emPx(v, cv), [bx, by] = emPx(b.pts[(i + 1) % b.pts.length], cv);
+    const dx = bx - ax, dy = by - ay, l2 = dx * dx + dy * dy || 1;
+    const t = Math.max(0, Math.min(1, ((p.x - ax) * dx + (p.y - ay) * dy) / l2));
+    return Math.hypot(p.x - (ax + t * dx), p.y - (ay + t * dy)) <= RAIO_BORRACHA;
+  });
+}
+
+/** O alvo só se escolhe quando o círculo encosta em algum: apertar ao lado
+ *  da borda e arrastar sobre ela tem de funcionar. */
+function comecarBorracha(p, { anot, cv }) {
+  seg.apagando = { peca: null, ultimo: null };
+  apagarSob(p, anot, cv);
+}
+
+/** O polígono que a borracha vai comer. A principal travada passa a ser
+ *  editada; o laço só vira cópia quando perder o primeiro vértice. */
+function alvoDaBorracha(p, anot, cv) {
+  if (seg.etapa === "recortes") {
+    let laco = lacoSelecionado(anot);
+    if (!laco || !sob(p, laco, cv)) {
+      laco = anot.boxes.filter((b) => b.laco && b.dono === seg.ativa && sob(p, b, cv))
+        .sort((a, b) => area(a.pts) - area(b.pts))[0];
+    }
+    if (laco) anot.sel = anot.boxes.indexOf(laco);
+    return laco || null;
+  }
+  let alvo = seg.editando;
+  if (!alvo || !sob(p, alvo, cv)) {
+    const outra = principais(anot).filter((b) => b !== alvo && sob(p, b, cv))
+      .sort((a, b) => area(a.pts) - area(b.pts))[0];
+    if (!outra) return null;
+    if (!travar(anot)) return null;
+    abrirEdicao(outra); anot.classe = outra.cls; alvo = outra;
+  }
+  anot.sel = anot.boxes.indexOf(alvo);
+  return alvo;
+}
+
+/** Apaga os vértices sob o círculo, do último ponto até `p`: o mouse rápido
+ *  pula dezenas de px entre um evento e outro, e o vértice do meio ficava. */
+function apagarSob(p, anot, cv) {
+  const ap = seg.apagando;
+  if (!ap.peca) ap.peca = alvoDaBorracha(p, anot, cv);
+  const b = ap.peca;
+  const de = ap.ultimo || p;
+  if (!b) { ap.ultimo = { x: p.x, y: p.y }; return; }
+  const passos = Math.max(1, Math.ceil(Math.hypot(p.x - de.x, p.y - de.y) / (RAIO_BORRACHA / 2)));
+  ap.ultimo = { x: p.x, y: p.y };
+  const fora = new Set();
+  for (let k = 0; k <= passos; k++) {
+    const q = { x: de.x + ((p.x - de.x) * k) / passos, y: de.y + ((p.y - de.y) * k) / passos };
+    b.pts.forEach((v, i) => {
+      const [vx, vy] = emPx(v, cv);
+      if (Math.hypot(q.x - vx, q.y - vy) <= RAIO_BORRACHA) fora.add(i);
+    });
+  }
+  if (!fora.size || b.pts.length <= 3) return;
+  let alvo = b;
+  if (b.laco && !ap.copiado) {
+    // cópia no lugar do original, como no arrasto de vértice; e o ponto de
+    // desfazer só agora: passar raspando sem apagar nada não empilha nada
+    const i = anot.boxes.indexOf(b);
+    if (i < 0) { seg.apagando = null; return; }
+    guardar(anot);
+    alvo = ap.peca = { ...b, pts: b.pts.map((q) => [...q]) };
+    anot.boxes[i] = alvo; anot.sel = i; ap.copiado = true;
+  }
+  // polígono não fica com menos de 3: os que sobrarem da conta ficam
+  let sobra = alvo.pts.length - 3;
+  alvo.pts = alvo.pts.filter((_, i) => !(fora.has(i) && sobra-- > 0));
+  anot.sujo = true;
+}
+
 /** Fim do gesto. Sem `p` (ponteiro cancelado) o traço se descarta. */
 export function soltar(p, ctx) {
-  const lc = seg.arrastoLaco;
-  // o laço continua dentro da principal: o vértice puxado para fora é
-  // cortado pela borda dela, como no desenho
-  if (lc && ctx) { recortarLaco(ctx.anot, lc.peca); ctx.aoMudar(); }
-  seg.arrasto = null; seg.arrastoLinha = null; seg.arrastoLaco = null;
+  const lc = seg.arrastoLaco, a = seg.arrasto, ap = seg.apagando;
+  seg.arrasto = null; seg.arrastoLinha = null; seg.arrastoLaco = null; seg.apagando = null;
+  if (ctx) {
+    // o laço continua dentro da principal: o vértice puxado para fora (ou
+    // a aresta que a borracha esticou por uma reentrância) é cortado pela
+    // borda dela, como no desenho
+    const laco = (lc && (!lc.mover || lc.solto) && lc.peca) || (ap && ap.copiado && ap.peca);
+    if (ap && !ap.peca) {
+      avisar(seg.etapa === "recortes"
+        ? "a borracha apaga vértices de laço — passe sobre a borda de um (b desliga)"
+        : "a borracha apaga vértices de contorno — passe sobre a borda de um (b desliga)");
+    }
+    if (laco) recortarLaco(ctx.anot, laco);
+    // apertou dentro do laço e não arrastou: é clique, e escolhe o pedaço
+    if (lc && lc.mover && !lc.solto && p) escolher([p.x, p.y], ctx);
+    // apertou numa travada e não arrastou: é clique, e começa contorno ali
+    if (a && a.alvo && a.alvo !== seg.editando && !a.solto && p)
+      comecarContorno(a.mover[0], a.mover[1], ctx.anot, ctx.aoMudar);
+    ctx.aoMudar();
+  }
   const t = seg.traco;
   seg.traco = null;
   if (!t || !p) return;
@@ -934,15 +1129,29 @@ function lacar(px, { anot, cv }) {
 
 /** Cursor conforme o que está sob o ponteiro. */
 export function cursor(p, { anot, cv }) {
+  if (seg.borracha) return CURSOR_BORRACHA;
+  const x = p.x / cv.width, y = p.y / cv.height;
   if (seg.etapa === "recortes") {
     const laco = lacoSelecionado(anot);
     if ((laco && verticeEm(p, laco, cv) >= 0) || alcaDeLinhaEm(p, cv)) return "grab";
+    if (laco && dentroDe(x, y, laco.pts)) return "move";
+    return "crosshair";
   }
+  if (seg.rascunho) return "crosshair";
   const ed = seg.editando;
-  if (seg.etapa === "contorno" && !seg.rascunho && ed && verticeEm(p, ed, cv) >= 0)
-    return "grab";
+  if (ed && verticeEm(p, ed, cv) >= 0) return "grab";
+  if (ed && arestaEm(p, ed, cv)) return "crosshair";
+  if ((ed && dentroDe(x, y, ed.pts)) || principalSob(x, y, anot)) return "move";
   return "crosshair";
 }
+
+// círculo do tamanho do raio da borracha, branco com contorno preto para
+// aparecer em carne clara e em fundo escuro
+const CURSOR_BORRACHA = `url("data:image/svg+xml,${encodeURIComponent(
+  `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24">` +
+  `<circle cx="12" cy="12" r="${RAIO_BORRACHA}" fill="none" stroke="black" stroke-width="3"/>` +
+  `<circle cx="12" cy="12" r="${RAIO_BORRACHA}" fill="none" stroke="white" stroke-width="1.5"/>` +
+  `</svg>`)}") 12 12, crosshair`;
 
 /** Recorta o laço `peca` pela borda da principal dele, no lugar. A borda
  *  côncava pode partir o laço em dois: os dois ficam (guardar só o maior
@@ -1007,6 +1216,13 @@ export function aceitar(anot, aoMudar) {
 /** Teclas próprias da segmentação. Devolve true se consumiu a tecla. */
 export function tecla(ev, anot, aoMudar, avisar) {
   const k = ev.key.toLowerCase();
+  // Com o botão segurado, tecla nenhuma age: trocar de etapa, apagar ou
+  // desfazer no meio do gesto deixaria o arrasto (ou a borracha) mexendo num
+  // objeto que já travou, saiu da lista ou está guardado no Ctrl+Z.
+  if (seg.arrasto || seg.arrastoLinha || seg.arrastoLaco || seg.apagando) {
+    ev.preventDefault();
+    return true;
+  }
   if ((ev.ctrlKey || ev.metaKey) && k === "z") {
     ev.preventDefault();
     if (seg.etapa === "recortes" && desfazer(anot)) aoMudar();
@@ -1036,6 +1252,7 @@ export function tecla(ev, anot, aoMudar, avisar) {
     else { r.pts.pop(); if (!r.pts.length) seg.rascunho = null; }
     aoMudar(); return true;
   }
+  if (k === "b") { alternarBorracha(); aoMudar(); return true; }
   if (k === "m" && seg.etapa === "contorno") {
     seg.manual = !seg.manual; seg.rascunho = null; aoMudar(); return true;
   }
@@ -1057,6 +1274,12 @@ export function tecla(ev, anot, aoMudar, avisar) {
 
 /** O que a ajuda (?) diz agora: o passo a passo da etapa. */
 export function ajuda() {
+  if (seg.borracha) {
+    return "Borracha: arraste sobre os vértices para apagá-los — os vizinhos " +
+           "se ligam em linha reta. Vale para o contorno (o travado passa a " +
+           "ser editado) e, nos recortes, para os laços.\nb desliga · Ctrl+Z " +
+           "desfaz nos recortes.";
+  }
   if (seg.etapa === "recortes") {
     return (seg.ferramenta === "fatiar"
       ? "Fatiar: arraste uma linha atravessando o contorno — ela divide o " +
@@ -1066,24 +1289,26 @@ export function ajuda() {
       "\nClique num pedaço e escolha a classe (número ou lista). Pedaço " +
       "tracejado ainda não tem classe.\nAs linhas dos cortes ficam com " +
       "alças: arraste para ajustar, botão direito apaga a linha.\n" +
-      "Laço selecionado: arraste os vértices · Alt+clique apaga · duplo " +
-      "clique na aresta insere.\n" +
+      "Laço selecionado: arraste por dentro para movê-lo · arraste os " +
+      "vértices · Alt+clique apaga · duplo clique na aresta insere · b borracha.\n" +
       "t aplica o gabarito · x espelha · \"Salvar gabarito\" guarda os " +
       "recortes desta como modelo.\nCtrl+Z desfaz · d apaga o pedaço · " +
       "clique noutra principal para recortá-la · Esc volta ao contorno.";
   }
   if (seg.editando) {
     return "Ajuste: arraste os vértices · Alt+clique (ou botão direito) " +
-           "apaga · duplo clique na aresta insere.\nEnter (ou clicar fora) " +
-           "trava este contorno e libera o próximo.";
+           "apaga · duplo clique na aresta insere · b borracha · arraste por " +
+           "dentro para mover.\nEnter (ou clicar fora) trava este contorno e " +
+           "libera o próximo.";
   }
   return (seg.manual
     ? "À mão: clique nos vértices; clique no primeiro (ou Enter) fecha."
     : "Clique no objeto: o SAM contorna. Clique de novo para incluir, botão " +
       "direito (ou Shift) para tirar. Enter aceita · Esc descarta · " +
       "m desenha à mão.") +
-    "\nO contorno aceito trava — clique no próximo objeto. Para mexer num " +
-    "travado: \"editar\" na lista. Depois, r divide em recortes.";
+    "\nO contorno aceito trava — clique no próximo objeto. Arrastar um " +
+    "travado o move inteiro, com os recortes. Para mexer nos vértices: " +
+    "\"editar\" na lista, ou b (borracha). Depois, r divide em recortes.";
 }
 
 // ---------------------------------------------------------- desenho --

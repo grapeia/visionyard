@@ -202,7 +202,8 @@ function atualizarBarra() {
     $("anotFerramentas").hidden = s.etapa !== "recortes";
     $("anotGabarito").hidden = s.etapa !== "recortes";
     document.querySelectorAll("#anotFerramentas [data-ferramenta]").forEach((b) =>
-      b.setAttribute("aria-pressed", String(b.dataset.ferramenta === s.ferramenta)));
+      b.setAttribute("aria-pressed", String(!s.borracha && b.dataset.ferramenta === s.ferramenta)));
+    $("anotBorracha").setAttribute("aria-pressed", String(s.borracha));
     if (classesNaLista().join() + "|" + anot.classe !== anot.chaveClasses) desenharClasses();
   }
   if (!$("anotAjudaTexto").hidden) $("anotAjudaTexto").textContent = textoAjuda();
@@ -267,6 +268,12 @@ document.querySelectorAll("#anotFerramentas [data-ferramenta]").forEach((b) =>
     segm.mudarFerramenta(b.dataset.ferramenta, anot);
     redesenhar();
   }));
+
+$("anotBorracha").addEventListener("click", (ev) => {
+  ev.currentTarget.blur();
+  segm.alternarBorracha();
+  redesenhar();
+});
 
 /** A lista lateral na segmentação: cada principal seguida dos recortes
  *  dela; "editar" destrava a principal para mexer nos vértices. */
@@ -493,7 +500,10 @@ $("anotCanvas").addEventListener("pointermove", (ev) => {
 // Ponteiro cancelado (toque interrompido, captura perdida) não manda
 // pointerup: sem isto o arrasto seguia preso ao próximo movimento.
 $("anotCanvas").addEventListener("pointercancel", () => {
-  segm.soltar(); redesenhar(); anot.arrasto = null; anot.desenhando = null; redesenhar();
+  // com o contexto, o laço arrastado para fora é recortado como no soltar;
+  // sem o ponto, o traço se descarta e nada vira clique
+  if (segmentacao()) segm.soltar(undefined, ctxSeg());
+  redesenhar(); anot.arrasto = null; anot.desenhando = null; redesenhar();
 });
 
 $("anotCanvas").addEventListener("pointerup", (ev) => {
