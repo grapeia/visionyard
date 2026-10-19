@@ -433,11 +433,11 @@ dialog .acoes { display: flex; gap: 8px; justify-content: flex-end; margin-top: 
 .sam-ponto[data-estado="codificando"] { background: #ffd60a; }
 .sam-ponto[data-estado="indisponivel"] { background: #e5484d; }
 .sam-ponto[data-estado="manual"] { background: var(--acento); }
-.ajuda {
+.anot-ajuda {
   width: 26px; height: 26px; padding: 0; border-radius: 50%;
   font: 600 13px var(--mono);
 }
-.ajuda[aria-expanded="true"] { border-color: var(--acento); color: var(--acento); }
+.anot-ajuda[aria-expanded="true"] { border-color: var(--acento); color: var(--acento); }
 .anot-ajuda-texto {
   position: absolute; top: 58px; right: 16px; z-index: 5; max-width: 360px;
   background: var(--aco-700); border: 1px solid var(--trilho);
