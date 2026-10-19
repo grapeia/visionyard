@@ -25,24 +25,29 @@ from typing import Any
 _cliente: Any = None
 
 
+# `cloud-platform`, e não os `devstorage.*` que o `storage.Client()` pede
+# sozinho: na VM e no Cloud Run o token vem do servidor de metadados com os
+# escopos pedidos, e é com ele que `como_assinar` chama o `signBytes` do IAM —
+# que recusa token só de storage com 403 "insufficient authentication scopes".
+# Chave exportada assina localmente e não passa por aí.
+ESCOPO = "https://www.googleapis.com/auth/cloud-platform"
+
+
 def _construir() -> Any:
+    import google.auth
     from google.cloud import storage
-    try:
-        return storage.Client()
-    except Exception:
+    cred, projeto = google.auth.default(scopes=[ESCOPO])
+    if not projeto:
         # A chave que o gcloud exporta nem sempre traz project_id; deduz pelo
         # domínio do client_email da conta de serviço. Sem isto, instalação
         # que autentica por chave exportada não lista bucket nenhum.
-        projeto = os.environ.get("GOOGLE_CLOUD_PROJECT", "")
         chave = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "")
-        if not projeto and chave and Path(chave).is_file():
+        if chave and Path(chave).is_file():
             dados = json.loads(Path(chave).read_text())
             email = dados.get("client_email") or ""
             projeto = dados.get("project_id") or (
                 email.split("@", 1)[1].split(".", 1)[0] if "@" in email else "")
-        if not projeto:
-            raise
-        return storage.Client(project=projeto)
+    return storage.Client(credentials=cred, project=projeto or None)
 
 
 def cliente() -> Any:

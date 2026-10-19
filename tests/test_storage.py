@@ -78,3 +78,33 @@ def test_cliente_e_construido_uma_vez(monkeypatch):
     monkeypatch.setattr(storage, "_construir", construir)
     assert storage.cliente() is storage.cliente()
     assert len(chamadas) == 1
+
+
+def test_credencial_cobre_a_api_do_iam(monkeypatch):
+    """Sem credencial explícita, `storage.Client()` pede só os escopos
+    `devstorage.*`. No Cloud Run o servidor de metadados entrega o token com
+    exatamente esses, e o `signBytes` do IAM — que é como a identidade da
+    máquina assina URL — o recusa: 403 "insufficient authentication scopes",
+    galeria sem miniatura e máquina sem download. `cloud-platform` cobre os
+    dois."""
+    import google.auth
+    from google.cloud import storage as gcs
+
+    pedidos: list = []
+    recebido: dict = {}
+    cred = object()
+
+    def default(scopes=None, **kw):
+        pedidos.append(scopes)
+        return cred, "projeto-x"
+
+    def construir_cliente(*a, **kw):
+        recebido.update(kw)
+        return "cliente"
+
+    monkeypatch.setattr(google.auth, "default", default)
+    monkeypatch.setattr(gcs, "Client", construir_cliente)
+    assert storage._construir() == "cliente"
+    assert pedidos == [["https://www.googleapis.com/auth/cloud-platform"]]
+    assert recebido["credentials"] is cred
+    assert recebido["project"] == "projeto-x"
