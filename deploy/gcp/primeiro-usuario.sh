@@ -53,7 +53,7 @@ IMAGEM="$(g run services describe "$SERVICO" --region "$REGION" \
 
 g run jobs deploy "$JOB_SEED" --region "$REGION" --image "$IMAGEM" \
   --service-account "$CONTA_EMAIL" \
-  --set-cloudsql-instances "$CONEXAO_SQL" \
+  "${FLAGS_SQL[@]}" \
   --set-secrets "VISIONYARD_DATABASE_URL=${SEGREDO_DSN}:latest,VISIONYARD_SEED_PASSWORD=${SEGREDO_SENHA}:latest" \
   --command python \
   --args="^|^-m|db.seed|--email|$EMAIL|--name|$NOME" \

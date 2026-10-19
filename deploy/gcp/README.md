@@ -49,6 +49,17 @@ cp deploy/gcp/config.env.example deploy/gcp/config.env    # preencha
 deploy/gcp/provisionar.sh
 ```
 
+**Banco que já existe.** Com `SQL_CRIAR=nao` o provisionamento não cria
+instância, banco nem usuário: pede o DSN sem eco e o guarda no segredo. Banco
+e usuário precisam existir; as tabelas vêm da migração do `publicar.sh`. Se o
+banco é Cloud SQL, preencha `SQL_CONEXAO` (`projeto:regiao:instancia`) para o
+socket `/cloudsql` ser montado. A conta da API recebe `cloudsql.client` no
+projeto da instância, o que pede permissão de IAM lá também. Sem
+`SQL_CONEXAO`, o DSN precisa alcançar o banco pela internet. Banco só em IP
+privado de VPC pede Direct VPC egress, que estes scripts não configuram, e
+muda a conta de proxies confiáveis descrita abaixo. Para trocar o DSN depois:
+`printf '%s' "$DSN" | gcloud secrets versions add visionyard-database-url --data-file -`.
+
 O provisionamento imprime o IP do balanceador. Crie o registro **A** do
 domínio apontando para ele. O certificado gerenciado só sai depois disso — de
 15 minutos a algumas horas:

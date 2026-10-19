@@ -48,7 +48,7 @@ YAML
 passo "Migração do banco ($JOB_MIGRAR)"
 g run jobs deploy "$JOB_MIGRAR" --region "$REGION" --image "$IMAGEM" \
   --service-account "$CONTA_EMAIL" \
-  --set-cloudsql-instances "$CONEXAO_SQL" \
+  "${FLAGS_SQL[@]}" \
   --set-secrets "VISIONYARD_DATABASE_URL=${SEGREDO_DSN}:latest" \
   --env-vars-file "$AMBIENTE" \
   --command python --args=-m,db.migrate \
@@ -85,7 +85,7 @@ g run deploy "$SERVICO" --region "$REGION" --image "$IMAGEM" \
   --no-cpu-throttling --cpu-boost \
   --min-instances 1 --max-instances "$MAX_INSTANCIAS" \
   --concurrency 40 --cpu "$CPU" --memory "$MEMORIA" --timeout 900 \
-  --set-cloudsql-instances "$CONEXAO_SQL" \
+  "${FLAGS_SQL[@]:---clear-cloudsql-instances}" \
   --set-secrets "VISIONYARD_DATABASE_URL=${SEGREDO_DSN}:latest" \
   --env-vars-file "$AMBIENTE" \
   --clear-volumes \

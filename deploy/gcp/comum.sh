@@ -13,7 +13,13 @@ fi
 # shellcheck source=/dev/null
 source "$AQUI/config.env"
 
-for v in PROJECT_ID REGION DOMINIO PREFIXO SQL_TIER SQL_VERSAO \
+SQL_CRIAR="${SQL_CRIAR:-sim}"
+case "$SQL_CRIAR" in
+  sim) OBRIGATORIAS_SQL="SQL_TIER SQL_VERSAO" ;;
+  nao) OBRIGATORIAS_SQL="" ;;
+  *) echo "config.env: SQL_CRIAR deve ser sim ou nao" >&2; exit 1 ;;
+esac
+for v in PROJECT_ID REGION DOMINIO PREFIXO $OBRIGATORIAS_SQL \
          MAX_INSTANCIAS POOL_POR_INSTANCIA MEMORIA CPU; do
   if [[ -z "${!v:-}" ]]; then
     echo "config.env: $v está vazio" >&2
@@ -30,7 +36,15 @@ CONTA_EMAIL="${CONTA}@${PROJECT_ID}.iam.gserviceaccount.com"
 REPO="${PREFIXO}"
 IMAGEM_BASE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO}/api"
 INSTANCIA_SQL="${PREFIXO}-pg"
-CONEXAO_SQL="${PROJECT_ID}:${REGION}:${INSTANCIA_SQL}"
+# Vazio quando o banco não é Cloud SQL: aí não há socket a montar.
+if [[ "$SQL_CRIAR" == sim ]]; then
+  CONEXAO_SQL="${PROJECT_ID}:${REGION}:${INSTANCIA_SQL}"
+else
+  CONEXAO_SQL="${SQL_CONEXAO:-}"
+fi
+# Os jobs só aceitam `--set-cloudsql-instances`; vazio, a flag não vai.
+FLAGS_SQL=()
+[[ -z "$CONEXAO_SQL" ]] || FLAGS_SQL=(--set-cloudsql-instances "$CONEXAO_SQL")
 BANCO="visionyard"
 USUARIO_BANCO="visionyard"
 SEGREDO_DSN="${PREFIXO}-database-url"

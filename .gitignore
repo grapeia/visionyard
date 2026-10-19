@@ -31,3 +31,6 @@ visionyard-deploy/
 .vscode/
 .idea/
 .DS_Store
+
+# Screenshots do Playwright MCP.
+.playwright-mcp/

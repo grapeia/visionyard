@@ -29,9 +29,12 @@ passo "Conta de serviço da API ($CONTA_EMAIL)"
 existe iam service-accounts describe "$CONTA_EMAIL" ||
   g iam service-accounts create "$CONTA" \
     --display-name "visionyard — Control API"
-g projects add-iam-policy-binding "$PROJECT_ID" \
-  --member "serviceAccount:$CONTA_EMAIL" --role roles/cloudsql.client \
-  --condition None >/dev/null
+# No projeto da instância, que com SQL_CONEXAO pode ser outro que não este.
+if [[ -n "$CONEXAO_SQL" ]]; then
+  gcloud --quiet projects add-iam-policy-binding "${CONEXAO_SQL%%:*}" \
+    --member "serviceAccount:$CONTA_EMAIL" --role roles/cloudsql.client \
+    --condition None >/dev/null
+fi
 # Assinar URL sem chave: a credencial do Cloud Run assina pelo IAM
 # (`signBlob`), e precisa desta permissão sobre si mesma. Sem ela a galeria
 # fica sem miniatura e as máquinas não baixam nada — a aba Parâmetros, em
@@ -77,16 +80,20 @@ for b in ${BUCKETS_IMAGENS:-}; do
     --role roles/storage.objectViewer >/dev/null
 done
 
-passo "Cloud SQL ($INSTANCIA_SQL, $SQL_TIER)"
-# ENTERPRISE e não o default: os tiers db-custom-* não existem na
-# ENTERPRISE_PLUS, que é o default de instância nova em algumas versões.
-existe sql instances describe "$INSTANCIA_SQL" ||
-  g sql instances create "$INSTANCIA_SQL" --database-version "$SQL_VERSAO" \
-    --edition ENTERPRISE --tier "$SQL_TIER" --region "$REGION" \
-    --availability-type zonal --storage-auto-increase \
-    --backup-start-time 03:00
-existe sql databases describe "$BANCO" --instance "$INSTANCIA_SQL" ||
-  g sql databases create "$BANCO" --instance "$INSTANCIA_SQL"
+if [[ "$SQL_CRIAR" == sim ]]; then
+  passo "Cloud SQL ($INSTANCIA_SQL, $SQL_TIER)"
+  # ENTERPRISE e não o default: os tiers db-custom-* não existem na
+  # ENTERPRISE_PLUS, que é o default de instância nova em algumas versões.
+  existe sql instances describe "$INSTANCIA_SQL" ||
+    g sql instances create "$INSTANCIA_SQL" --database-version "$SQL_VERSAO" \
+      --edition ENTERPRISE --tier "$SQL_TIER" --region "$REGION" \
+      --availability-type zonal --storage-auto-increase \
+      --backup-start-time 03:00
+  existe sql databases describe "$BANCO" --instance "$INSTANCIA_SQL" ||
+    g sql databases create "$BANCO" --instance "$INSTANCIA_SQL"
+else
+  passo "Banco existente (SQL_CRIAR=nao): nenhuma instância é criada"
+fi
 
 passo "Segredo do DSN ($SEGREDO_DSN)"
 # Existir não basta: `secrets create --data-file` cria o segredo e a versão em
@@ -97,6 +104,15 @@ passo "Segredo do DSN ($SEGREDO_DSN)"
 if [[ "$(g secrets versions describe latest --secret "$SEGREDO_DSN" \
            --format 'value(state)' 2>/dev/null)" == ENABLED ]]; then
   echo "já existe — a senha do banco não é trocada"
+elif [[ "$SQL_CRIAR" == nao ]]; then
+  # O DSN traz a senha: lido sem eco e passado pelo stdin, nunca por argv nem
+  # pelo config.env, que fica no disco de quem opera.
+  read -rsp "DSN do banco existente (postgresql://...): " DSN; echo
+  [[ "$DSN" == postgres*://* ]] || { echo "DSN precisa começar com postgresql://" >&2; exit 1; }
+  existe secrets describe "$SEGREDO_DSN" ||
+    g secrets create "$SEGREDO_DSN" --replication-policy automatic
+  printf '%s' "$DSN" | g secrets versions add "$SEGREDO_DSN" --data-file -
+  unset DSN
 else
   # Hex: entra no DSN sem escape de URL.
   SENHA="$(openssl rand -hex 24)"
