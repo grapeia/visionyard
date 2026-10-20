@@ -191,6 +191,25 @@ def assinar_ou_falhar(uris: list[str], minutos: int, metodo: str = "GET",
     return out
 
 
+def assinar_download(uri: str, minutos: int, nome: str) -> str:
+    """URL assinada que o NAVEGADOR segue para baixar um objeto, como `nome`.
+
+    O nome vai na assinatura (`response-content-disposition`): sem ele o
+    arquivo sai como a folha do caminho, e todo peso se chama `best.pt`.
+    Levanta se não der — quem chama decide o que o usuário vê."""
+    if not uri.startswith("gs://"):
+        raise ValueError(f"esperava gs://, veio {uri!r}")
+    c = cliente()
+    assinante = como_assinar(c)
+    if assinante is None:
+        raise RuntimeError("a credencial da API não assina URL")
+    bucket, _, chave = uri[5:].partition("/")
+    url: str = c.bucket(bucket).blob(chave).generate_signed_url(
+        version="v4", expiration=timedelta(minutes=minutos), method="GET",
+        response_disposition=f'attachment; filename="{nome}"', **assinante)
+    return url
+
+
 class GrandeDemais(Exception):
     """O objeto passa do teto que quem chamou aceita baixar."""
 

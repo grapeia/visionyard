@@ -735,6 +735,9 @@ dialog .acoes { display: flex; gap: 8px; justify-content: flex-end; margin-top: 
   color: var(--texto-fraco); }
 .prom-cel .discreto:hover { border-color: var(--acento); color: var(--acento);
   background: var(--aco-700); }
+/* o download é link (segue o redirect para o bucket), com cara de botão */
+.prom-cel a.discreto { display: inline-flex; align-items: center;
+  justify-content: center; text-decoration: none; }
 
 /* apelidos: champion destaque, challenger neutro, baseline discreto */
 .selo-alias { display: inline-block; font: 600 10px/1 var(--mono);
@@ -746,6 +749,9 @@ dialog .acoes { display: flex; gap: 8px; justify-content: flex-end; margin-top: 
 .selo-alias.challenger { color: var(--acento); border-color: var(--acento-esc);
   background: rgba(255,138,31,.08); }
 .selo-alias.baseline { color: var(--texto-tenue); }
+a.selo-alias { text-decoration: none; }
+a.selo-alias:hover { border-color: currentColor; }
+.sub-modelo { margin: 4px 0 8px; }
 
 /* badge de build (onnx/engine) na tabela de versões */
 .badge-build { display: inline-block; font: 600 10px/1 var(--mono);

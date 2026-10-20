@@ -86,6 +86,9 @@ const AJUDA = {
         combinação recomendada para Jetson.</dd>
       <dt>DLA</dt><dd>Acelerador extra dos Jetson (poupa a GPU). Exige shape
         fixo e INT8/FP16.</dd>
+      <dt>Baixar (↓)</dt><dd>O peso (.pt) da versão, direto do bucket. Clicar
+        no selo champion/challenger/baseline baixa a versão para a qual ele
+        aponta. O link vale poucos minutos e é gerado a cada clique.</dd>
       <dt>Avaliar</dt><dd>Medir uma versão (ou um build dela) contra um
         benchmark: mAP + tempo de inferência na máquina-alvo.</dd>
       <dt>Implantar</dt><dd>Publicar o build escolhido para o dispositivo da

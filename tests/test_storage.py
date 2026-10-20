@@ -108,3 +108,29 @@ def test_credencial_cobre_a_api_do_iam(monkeypatch):
     assert pedidos == [["https://www.googleapis.com/auth/cloud-platform"]]
     assert recebido["credentials"] is cred
     assert recebido["project"] == "projeto-x"
+
+
+def test_download_leva_o_nome_na_assinatura(monkeypatch):
+    """Com a biblioteca de verdade e uma chave gerada na hora (assina local,
+    sem rede): o nome do arquivo entra na URL assinada, senão todo peso
+    baixaria como `best.pt`."""
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from google.cloud import storage as gcs
+    from google.oauth2 import service_account
+
+    chave = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    pem = chave.private_bytes(serialization.Encoding.PEM,
+                              serialization.PrivateFormat.PKCS8,
+                              serialization.NoEncryption()).decode()
+    cred = service_account.Credentials.from_service_account_info({
+        "type": "service_account", "client_email": "api@proj.iam.gserviceaccount.com",
+        "private_key": pem, "token_uri": "https://oauth2.googleapis.com/token"})
+    monkeypatch.setattr(storage, "cliente",
+                        lambda: gcs.Client(credentials=cred, project="proj"))
+
+    url = storage.assinar_download("gs://modelos/m/run/best.pt", 5, "detector-v1.pt")
+    assert url.startswith("https://storage.googleapis.com/modelos/m/run/best.pt?")
+    assert ("response-content-disposition="
+            "attachment%3B%20filename%3D%22detector-v1.pt%22") in url
+    assert "X-Goog-Expires=300" in url

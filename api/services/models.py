@@ -12,13 +12,15 @@ build exista, que a classe do dispositivo bata.
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 
 from fastapi import HTTPException, status
+from starlette.concurrency import run_in_threadpool
 
 from contracts import jobs
 
-from .. import db
+from .. import db, storage
 from ..audit import audit
 from ..auth import Principal
 
@@ -26,6 +28,12 @@ from ..auth import Principal
 # candidato, baseline é a referência a bater. Restringir evita apelido solto que
 # ninguém sabe o que significa depois.
 ALIASES = {"champion", "challenger", "baseline"}
+
+log = logging.getLogger(__name__)
+
+# Validade da URL de download: o navegador a segue na hora, então basta o
+# suficiente para o redirect chegar — e um link vazado morre logo.
+DOWNLOAD_MIN = 5
 
 
 async def buscar_modelo(conn: db.Conn, project_slug: str,
@@ -119,6 +127,30 @@ async def _detalhe(conn: db.Conn, project_slug: str, model_slug: str) -> dict:
     for v in versoes:
         v["avaliacoes"] = [a for a in avals if a["version"] == v["version"]]
     return {**m, "versoes": versoes, "aliases": aliases}
+
+
+async def url_do_peso(project_slug: str, model_slug: str, version: int,
+                      actor: Principal, *, ip: str | None) -> str:
+    """URL assinada para baixar o `.pt` de uma versão, com nome legível.
+
+    Três tempos, pelo motivo de sempre: assinar fala com o IAM, e isso não
+    acontece com conexão na mão. O registro no audit vem depois da assinatura
+    para não gravar um download que não houve."""
+    async with db.connection() as conn:
+        m = await buscar_modelo(conn, project_slug, model_slug)
+        mv = await _versao(conn, m["id"], version)
+    nome = f"{m['slug']}-v{version}.pt"
+    try:
+        url = await run_in_threadpool(storage.assinar_download,
+                                      mv["weights_uri"], DOWNLOAD_MIN, nome)
+    except Exception:
+        log.exception("download de %s falhou ao assinar", mv["weights_uri"])
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE,
+                            "não consegui gerar o link de download") from None
+    async with db.connection() as conn:
+        await audit(actor, "model.download", "model_version", str(mv["id"]),
+                    project_id=str(m["project_id"]), ip=ip, conn=conn)
+    return url
 
 
 async def enfileirar_export(project_slug: str, model_slug: str, version: int,

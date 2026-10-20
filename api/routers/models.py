@@ -12,6 +12,7 @@ from typing import Annotated, Any, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Path, Request, status
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field, model_validator
 
 from .. import auth
@@ -148,6 +149,22 @@ async def list_models(project_slug: Annotated[str, Path()]):
 async def get_model(project_slug: Annotated[str, Path()],
                     model_slug: Annotated[str, Path()]):
     return await svc.detalhe(project_slug, model_slug)
+
+
+@router.get("/projects/{project_slug}/models/{model_slug}/versions/{version}/download",
+            response_class=RedirectResponse,
+            status_code=status.HTTP_302_FOUND)
+async def baixar_peso(project_slug: Annotated[str, Path()],
+                      model_slug: Annotated[str, Path()], version: int,
+                      request: Request,
+                      actor: Annotated[Principal, Depends(require_role("engineer"))]):
+    """Redireciona para o `.pt` no bucket, por URL assinada de vida curta.
+
+    Engenheiro para cima, como compilar e implantar: quem só visualiza vê as
+    métricas, mas não leva o peso."""
+    url = await svc.url_do_peso(project_slug, model_slug, version, actor,
+                                ip=auth.client_ip(request))
+    return RedirectResponse(url, status_code=status.HTTP_302_FOUND)
 
 
 class ExportIn(BaseModel):

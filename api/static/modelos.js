@@ -9,7 +9,17 @@ import { $, RANK, api, avisar, comTravaDeEnvio, css, erroAviso, esc, estado, num
 import { tipoProjeto } from "./projeto.js";
 
 const ALIASES_MODELO = ["champion", "challenger", "baseline"];
-export const modelos = { atual: null };
+// a inicial sozinha dava "C" para champion e para challenger
+const SIGLA_ALIAS = { champion: "C", challenger: "Ch", baseline: "B" };
+// `sub` é a sub-aba aberta (versões/avaliações): sobrevive a redesenhar o
+// painel, que acontece a cada promoção e a cada avaliação que termina.
+export const modelos = { atual: null, sub: "versoes" };
+
+/** Rota que redireciona para o `.pt` por URL assinada de vida curta — o
+ *  bucket é privado, então link fixo para ele não existe. */
+const urlPeso = (slug, v) =>
+  `/v1/projects/${encodeURIComponent(estado.projeto)}/models/` +
+  `${encodeURIComponent(slug)}/versions/${v}/download`;
 
 export async function carregarModelos() {
   const lista = await api(`/projects/${estado.projeto}/models`);
@@ -43,6 +53,7 @@ async function abrirModelo(slug) {
   const d = await api(`/projects/${estado.projeto}/models/${slug}`);
   const podeProm = RANK[estado.papel] >= RANK.engineer;
   // apelido vigente por versão, para marcar na tabela
+  const nAval = d.versoes.reduce((n, v) => n + (v.avaliacoes || []).length, 0);
   const aliasDe = {};
   d.aliases.forEach((a) => (aliasDe[a.version] = aliasDe[a.version] || []).push(a.alias));
 
@@ -51,18 +62,34 @@ async function abrirModelo(slug) {
       <h1>${esc(d.name)}</h1>
       <span class="tipo-ds">${esc(tipoProjeto(d.task_type))}</span>
       <span class="espaco"></span>
-      ${d.aliases.map((a) =>
-        `<span class="selo-alias ${esc(a.alias)}">${esc(a.alias)} → v${a.version}</span>`).join("")}
+      ${d.aliases.map((a) => podeProm
+        ? `<a class="selo-alias ${esc(a.alias)}" href="${esc(urlPeso(slug, a.version))}"
+             title="baixar o peso (.pt) da v${a.version}">${esc(a.alias)} → v${a.version} ↓</a>`
+        : `<span class="selo-alias ${esc(a.alias)}">${esc(a.alias)} → v${a.version}</span>`).join("")}
     </div>
-    <section class="secao">
-      <header><span class="rotulo">Versões</span></header>
-      <table class="tab-versoes">
-        <thead><tr><th>versão</th><th>mAP50-95</th><th>origem</th>
-          <th>tamanho</th><th>builds</th><th>quando</th>${podeProm ? "<th>ações</th>" : ""}</tr></thead>
-        <tbody>${d.versoes.map((v) => linhaModeloVersao(v, aliasDe[v.version], podeProm)).join("")}</tbody>
-      </table>
-    </section>
-    ${seccaoComparacoes(d.versoes)}`;
+    <div class="filtros sub-modelo" id="subModelo">
+      <button data-sub="versoes">Versões</button>
+      <button data-sub="avaliacoes">Avaliações${nAval ? ` (${nAval})` : ""}</button>
+    </div>
+    <div id="subVersoes">
+      <section class="secao">
+        <table class="tab-versoes">
+          <thead><tr><th>versão</th><th>mAP50-95</th><th>origem</th>
+            <th>tamanho</th><th>builds</th><th>quando</th>${podeProm ? "<th>ações</th>" : ""}</tr></thead>
+          <tbody>${d.versoes.map((v) => linhaModeloVersao(slug, v, aliasDe[v.version], podeProm)).join("")}</tbody>
+        </table>
+      </section>
+    </div>
+    <div id="subAvaliacoes">
+      ${seccaoComparacoes(d.versoes) || `<div class="vazio"><p>Nenhuma avaliação ainda.</p>
+        <p class="dica">Avalie uma versão num benchmark (botão ◎ na aba Versões)
+          para comparar mAP e tempo de cada formato.</p></div>`}
+    </div>`;
+  $("subModelo").addEventListener("click", (ev) => {
+    const b = ev.target.closest("[data-sub]");
+    if (b) mostrarSubModelo(b.dataset.sub);
+  });
+  mostrarSubModelo(modelos.sub);
 
   desenharComparacoes(d.versoes);
 
@@ -84,6 +111,14 @@ async function abrirModelo(slug) {
       }));
   }
   renderImplantacoes(slug).catch(() => {});
+}
+
+function mostrarSubModelo(nome) {
+  modelos.sub = nome;
+  document.querySelectorAll("#subModelo [data-sub]").forEach((x) =>
+    x.setAttribute("aria-current", x.dataset.sub === nome));
+  $("subVersoes").hidden = nome !== "versoes";
+  $("subAvaliacoes").hidden = nome !== "avaliacoes";
 }
 
 /** Badge de avaliação: benchmark e o mAP medido nele. Verde-selo para
@@ -110,7 +145,7 @@ async function renderImplantacoes(slug) {
         <span class="selo-run ${d.state === "active" ? "ok"
           : d.state === "failed" ? "ruim" : "espera"}">${esc(estadoDeploy(d.state))}</span>
         ${d.error ? `<span class="dica">${esc(d.error)}</span>` : ""}</li>`).join("")}</ul>`;
-  $("painelModelo").appendChild(sec);
+  $("subVersoes").appendChild(sec);
 }
 
 const estadoDeploy = (s) =>
@@ -157,7 +192,7 @@ function badgeBuild(b) {
     b.built_on ? " · " + esc(b.built_on) : ""}">${rot}</span>`;
 }
 
-function linhaModeloVersao(v, aliases, podeProm) {
+function linhaModeloVersao(slug, v, aliases, podeProm) {
   const m = v.metrics || {};
   const map = m["mAP50-95"] != null ? Number(m["mAP50-95"]).toFixed(4) : "—";
   const origem = v.experimento
@@ -170,7 +205,9 @@ function linhaModeloVersao(v, aliases, podeProm) {
                      ...(v.avaliacoes || []).map(badgeAval)].join(" ") || "—";
   const acoes = podeProm ? `<td class="prom-cel">${ALIASES_MODELO.map((a) =>
     `<button class="discreto" data-prom="${v.version}" data-alias="${a}"
-       title="apontar ${a} para v${v.version}">${a[0].toUpperCase()}</button>`).join("")}
+       title="apontar ${a} para v${v.version}">${SIGLA_ALIAS[a]}</button>`).join("")}
+    <a class="discreto" href="${esc(urlPeso(slug, v.version))}"
+       title="baixar o peso (.pt) da v${v.version}">↓</a>
     <button class="discreto" data-eval="${v.version}" title="avaliar num benchmark">◎</button>
     <button class="discreto" data-export="${v.version}" title="compilar (onnx/engine)">⤓</button>
     ${(v.builds || []).length ? `<button class="discreto" data-deploy="${v.version}"

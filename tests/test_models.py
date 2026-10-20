@@ -103,3 +103,52 @@ async def test_annotator_nao_promove(admin, client, tmp_path):
             f"/v1/projects/{PROJ['slug']}/models/detector/aliases/champion",
             json={"version": 1})
         assert r.status_code == 403
+
+
+@pytest.fixture
+def downloads(monkeypatch) -> list[tuple[str, str]]:
+    """A URL de download assinada, sem GCS: registra (uri, nome do arquivo)."""
+    from api import storage
+    feitas: list[tuple[str, str]] = []
+
+    def falsa(uri, minutos, nome):
+        feitas.append((uri, nome))
+        return f"https://assinada/download/{uri[5:]}"
+
+    monkeypatch.setattr(storage, "assinar_download", falsa)
+    return feitas
+
+
+async def test_baixar_peso_redireciona_para_url_assinada(admin, client, tmp_path,
+                                                         downloads):
+    """O bucket é privado: o download é um redirect para uma URL assinada de
+    vida curta, emitida a cada clique, com nome de arquivo legível."""
+    await _produzir_modelo(admin, client, tmp_path)
+    d = (await admin.get(f"/v1/projects/{PROJ['slug']}/models/detector")).json()
+    uri = d["versoes"][0]["weights_uri"]
+
+    r = await admin.get(
+        f"/v1/projects/{PROJ['slug']}/models/detector/versions/1/download",
+        follow_redirects=False)
+    assert r.status_code == 302, r.text
+    assert r.headers["location"] == f"https://assinada/download/{uri[5:]}"
+    assert downloads == [(uri, "detector-v1.pt")]
+
+    r = await admin.get(
+        f"/v1/projects/{PROJ['slug']}/models/detector/versions/9/download",
+        follow_redirects=False)
+    assert r.status_code == 404
+
+
+async def test_baixar_peso_exige_engenheiro(admin, client, tmp_path, downloads):
+    """Visualizador vê as métricas, não leva o peso."""
+    from .test_projects import novo_usuario
+    await _produzir_modelo(admin, client, tmp_path)
+    async with novo_usuario(admin, client, "ver@teste.com") as (ver, _):
+        await admin.put(f"/v1/projects/{PROJ['slug']}/members",
+                        json={"email": "ver@teste.com", "role": "viewer"})
+        r = await ver.get(
+            f"/v1/projects/{PROJ['slug']}/models/detector/versions/1/download",
+            follow_redirects=False)
+        assert r.status_code == 403
+    assert downloads == []
