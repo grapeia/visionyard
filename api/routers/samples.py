@@ -152,7 +152,8 @@ class AnotacaoGravada(BaseModel):
             dependencies=[Depends(require_role("viewer"))])
 async def listar(project_slug: Annotated[str, Path()], user: CurrentUser,
                  pagina: int = Query(0, ge=0),
-                 filtro: Literal["todas", "pendentes", "anotadas"] = "todas",
+                 filtro: Literal["todas", "pendentes", "anotadas",
+                                 "pretag"] = "todas",
                  dataset: str | None = None):
     proj = await projeto_ou_404(project_slug)
     return await svc.listar(proj["id"], user.id, pagina=pagina, filtro=filtro,

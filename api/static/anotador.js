@@ -5,7 +5,7 @@
 import { mostrarAba } from "./abas.js";
 import { $, api, avisar, clamp, clamp01, cor, erroAviso, esc, estado, post } from "./nucleo.js";
 import { hachurarFora } from "./roi.js";
-import { carregarDados, dados, desenharGrade, preencherEscopo } from "./rotulagem.js";
+import { carregarDados, dados, desenharGrade, ehPretag, preencherEscopo } from "./rotulagem.js";
 import * as segm from "./segmentador.js";
 
 const segmentacao = () => estado.tarefa === "segment";
@@ -53,6 +53,7 @@ export async function abrirAnotador(id) {
   if (dsAtual) { badge.textContent = dsAtual.name; badge.hidden = false; }
   else { badge.hidden = true; }
   $("anotArquivo").textContent = d.uri.split("/").pop();
+  $("anotPretagSelo").hidden = !ehPretag(d.minha_anotacao);
   $("anotOutros").textContent = d.outros_anotaram
     ? `${d.outros_anotaram} outro(s) rotulador(es) já anotaram esta imagem. ` +
       `As caixas deles não aparecem: ver antes de desenhar enviesa a sua.`
@@ -598,6 +599,9 @@ document.addEventListener("keydown", (ev) => {
  * Salva antes de sair SÓ se algo mudou: navegar sem alterar nada não pode
  * gravar uma anotação vazia, que no modelo significa "olhei e não há nada".
  */
+// Filtros de que a imagem sai ao ser salva.
+const FILTRO_ENCOLHE = new Set(["pendentes", "pretag"]);
+
 async function irParaImagem(passo) {
   const pendente = segmentacao() && segm.pendencia(anot);
   if (pendente) { segm.apontarPendencia(anot); redesenhar(); avisar(pendente, true); return; }
@@ -606,6 +610,16 @@ async function irParaImagem(passo) {
   if (anot.sujo) await salvarAnotacao({ silencioso: true });
 
   let i = anot.indice + passo;
+  if (passo > 0 && i >= dados.itens.length && FILTRO_ENCOLHE.has(dados.filtro)) {
+    // Nestes filtros, salvar tira a imagem do conjunto: a página seguinte do
+    // servidor começa 60 adiante de um conjunto que encolheu, e pularia as
+    // que ainda faltam. Relê a mesma página e segue pela primeira que ainda
+    // não estava nela; as que você pulou continuam lá para a próxima volta.
+    const vistas = new Set(dados.itens.map((x) => x.id));
+    await carregarDados();
+    const nova = dados.itens.findIndex((x) => !vistas.has(x.id));
+    if (nova >= 0) { await abrirAnotador(dados.itens[nova].id); return; }
+  }
   if (i < 0 || i >= dados.itens.length) {
     const alvo = dados.pagina + (passo > 0 ? 1 : -1);
     if (alvo < 0) { avisar("primeira imagem"); return; }
@@ -664,6 +678,12 @@ async function prerotular() {
     }
     anot.boxes = boxes; anot.sel = -1; anot.sujo = false;
     if (segmentacao()) segm.prepararCaixas(anot);
+    $("anotPretagSelo").hidden = !ehPretag(d.minha_anotacao);
+    const item = dados.itens[anot.indice];
+    if (item && d.minha_anotacao) {
+      item.annotation_id = d.minha_anotacao.id; item.n_caixas = boxes.length;
+      item.origin = d.minha_anotacao.origin; item.status = d.minha_anotacao.status;
+    }
     redesenhar();
     avisar(`${boxes.length} ${segmentacao() ? "contorno(s)" : "caixa(s)"}` +
            " do modelo — corrija e salve");
@@ -709,7 +729,7 @@ async function salvarAnotacao({ silencioso = false } = {}) {
   // cortados pelo contorno novo
   if (segmentacao() && !segm.travar(anot))
     throw new Error("a principal em edição não pôde travar — nada foi gravado");
-  await api(`/projects/${estado.projeto}/samples/${anot.id}/annotation`,
+  const r = await api(`/projects/${estado.projeto}/samples/${anot.id}/annotation`,
             { method: "PUT",
               body: JSON.stringify({
                 boxes: segmentacao() ? segm.paraGravar(anot) : anot.boxes,
@@ -718,7 +738,9 @@ async function salvarAnotacao({ silencioso = false } = {}) {
   // reflete na grade sem recarregar a página inteira
   const item = dados.itens[anot.indice];
   if (item) { item.annotation_id = item.annotation_id || "salva";
-              item.n_caixas = anot.boxes.length; }
+              item.n_caixas = anot.boxes.length;
+              item.origin = r.origin; item.status = r.status; }
+  $("anotPretagSelo").hidden = true;
   if (!silencioso) avisar(`salvo · ${anot.boxes.length} caixa(s)`);
 }
 

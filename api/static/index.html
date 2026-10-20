@@ -82,6 +82,7 @@
         <button data-filtro="todas" aria-current="true">Todas</button>
         <button data-filtro="pendentes">Sem minha anotação</button>
         <button data-filtro="anotadas">Que eu anotei</button>
+        <button data-filtro="pretag" title="sugestões do modelo que ninguém salvou ainda">Pré-tag a revisar</button>
       </div>
       <span class="espaco"></span>
       <span class="contagem" id="contagemDados"></span>
@@ -170,6 +171,8 @@
     <button id="anotVoltar">← Voltar</button>
     <span class="anot-dataset" id="anotDataset" hidden></span>
     <span class="anot-arquivo mono" id="anotArquivo"></span>
+    <span class="anot-pretag" id="anotPretagSelo" hidden
+          title="sugestão do modelo: confira e salve para virar anotação">pré-tag · não salvo</span>
     <span class="espaco"></span>
     <label class="alternar"><input type="checkbox" id="anotNomes" checked>
       nomes nas caixas</label>

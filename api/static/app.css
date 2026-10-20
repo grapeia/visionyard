@@ -20,6 +20,8 @@
   --acento-esc: #c9660f;
   --selo:       #2bc47d;   /* selado */
   --alerta:     #e5484d;
+  --pretag:     #a78bfa;   /* sugestão do modelo, ninguém revisou */
+  --pretag-esc: #5b4a99;
 
   --mono: ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Mono",
           Menlo, Consolas, monospace;
@@ -402,6 +404,8 @@ dialog .acoes { display: flex; gap: 8px; justify-content: flex-end; margin-top: 
 }
 .cartao .marca-estado.feita { color: var(--selo); border-color: #1d5c3f; }
 .cartao .marca-estado.vazia { color: var(--acento); border-color: var(--acento-esc); }
+.cartao .marca-estado.pretag { color: var(--pretag); border-color: var(--pretag-esc); }
+.cartao.pretag { border-color: var(--pretag-esc); border-style: dashed; }
 .cartao .nome {
   position: absolute; left: 0; right: 0; bottom: 0;
   background: linear-gradient(transparent, rgba(13,18,23,.92));
@@ -553,6 +557,11 @@ dialog .acoes { display: flex; gap: 8px; justify-content: flex-end; margin-top: 
 .escopo-rot select { width: auto; min-width: 150px; text-transform: none;
   letter-spacing: 0; font-family: var(--sans); }
 
+.anot-pretag {
+  font: 600 10px/1 var(--mono); letter-spacing: .1em; text-transform: uppercase;
+  color: var(--pretag); border: 1px dashed var(--pretag-esc);
+  padding: 4px 8px; border-radius: 2px; white-space: nowrap;
+}
 .anot-dataset {
   font: 600 10px/1 var(--mono); letter-spacing: .1em; text-transform: uppercase;
   color: var(--acento); border: 1px solid var(--acento-esc);

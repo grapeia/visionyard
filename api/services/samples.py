@@ -29,8 +29,16 @@ MINIATURA_MIN = 15   # validade da URL assinada, em minutos
 
 # `minha` distingue "anotada por alguém" de "anotada por mim": o rotulador
 # precisa achar o que falta PARA ELE, não o que falta no geral.
+#
+# O pré-tag é gravado como anotação do autor do job, mas é rascunho do modelo
+# até alguém salvar (aí vira 'correction'), e o congelamento não o leva. Contado
+# em "anotadas", ele se misturava ao trabalho humano e não havia como achar só
+# o que falta revisar. Mesma definição do `pretags_rascunho` de
+# `services/datasets.py`, que é o que o botão "Descartar pré-tags" conta.
+PRETAG = "a.origin = 'prelabel' AND a.status = 'draft'"
 CONDICAO = {"todas": "", "pendentes": " AND a.id IS NULL",
-            "anotadas": " AND a.id IS NOT NULL"}
+            "anotadas": f" AND a.id IS NOT NULL AND NOT ({PRETAG})",
+            "pretag": f" AND {PRETAG}"}
 
 MINHA = (" LEFT JOIN annotation a"
          "   ON a.sample_id = s.id AND a.author_id = %(u)s")

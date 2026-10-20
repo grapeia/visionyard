@@ -318,3 +318,38 @@ async def test_prelabel_de_deteccao_recusa_poligono(admin, client, tmp_path):
                           json={"predicoes": [{"sample_id": sid, "boxes": [
                               {"cls": 0, "pts": [[.1, .1], [.9, .1], [.5, .9]]}]}]})
     assert r.status_code == 422
+
+
+async def _filtro(admin, filtro: str) -> set:
+    r = await admin.get(f"/v1/projects/{PROJ['slug']}/samples"
+                        f"?dataset={DS['slug']}&filtro={filtro}")
+    assert r.status_code == 200, r.text
+    return {it["id"] for it in r.json()["itens"]}
+
+
+async def test_pretag_tem_filtro_proprio_ate_alguem_salvar(admin, client, tmp_path):
+    """O pré-tag não revisado é rascunho do modelo, não trabalho de quem rotula:
+    fica fora de "que eu anotei" e o congelamento não o leva. Precisa então
+    de um filtro onde dá para achá-lo, revisar e salvar — e, salvo, ele sai
+    dali e passa a contar como anotado (`correction`)."""
+    await _produzir_modelo(admin, client, tmp_path)
+    sid = (await _pendentes(admin))[0]["id"]
+    await admin.post(f"/v1/projects/{PROJ['slug']}/prelabel", json={
+        "model_slug": "detector", "dataset_slug": DS["slug"], "only_missing": True})
+    tok, job = await _claim_prelabel(admin, client)
+    r = await client.post(f"/v1/agent/jobs/{job['id']}/prelabel", json={"predicoes": [
+        {"sample_id": sid, "boxes": [
+            {"cls": 0, "cx": 0.5, "cy": 0.5, "w": 0.2, "h": 0.2, "conf": 0.9}]}]},
+        headers=_h(tok))
+    assert r.json()["gravadas"] == 1
+
+    assert await _filtro(admin, "pretag") == {sid}
+    assert sid not in await _filtro(admin, "anotadas")
+    assert sid not in await _filtro(admin, "pendentes")
+
+    r = await admin.put(f"/v1/projects/{PROJ['slug']}/samples/{sid}/annotation",
+                        json={"boxes": [{"cls": 0, "cx": .5, "cy": .5,
+                                         "w": .2, "h": .2}]})
+    assert r.json()["origin"] == "correction"
+    assert await _filtro(admin, "pretag") == set()
+    assert sid in await _filtro(admin, "anotadas")

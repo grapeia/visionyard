@@ -78,15 +78,24 @@ export function desenharGrade() {
     b.addEventListener("click", () => abrirAnotador(b.dataset.abrir)));
 }
 
+/** Sugestão do modelo que ninguém revisou — a mesma definição do filtro
+ *  "pretag" da API (`services/samples.py: PRETAG`). */
+export const ehPretag = (a) => !!a && a.origin === "prelabel" && a.status === "draft";
+
 function cartao(it) {
   const nome = it.uri.split("/").pop();
   // "0" é informação: significa "olhei e não há nada", não "não olhei".
+  // Pré-tag vem antes: tem caixas, mas é sugestão do modelo que ninguém
+  // salvou — e é isso que o congelamento ignora.
+  const pretag = ehPretag(it);
   const estadoCaixa = it.annotation_id === null
     ? `<span class="marca-estado">—</span>`
-    : (it.n_caixas === 0
-        ? `<span class="marca-estado vazia">vazia</span>`
-        : `<span class="marca-estado feita">${it.n_caixas}</span>`);
-  return `<button class="cartao" data-abrir="${esc(it.id)}" title="${esc(nome)}">
+    : pretag
+      ? `<span class="marca-estado pretag" title="pré-tag: confira e salve">pré · ${it.n_caixas}</span>`
+      : (it.n_caixas === 0
+          ? `<span class="marca-estado vazia">vazia</span>`
+          : `<span class="marca-estado feita">${it.n_caixas}</span>`);
+  return `<button class="cartao${pretag ? " pretag" : ""}" data-abrir="${esc(it.id)}" title="${esc(nome)}">
     ${it.url ? `<img src="${esc(it.url)}" alt="" loading="lazy">`
              : `<span class="sem-imagem">sem miniatura</span>`}
     ${estadoCaixa}<span class="nome">${esc(nome)}</span></button>`;
