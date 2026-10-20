@@ -748,5 +748,5 @@ export async function rotularDataset(slug) {
   preencherEscopo();
   $("escopoDataset").value = slug;
   dados.dataset = slug;
-  mostrarAba("dados");              // itens vazio → carrega uma vez, já no escopo
+  mostrarAba("dados");              // carrega já no escopo
 }

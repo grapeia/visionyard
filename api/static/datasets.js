@@ -4,9 +4,19 @@ import { rotularDataset } from "./anotador.js";
 import { abrirOrigem } from "./bucket.js";
 import { $, api, avisar, comTravaDeEnvio, esc, estado, num, post } from "./nucleo.js";
 import { abrirRoi, pctRoi } from "./roi.js";
+import { preencherEscopo } from "./rotulagem.js";
+
+/** Relê a lista de datasets do projeto, sem mexer no painel. `estado.datasets`
+ *  é lido pelo escopo da Rotulagem e pelos diálogos de treino e de avaliação:
+ *  sem reler, a versão recém-congelada não aparecia em nenhum deles até
+ *  recarregar a página. */
+export async function atualizarDatasets() {
+  estado.datasets = await api(`/projects/${estado.projeto}/datasets`);
+  preencherEscopo();
+}
 
 export async function carregarDatasets() {
-  estado.datasets = await api(`/projects/${estado.projeto}/datasets`);
+  await atualizarDatasets();
   const ul = $("listaDatasets");
   ul.innerHTML = estado.datasets.map((d) => `
     <li><button data-ds="${esc(d.slug)}" aria-current="${d.slug === estado.atual}">
@@ -274,7 +284,7 @@ $("formCongelar").addEventListener("submit", comTravaDeEnvio($("formCongelar"), 
     $("dlgCongelar").close();
     $("formCongelar").reset();
     avisar(`v${r.version} congelada · ${num(r.stats.imagens)} imagens`);
-    await abrirDataset(estado.atual);
+    await carregarDatasets();
   } catch (e) { avisar(e.message, true); }
 }));
 

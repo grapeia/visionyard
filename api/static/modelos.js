@@ -4,6 +4,7 @@
  * Promover é mover o ponteiro (champion/challenger/baseline), não tocar na
  * versão — dá para voltar atrás sem reconstruir nada. */
 
+import { atualizarDatasets } from "./datasets.js";
 import { $, RANK, api, avisar, comTravaDeEnvio, css, erroAviso, esc, estado, num, post } from "./nucleo.js";
 import { tipoProjeto } from "./projeto.js";
 
@@ -261,7 +262,9 @@ async function abrirEvaluate(modeloSlug, versao) {
   $("avModelo").textContent = `${modeloSlug} v${versao.version}`;
   $("dlgEvaluate").dataset.modelo = modeloSlug;
   $("dlgEvaluate").dataset.version = versao.version;
-  // datasets com versão congelada servem de benchmark
+  // datasets com versão congelada servem de benchmark — relidos, pela mesma
+  // razão do diálogo de treino
+  try { await atualizarDatasets(); } catch (e) { avisar(e.message, true); return; }
   const comVersao = (estado.datasets || []).filter((d) => d.versoes > 0);
   if (!comVersao.length) {
     avisar("congele uma versão de dataset para usar como benchmark", true);

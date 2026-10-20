@@ -4,6 +4,7 @@
  * A tela lê o stream incrementalmente (cursores de seq e época), então não relê
  * o log inteiro a cada atualização. */
 
+import { atualizarDatasets } from "./datasets.js";
 import { $, api, avisar, clamp01, comTravaDeEnvio, cor, css, erroAviso, esc, estado, num, post } from "./nucleo.js";
 
 const BASES = [["yolo11n", "YOLO11n — mais rápido"], ["yolo11s", "YOLO11s"],
@@ -205,7 +206,9 @@ async function cancelarRun(runId) {
 
 // ---- novo treino ----
 
-$("botaoNovoRun").addEventListener("click", () => {
+$("botaoNovoRun").addEventListener("click", async () => {
+  // relê: a versão pode ter sido congelada noutra aba ou por outra pessoa
+  try { await atualizarDatasets(); } catch (e) { avisar(e.message, true); return; }
   const comVersao = estado.datasets.filter((d) => d.versoes > 0);
   if (!comVersao.length) {
     avisar("congele uma versão de dataset antes de treinar", true);

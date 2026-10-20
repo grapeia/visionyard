@@ -4,11 +4,12 @@
  * fora do módulo de entrada para que quem precisa dela (o anotador, a aba
  * Datasets) não tenha de importar o esqueleto inteiro. */
 
+import { carregarDatasets } from "./datasets.js";
 import { carregarModelos } from "./modelos.js";
 import { $, erroAviso } from "./nucleo.js";
 import { carregarDevices } from "./pool.js";
 import { carregarProjetoTab } from "./projeto.js";
-import { carregarDados, dados } from "./rotulagem.js";
+import { carregarDados } from "./rotulagem.js";
 import { carregarRuns, pararPollRun } from "./treino.js";
 import { carregarParametros } from "./parametros.js";
 import { carregarUsuarios } from "./usuarios.js";
@@ -153,8 +154,12 @@ export function mostrarAba(nome) {
   // Sair da aba de treino encerra o polling ao vivo — senão ele segue batendo
   // na API em segundo plano por uma tela que ninguém está vendo.
   if (nome !== "treino") pararPollRun();
+  // Toda aba relê o que mostra ao entrar: o que mudou noutra aba (versão
+  // congelada, treino que terminou, imagens importadas) ou noutra sessão só
+  // aparecia recarregando a página. A Rotulagem relê a página em que estava.
   if (nome === "projeto") carregarProjetoTab().catch(erroAviso);
-  if (nome === "dados" && !dados.itens.length) carregarDados().catch(erroAviso);
+  if (nome === "datasets") carregarDatasets().catch(erroAviso);
+  if (nome === "dados") carregarDados().catch(erroAviso);
   if (nome === "treino") carregarRuns().catch(erroAviso);
   if (nome === "modelos") carregarModelos().catch(erroAviso);
   if (nome === "devices") carregarDevices().catch(erroAviso);
