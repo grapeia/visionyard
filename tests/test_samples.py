@@ -324,7 +324,7 @@ async def test_sam_le_a_imagem_pela_api_reduzida(admin, monkeypatch):
 async def test_sam_direto_do_bucket_quando_o_parametro_manda(admin, monkeypatch):
     from api import storage
     monkeypatch.setattr(storage, "assinar",
-                        lambda uris, minutos: {u: "https://assinada/" + u[5:]
+                        lambda uris, minutos, buckets: {u: "https://assinada/" + u[5:]
                                                for u in uris})
     r = await admin.put("/v1/parameters/sam_image_source",
                         json={"valor": "bucket"})

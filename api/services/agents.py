@@ -351,7 +351,12 @@ async def _uris_do_job(conn: db.Conn, job: dict, pedidas: list[str]) -> set[str]
     Treino e avaliação leem as imagens da VERSÃO (não do projeto: versão é
     imutável, e é ela que o manifesto descreve); pré-tag lê as imagens do
     projeto do job, que é o mesmo escopo em que `gravar_prelabels` escreve.
-    Peso e artefato vêm do payload, que só a API escreve."""
+    Peso e artefato vêm do payload, que só a API escreve.
+
+    Imagem `gs://` só de bucket da allowlist: estar na versão não basta,
+    porque uma importação de antes da cerca do runner pode ter gravado o
+    endereço de outro bucket que a conta de serviço lê. O caminho local
+    passa, e quem o recusa, com mensagem própria, é `assinar_leitura`."""
     do_payload: set[str] = set()
     imagens: list[dict[str, Any]] = []
     if job["type"] in (jobs.Train.TIPO, jobs.Evaluate.TIPO):
@@ -372,6 +377,9 @@ async def _uris_do_job(conn: db.Conn, job: dict, pedidas: list[str]) -> set[str]
             (job["project_id"], pedidas), conn=conn)
     elif job["type"] == jobs.Export.TIPO:
         do_payload.add(jobs.Export.de_payload(job["payload"]).weights_uri)
+    buckets = await parameters.valor("buckets", conn=conn)
+    imagens = [r for r in imagens if not r["uri"].startswith("gs://")
+               or r["uri"][5:].partition("/")[0] in buckets]
     return {r["uri"] for r in imagens} | (do_payload & set(pedidas))
 
 

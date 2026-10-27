@@ -41,7 +41,7 @@ def test_sem_credencial_que_assina_devolve_vazio(monkeypatch):
     """ADC de usuário não tem chave privada. A galeria mostra o lugar da
     imagem em vez de quebrar — é a ausência da URL que ela lê."""
     monkeypatch.setattr(storage, "cliente", lambda: _Cliente(assina=False))
-    assert storage.assinar(["gs://b/a.jpg"], 15) == {}
+    assert storage.assinar(["gs://b/a.jpg"], 15, ["b"]) == {}
 
 
 def test_sem_credencial_nenhuma_devolve_vazio(monkeypatch):
@@ -49,20 +49,29 @@ def test_sem_credencial_nenhuma_devolve_vazio(monkeypatch):
         raise RuntimeError("sem credencial nesta máquina")
 
     monkeypatch.setattr(storage, "cliente", explode)
-    assert storage.assinar(["gs://b/a.jpg"], 15) == {}
+    assert storage.assinar(["gs://b/a.jpg"], 15, ["b"]) == {}
 
 
 def test_assina_so_o_que_e_gs(monkeypatch):
     monkeypatch.setattr(storage, "cliente", lambda: _Cliente())
-    out = storage.assinar(["gs://b/a.jpg", "/local/b.jpg", "https://x/c.jpg"], 15)
+    out = storage.assinar(["gs://b/a.jpg", "/local/b.jpg", "https://x/c.jpg"], 15,
+                          ["b"])
     assert list(out) == ["gs://b/a.jpg"]
 
 
 def test_falha_em_uma_nao_leva_as_outras(monkeypatch):
     """Uma imagem sem permissão não pode apagar a página inteira de miniaturas."""
     monkeypatch.setattr(storage, "cliente", lambda: _Cliente())
-    out = storage.assinar(["gs://b/quebrada.jpg", "gs://b/boa.jpg"], 15)
+    out = storage.assinar(["gs://b/quebrada.jpg", "gs://b/boa.jpg"], 15, ["b"])
     assert list(out) == ["gs://b/boa.jpg"]
+
+
+def test_nao_assina_bucket_fora_da_allowlist(monkeypatch):
+    """Imagem importada antes da cerca do runner pode apontar para outro
+    bucket que a conta de serviço lê. Sem URL, a tela mostra o lugar dela."""
+    monkeypatch.setattr(storage, "cliente", lambda: _Cliente())
+    out = storage.assinar(["gs://b/a.jpg", "gs://alheio/x.jpg"], 15, ["b"])
+    assert list(out) == ["gs://b/a.jpg"]
 
 
 def test_cliente_e_construido_uma_vez(monkeypatch):

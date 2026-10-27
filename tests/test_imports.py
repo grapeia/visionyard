@@ -914,6 +914,52 @@ async def test_imagem_fora_dos_buckets_permitidos_nao_entra(admin, tmp_path, ond
     assert any("bucket" in s["reason"] for s in rel["skipped"])
 
 
+@pytest.mark.parametrize("status", ["draft", "submitted"])
+async def test_reimportar_nao_sobrescreve_anotacao_feita_a_mao(admin, tmp_path, status):
+    """Quem importa é o autor da anotação importada. Se essa mesma pessoa já
+    mexeu na imagem à mão, a reimportação não pode trocar as caixas dela pelas
+    do arquivo, esteja a anotação revisada ou não."""
+    from api import db
+
+    await admin.post("/v1/projects", json=PROJ)
+    payload = _json_origem(tmp_path, "label_studio_json", forma="rectangle")
+    url = f"/v1/projects/{PROJ['slug']}/imports?dry_run=false"
+    job = await _aguarda(admin, (await admin.post(url, json=payload)).json()["job_id"])
+    assert job["result"]["annotations_created"] == 1
+    async with db.connection() as conn:
+        sid = (await db.fetch_row("SELECT id FROM sample", conn=conn))["id"]
+    mao = [{"cls": 0, "cx": 0.7, "cy": 0.7, "w": 0.2, "h": 0.2}]
+    r = await admin.put(f"/v1/projects/{PROJ['slug']}/samples/{sid}/annotation",
+                        json={"boxes": mao, "status": status})
+    assert r.status_code == 200, r.text
+
+    job = await _aguarda(admin, (await admin.post(url, json=payload)).json()["job_id"])
+    assert job["result"]["annotations_updated"] == 0
+    assert any("à mão" in s["reason"] for s in job["result"]["skipped"])
+    async with db.connection() as conn:
+        ann = await db.fetch_row("SELECT boxes, origin FROM annotation", conn=conn)
+    assert ann["origin"] == "correction"
+    assert ann["boxes"][0]["cx"] == 0.7
+
+
+async def test_reimportar_atualiza_o_que_veio_de_importacao(admin, tmp_path):
+    from api import db
+
+    await admin.post("/v1/projects", json=PROJ)
+    payload = _json_origem(tmp_path, "label_studio_json", forma="rectangle")
+    url = f"/v1/projects/{PROJ['slug']}/imports?dry_run=false"
+    await _aguarda(admin, (await admin.post(url, json=payload)).json()["job_id"])
+    arquivo = Path(payload["json_path"])
+    data = json.loads(arquivo.read_text())
+    data[0]["annotations"][0]["result"][0]["value"]["width"] = 25
+    arquivo.write_text(json.dumps(data))
+    job = await _aguarda(admin, (await admin.post(url, json=payload)).json()["job_id"])
+    assert job["result"]["annotations_updated"] == 1
+    async with db.connection() as conn:
+        ann = await db.fetch_row("SELECT boxes FROM annotation", conn=conn)
+    assert ann["boxes"][0]["w"] == 0.25
+
+
 async def test_ls_dimensao_invalida_e_reportada_sem_abortar_lote(admin, tmp_path):
     await admin.post("/v1/projects", json=PROJ)
     payload = _json_origem(tmp_path, "label_studio_json", forma="rectangle")

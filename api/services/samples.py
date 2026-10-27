@@ -106,13 +106,14 @@ async def listar(project_id: str, user_id: str, *, pagina: int = 0,
                 f"SELECT count(*) AS n"
                 f" {_de_onde(MINHA if cond else '', escopo, cond)}",
                 params, conn=conn))["n"]
+        buckets = await parameters.valor("buckets", conn=conn)
 
     # Assinar fala com o GCS, e é por isso que acontece com a conexão já
     # devolvida: uma ida à rede com transação aberta deixa a sessão
     # `idle in transaction` e prende uma das dez vagas do pool esperando o
     # Google responder.
     assinadas = await run_in_threadpool(
-        storage.assinar, [r["uri"] for r in linhas], MINIATURA_MIN)
+        storage.assinar, [r["uri"] for r in linhas], MINIATURA_MIN, buckets)
     itens = [{**r, "url": assinadas.get(r["uri"])} for r in linhas]
     for it in itens:
         del it["total"]          # coluna de janela: é da página, não do item
@@ -143,8 +144,9 @@ async def detalhe(project_slug: str, sample_id: UUID,
             conn=conn)
         origem_sam = (await parameters.valor("sam_image_source", conn=conn)
                       if s["task_type"] == "segment" else None)
+        buckets = await parameters.valor("buckets", conn=conn)
     url = (await run_in_threadpool(
-        storage.assinar, [s["uri"]], MINIATURA_MIN)).get(s["uri"])
+        storage.assinar, [s["uri"]], MINIATURA_MIN, buckets)).get(s["uri"])
     # De onde o SAM lê os pixels (ver `config.sam_image_source`). Só em
     # segmentação: nos outros tipos nada na tela lê pixel.
     url_sam = (None if origem_sam is None else url if origem_sam == "bucket"

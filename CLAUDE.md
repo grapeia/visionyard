@@ -312,7 +312,10 @@ pede.
   importa (a tarefa do LS, a base escolhida). `importers/runner.py:
   _uri_permitida` recusa no relatório o `gs://` de fora da allowlist e o
   esquema que não é `gs://`. Fica no runner, e não em cada importador, para
-  valer também para a próxima origem.
+  valer também para a próxima origem. A assinatura confere de novo, porque
+  a cerca é posterior a dados já gravados: `storage.assinar` exige a
+  allowlist e pula o que está fora dela, e `services/agents.py: _uris_do_job`
+  não entrega ao agente imagem `gs://` de bucket fora dela.
 - **Split é sorteado no congelamento, uma vez.** Sortear no treino torna dois
   runs incomparáveis.
 

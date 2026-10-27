@@ -263,11 +263,14 @@ async def _import_one(sample: SourceSample, *, project_id: str, schema_id: str,
             return
 
         # Reimportar atualiza a anotação daquele autor em vez de duplicar,
-        # MAS nunca sobrescreve uma já revisada: alguém conferiu e corrigiu
-        # aquelas caixas à mão. Antes, reimportar o dump devolvia as caixas
-        # originais mantendo o status `reviewed` — e como a resolução
-        # prioriza justamente o revisado, o dado pior vencia o melhor e o
-        # congelamento seguinte o eternizava.
+        # mas só a que a própria importação escreveu e ninguém revisou. O
+        # autor da importada é quem importa, e se ele já desenhou ou corrigiu
+        # aquela imagem à mão (`manual`, `correction`), trocar as caixas
+        # dele pelas do arquivo apagaria trabalho humano em silêncio. Revisada
+        # também fica: antes, reimportar o dump devolvia as caixas originais
+        # mantendo o status `reviewed`, e como a resolução prioriza justamente
+        # o revisado, o dado pior vencia o melhor e o congelamento seguinte o
+        # eternizava.
         cur = await conn.execute(
             "INSERT INTO annotation (sample_id, schema_id, boxes, origin,"
             " status, author_id, updated_by)"
@@ -275,15 +278,16 @@ async def _import_one(sample: SourceSample, *, project_id: str, schema_id: str,
             " ON CONFLICT (sample_id, author_id) DO UPDATE"
             "    SET boxes = EXCLUDED.boxes, updated_at = now(),"
             "        updated_by = EXCLUDED.updated_by"
-            "  WHERE annotation.status <> 'reviewed'"
+            "  WHERE annotation.origin = 'import'"
+            "    AND annotation.status <> 'reviewed'"
             " RETURNING (xmax = 0) AS inserted, id",
             (sample_id, schema_id, json.dumps(boxes), author_id, actor_id))
         ann = await cur.fetchone()
         if ann is None:
-            # o WHERE do DO UPDATE barrou: a anotação existente é revisada
+            # o WHERE do DO UPDATE barrou: feita à mão, corrigida ou revisada
             report.skip(sample.key,
-                        "anotação já revisada — mantida, importação "
-                        "não sobrescreve trabalho conferido")
+                        "anotação feita à mão ou revisada — mantida, "
+                        "importação não sobrescreve trabalho humano")
             return
         if ann["inserted"]:
             report.annotations_created += 1

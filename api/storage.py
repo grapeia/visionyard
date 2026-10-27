@@ -231,8 +231,14 @@ def ler(uri: str, max_bytes: int) -> bytes:
     return blob.download_as_bytes()
 
 
-def assinar(uris: list[str], minutos: int) -> dict[str, str]:
+def assinar(uris: list[str], minutos: int,
+            buckets: list[str]) -> dict[str, str]:
     """URL assinada para cada `gs://`, para o navegador buscar direto do GCS.
+
+    Só de bucket da allowlist (`buckets`): a URI vem de `sample`, e uma
+    importação de antes da cerca do runner pode ter gravado o endereço de
+    outro bucket que a conta de serviço lê. Ela fica sem URL, como qualquer
+    outra que não deu para assinar.
 
     Devolve o que conseguiu: sem credencial, sem credencial que assine, ou com
     um objeto que a conta não alcança, a chave simplesmente não aparece no
@@ -252,6 +258,8 @@ def assinar(uris: list[str], minutos: int) -> dict[str, str]:
         if not uri.startswith("gs://"):
             continue
         bucket, _, chave = uri[5:].partition("/")
+        if bucket not in buckets:
+            continue
         try:
             out[uri] = c.bucket(bucket).blob(chave).generate_signed_url(
                 version="v4", expiration=timedelta(minutes=minutos),

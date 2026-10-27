@@ -23,6 +23,7 @@ from contracts import jobs
 from .. import db, storage
 from ..audit import audit
 from ..auth import Principal
+from . import parameters
 
 # Apelidos com significado fixo: champion vale em produção, challenger é o
 # candidato, baseline é a referência a bater. Restringir evita apelido solto que
@@ -200,6 +201,7 @@ async def galeria(project_slug: str, model_slug: str, evaluation_id: str, *,
             "       COALESCE(sum(swapped), 0)::int AS swapped"
             "  FROM evaluation_prediction WHERE evaluation_id = %s",
             (evaluation_id,), conn=conn)
+        buckets = await parameters.valor("buckets", conn=conn)
         params = {"ev": evaluation_id, "outra": comparar,
                   "lim": GALERIA_POR_PAGINA,
                   "off": (pagina - 1) * GALERIA_POR_PAGINA}
@@ -228,7 +230,7 @@ async def galeria(project_slug: str, model_slug: str, evaluation_id: str, *,
                 conn=conn))["n"]
     # Assinar fala com o GCS: com a conexão já devolvida (ver samples.listar).
     assinadas = await run_in_threadpool(
-        storage.assinar, [r["uri"] for r in linhas], GALERIA_URL_MIN)
+        storage.assinar, [r["uri"] for r in linhas], GALERIA_URL_MIN, buckets)
     itens = [{
         "sample_id": r["sample_id"], "url": assinadas.get(r["uri"]),
         "w": r["w"], "h": r["h"], "gt": r["gt"], "pred": r["pred"],

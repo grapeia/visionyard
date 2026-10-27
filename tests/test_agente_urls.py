@@ -134,6 +134,26 @@ async def test_imagem_fora_do_gcs_e_422(admin, client, tmp_path):
     assert r.status_code == 422
 
 
+async def test_imagem_de_bucket_fora_da_allowlist_nao_e_assinada(
+        admin, client, tmp_path, assinaturas):
+    """Imagem gravada antes da cerca do runner, apontando para outro bucket que
+    a conta de serviço lê: estar na versão não basta para o agente recebê-la."""
+    tok, jid = await _job_de_treino(admin, client, tmp_path)
+    alheia = "gs://outro-cliente/frame.jpg"
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        conn.execute(
+            "INSERT INTO sample (project_id, sha256, uri, width, height)"
+            " SELECT project_id, '\\x02', %s, 1, 1 FROM sample LIMIT 1",
+            (alheia,))
+        conn.execute(
+            "INSERT INTO dataset_version_item (dataset_version_id, sample_id,"
+            " split) SELECT (SELECT id FROM dataset_version LIMIT 1), id, 'train'"
+            "   FROM sample WHERE uri = %s", (alheia,))
+    r = await _urls(client, tok, jid, [alheia])
+    assert r.status_code == 403
+    assert assinaturas == []
+
+
 async def test_falha_de_assinatura_e_503_sem_texto_do_fornecedor(
         admin, client, tmp_path, monkeypatch):
     tok, jid = await _job_de_treino(admin, client, tmp_path)
@@ -336,7 +356,7 @@ def test_galeria_tambem_assina_com_credencial_de_vm(monkeypatch):
     c = _Cliente()
     c._credentials = _CredencialDeVm()
     monkeypatch.setattr(storage, "cliente", lambda: c)
-    assert list(storage.assinar(["gs://b/a.jpg"], 5)) == ["gs://b/a.jpg"]
+    assert list(storage.assinar(["gs://b/a.jpg"], 5, ["b"])) == ["gs://b/a.jpg"]
     assert c.chamadas[0]["access_token"] == "tok"
 
 
