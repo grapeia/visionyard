@@ -143,3 +143,11 @@ def test_poligono_e_cortado_na_roi_e_volta_ao_quadro_cheio(tmp_path):
 def test_sem_roi_o_gabarito_vai_como_esta(tmp_path):
     r = _publicar(tmp_path, [[0, 0.2, 0.5, 0.1, 0.1]], [], None)
     assert (r["fn"], r["gt"]) == (1, [[0, 0.2, 0.5, 0.1, 0.1]])
+
+
+def test_driver_do_jetson_sai_como_versao_do_l4t():
+    from agent.ambiente import versao_l4t
+    linha = ("# R35 (release), REVISION: 3.1, GCID: 32827747, BOARD: t186ref, "
+             "EABI: aarch64, DATE: Sun Mar 19 15:19:21 UTC 2023")
+    assert versao_l4t(linha) == "L4T R35.3.1"
+    assert versao_l4t("lixo") is None

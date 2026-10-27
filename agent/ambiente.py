@@ -8,6 +8,7 @@ de fora, e nada daqui pode derrubar um job.
 from __future__ import annotations
 
 import platform
+import re
 import subprocess
 from functools import lru_cache
 from pathlib import Path
@@ -52,9 +53,16 @@ def _driver() -> str | None:
     if v:
         return v.splitlines()[0].strip()
     try:
-        return Path("/etc/nv_tegra_release").read_text().split(",")[0].strip()
+        return versao_l4t(Path("/etc/nv_tegra_release").read_text())
     except OSError:
         return None
+
+
+def versao_l4t(texto: str) -> str | None:
+    """`# R35 (release), REVISION: 3.1, ...` → `L4T R35.3.1`. A release sozinha
+    (R35) junta versões de JetPack com TensorRT diferente."""
+    m = re.search(r"R(\d+)\b.*?REVISION:\s*([\d.]+)", texto)
+    return f"L4T R{m.group(1)}.{m.group(2)}" if m else None
 
 
 def ambiente(artefato: Path) -> dict:
