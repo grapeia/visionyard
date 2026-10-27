@@ -11,6 +11,7 @@ import json
 from pathlib import Path
 
 from .. import db
+from ..services import parameters
 from .base import Importer, ImportReport, SourceSample, map_classes
 
 CHUNK = 1 << 20
@@ -56,6 +57,21 @@ async def _resolve_author(conn: db.Conn, email: str | None,
     return str(row["id"]) if row else fallback_id
 
 
+def _uri_permitida(uri: str, buckets: list[str]) -> bool:
+    """A URI gravada em `sample` é a que a grade assina com a conta de serviço,
+    para qualquer viewer do projeto. Deixar passar `gs://` de um bucket fora da
+    allowlist faria a API ler por essa conta o que a allowlist não libera; e a
+    URI vem de dado de quem importa, seja da tarefa do LS, seja da base que ele
+    escolhe. Esquema que não é `gs://` também não entra: ninguém o assinaria, e
+    a tela mostraria um endereço de outro sistema. Caminho relativo, sem base,
+    segue entrando como sempre entrou."""
+    if "://" not in uri:
+        return True
+    if not uri.startswith("gs://"):
+        return False
+    return uri[5:].partition("/")[0] in buckets
+
+
 async def run_import(*, project_id: str, schema_id: str,
                      schema_classes: list[str], importer: Importer,
                      actor_id: str, class_overrides: dict[str, str] | None,
@@ -72,6 +88,7 @@ async def run_import(*, project_id: str, schema_id: str,
     async with db.connection() as conn:
         projeto = await db.fetch_row("SELECT task_type FROM project WHERE id = %s",
                                      (project_id,), conn=conn)
+        buckets = await parameters.valor("buckets", conn)
     tarefa = projeto["task_type"]
     seen = 0
     # Digests já vistos NESTA passada. No modo real quem garante a unicidade é
@@ -83,6 +100,9 @@ async def run_import(*, project_id: str, schema_id: str,
         seen += 1
         if progress_cb and seen % 25 == 0:
             await progress_cb(seen)
+        if not _uri_permitida(sample.uri, buckets):
+            report.skip(sample.key, "imagem fora dos buckets permitidos")
+            continue
         await _import_one(sample, project_id=project_id, schema_id=schema_id,
                           mapping=mapping, actor_id=actor_id,
                           source_id=source_id, dry_run=dry_run, report=report,

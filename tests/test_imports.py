@@ -211,7 +211,7 @@ async def test_import_real_e_idempotente(admin, tmp_path):
     db_path, _ = _dump(tmp_path)
     payload = {"kind": "label_studio_sqlite", "sqlite_path": str(db_path),
                "image_root": str(tmp_path),
-               "image_base_uri": "gs://bucket/frames"}
+               "image_base_uri": "gs://bucket-de-teste/frames"}
 
     r = await admin.post(f"/v1/projects/{PROJ['slug']}/imports?dry_run=false",
                          json=payload)
@@ -524,7 +524,7 @@ async def test_quem_pede_nao_executa_e_a_fila_espera(admin, tmp_path,
                          json={"kind": "label_studio_sqlite",
                                "sqlite_path": str(db_path),
                                "image_root": str(tmp_path),
-                               "image_base_uri": "gs://bucket/frames"})
+                               "image_base_uri": "gs://bucket-de-teste/frames"})
     assert r.status_code == 200, r.text
     job_id = r.json()["job_id"]
     assert r.json()["status"] == "queued"
@@ -763,7 +763,7 @@ def _json_origem(tmp_path, kind, *, forma="polygon", classe="classe_a"):
     arquivo = tmp_path / "anotacao.json"
     arquivo.write_text(json.dumps(dados))
     return {"kind": kind, "json_path": str(arquivo), "image_root": str(tmp_path),
-            "image_base_uri": "gs://bucket/frames"}
+            "image_base_uri": "gs://bucket-de-teste/frames"}
 
 
 @pytest.mark.parametrize("kind", ["labelme_json", "label_studio_json"])
@@ -892,6 +892,28 @@ async def test_json_caminho_fora_da_raiz(admin, tmp_path, kind):
     assert "fora da pasta" in r.json()["detail"]
 
 
+@pytest.mark.parametrize("onde", ["tarefa", "base"])
+async def test_imagem_fora_dos_buckets_permitidos_nao_entra(admin, tmp_path, onde):
+    """A URI gravada vira URL assinada pela conta de serviço para qualquer
+    viewer do projeto: apontar para outro bucket que a conta alcança seria ler
+    por ela o que a allowlist não libera. Vale para a URI que vem na tarefa do
+    LS e para a base que quem importa escolhe."""
+    await admin.post("/v1/projects", json=PROJ)
+    payload = _json_origem(tmp_path, "label_studio_json", forma="rectangle")
+    if onde == "tarefa":
+        arquivo = Path(payload["json_path"])
+        data = json.loads(arquivo.read_text())
+        data[0]["data"]["image"] = "gs://bucket-alheio/foto.png"
+        arquivo.write_text(json.dumps(data))
+    else:
+        payload["image_base_uri"] = "gs://bucket-alheio/frames"
+    r = await admin.post(f"/v1/projects/{PROJ['slug']}/imports", json=payload)
+    assert r.status_code == 200, r.text
+    rel = r.json()["report"]
+    assert rel["samples_created"] == 0
+    assert any("bucket" in s["reason"] for s in rel["skipped"])
+
+
 async def test_ls_dimensao_invalida_e_reportada_sem_abortar_lote(admin, tmp_path):
     await admin.post("/v1/projects", json=PROJ)
     payload = _json_origem(tmp_path, "label_studio_json", forma="rectangle")
@@ -960,7 +982,7 @@ def test_json_uri_corresponde_ao_arquivo_lido(tmp_path, kind, rel):
     report = ImportReport()
     sample = next(construir_importador(payload).read(report))
     nome = "foto#1.png" if rel == "foto#1.png" else "foto.png"
-    assert sample.uri == f"gs://bucket/frames/{nome}"
+    assert sample.uri == f"gs://bucket-de-teste/frames/{nome}"
     assert sample.local_path == str(tmp_path / nome)
     if rel == "pasta-a/foto.png":
         assert report.warnings

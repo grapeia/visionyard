@@ -307,6 +307,12 @@ pede.
   o recalculado só vale para o agente 0.1. Sem isso o agente registraria um
   `weights_uri` qualquer, e o próximo pré-tag faria a API assinar a leitura
   dele. Não afrouxe nenhuma das três achando que as outras cobrem.
+- **`sample.uri` remota só de bucket da allowlist.** A grade assina essa URI
+  com a conta de serviço para qualquer viewer, e ela vem de dado de quem
+  importa (a tarefa do LS, a base escolhida). `importers/runner.py:
+  _uri_permitida` recusa no relatório o `gs://` de fora da allowlist e o
+  esquema que não é `gs://`. Fica no runner, e não em cada importador, para
+  valer também para a próxima origem.
 - **Split é sorteado no congelamento, uma vez.** Sortear no treino torna dois
   runs incomparáveis.
 

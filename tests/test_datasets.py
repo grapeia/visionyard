@@ -184,7 +184,7 @@ async def _projeto_com_dados(admin, tmp_path):
                          json={"kind": "label_studio_sqlite",
                                "sqlite_path": str(db_path),
                                "image_root": str(tmp_path),
-                               "image_base_uri": "gs://bucket/frames"})
+                               "image_base_uri": "gs://bucket-de-teste/frames"})
     import tests.test_imports as ti
 
     from .test_imports import _aguarda
@@ -259,7 +259,7 @@ async def test_congelar_gera_manifesto(admin, tmp_path, monkeypatch):
     conteudo = (out / "items.jsonl").read_text()
     assert meta["items_sha256"] == hashlib.sha256(conteudo.encode()).hexdigest()
     assert meta["descricao"] == "base inicial"
-    assert meta["origens"] == ["gs://bucket/frames"] or meta["origens"]
+    assert meta["origens"] == ["gs://bucket-de-teste/frames"] or meta["origens"]
 
     for linha in linhas:
         item = json.loads(linha)
@@ -463,7 +463,7 @@ async def test_diff_entre_versoes(admin, tmp_path):
                          json={"kind": "label_studio_sqlite",
                                "sqlite_path": str(db2),
                                "image_root": str(outro),
-                               "image_base_uri": "gs://bucket/mais"})
+                               "image_base_uri": "gs://bucket-de-teste/mais"})
     from .test_imports import _aguarda
     await _aguarda(admin, r.json()["job_id"])
 
