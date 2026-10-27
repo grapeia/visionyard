@@ -735,6 +735,18 @@ dialog .acoes { display: flex; gap: 8px; justify-content: flex-end; margin-top: 
   color: var(--texto-fraco); }
 .prom-cel .discreto:hover { border-color: var(--acento); color: var(--acento);
   background: var(--aco-700); }
+/* a versão abre o detalhe do treino: tem cara de texto, não de botão */
+.tab-versoes button.versao-abre { padding: 2px 4px; color: var(--texto);
+  font: inherit; }
+.tab-versoes button.versao-abre::before { content: "▸ "; color: var(--texto-tenue); }
+.tab-versoes button.versao-abre[aria-expanded="true"]::before { content: "▾ "; }
+.tab-versoes tbody tr.versao-detalhe:hover { background: none; }
+.tab-versoes tr.versao-detalhe td { border-top: none; padding-top: 0; }
+.treino-params { display: flex; flex-wrap: wrap; gap: 8px 24px; margin: 0;
+  font: 12px/1.4 var(--mono); }
+.treino-params dt { color: var(--texto-tenue); font-size: 10px;
+  text-transform: uppercase; letter-spacing: .08em; }
+.treino-params dd { margin: 2px 0 0; color: var(--texto-fraco); }
 /* o download é link (segue o redirect para o bucket), com cara de botão */
 .prom-cel a.discreto { display: inline-flex; align-items: center;
   justify-content: center; text-decoration: none; }

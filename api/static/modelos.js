@@ -86,6 +86,13 @@ async function abrirModelo(slug) {
         <p class="dica">Avalie uma versão num benchmark (botão ◎ na aba Versões)
           para comparar mAP e tempo de cada formato.</p></div>`}
     </div>`;
+  // detalhe do treino: aberto por qualquer papel, a rota de leitura já é viewer
+  $("painelModelo").querySelectorAll("[data-detalhe]").forEach((b) =>
+    b.addEventListener("click", () => {
+      const aberto = b.getAttribute("aria-expanded") === "true";
+      b.setAttribute("aria-expanded", String(!aberto));
+      $(`detalheV${b.dataset.detalhe}`).hidden = aberto;
+    }));
   $("subModelo").addEventListener("click", (ev) => {
     const b = ev.target.closest("[data-sub]");
     if (b) mostrarSubModelo(b.dataset.sub);
@@ -214,13 +221,50 @@ function linhaModeloVersao(slug, v, aliases, temAcoes) {
     ${pode("modelos.implantacao.implantar") && (v.builds || []).length ? `<button class="discreto" data-deploy="${v.version}"
        title="implantar num dispositivo">↗</button>` : ""}</td>` : "";
   return `<tr>
-    <td class="mono">v${v.version} ${selos}</td>
+    <td class="mono"><button class="discreto versao-abre" data-detalhe="${v.version}"
+      aria-expanded="false" title="parâmetros do treino">v${v.version}</button> ${selos}</td>
     <td class="mono">${map}</td>
     <td>${origem}</td>
     <td class="mono">${mb}</td>
     <td>${artefatos}</td>
     <td>${new Date(v.created_at).toLocaleDateString("pt-BR")}</td>
-    ${acoes}</tr>`;
+    ${acoes}</tr>
+    <tr class="versao-detalhe" id="detalheV${v.version}" hidden>
+      <td colspan="${temAcoes ? 7 : 6}">${detalheTreino(v)}</td></tr>`;
+}
+
+const ROTULO_PARAM = { epochs: "épocas", imgsz: "imagem", batch: "batch",
+  patience: "paciência", augmentation: "augmentation", device: "device" };
+
+function duracao(s) {
+  if (s == null) return "—";
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
+  return h ? `${h} h ${m} min` : m ? `${m} min` : `${s} s`;
+}
+
+/** O que treinou a versão. Peso registrado sem treino deste sistema não tem
+ *  `run_id`: diz isso, em vez de uma grade de traços. */
+function detalheTreino(v) {
+  if (!v.run_id) {
+    return `<p class="dica">Sem dados de treino: o peso desta versão não veio de
+      um treino feito aqui.</p>`;
+  }
+  const p = v.params || {};
+  const valor = (k, x) => k === "imgsz" ? `${x} px`
+    : typeof x === "object" ? JSON.stringify(x) : String(x);
+  // as chaves conhecidas primeiro, na ordem do formulário; o resto depois
+  const chaves = [...Object.keys(ROTULO_PARAM).filter((k) => k in p),
+                  ...Object.keys(p).filter((k) => !(k in ROTULO_PARAM))];
+  const itens = [
+    ["base", v.base_model || "—"],
+    ["dataset", v.dataset ? `${v.dataset} v${v.dataset_version ?? "?"}` : "—"],
+    ...chaves.map((k) => [ROTULO_PARAM[k] || k, valor(k, p[k])]),
+    ["melhor época", v.best_epoch ?? "—"],
+    ["duração", duracao(v.duration_s)],
+    ["agente", v.code_version || "—"],
+  ];
+  return `<dl class="treino-params">${itens.map(([k, x]) =>
+    `<div><dt>${esc(k)}</dt><dd>${esc(x)}</dd></div>`).join("")}</dl>`;
 }
 
 async function promover(slug, alias, version) {

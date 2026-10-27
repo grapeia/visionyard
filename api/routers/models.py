@@ -78,6 +78,13 @@ class VersaoDoModelo(BaseModel):
     experimento: str | None
     dataset: str | None
     dataset_version: int | None
+    # Do treino que produziu a versão; todos nulos quando o peso veio de fora
+    # (sem `run_id`), e é por isso que a tela mostra "sem dados de treino".
+    params: dict[str, Any] | None
+    base_model: str | None
+    best_epoch: int | None
+    duration_s: int | None
+    code_version: str | None
     builds: list[Build]
     avaliacoes: list[Avaliacao]
 

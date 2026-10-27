@@ -42,6 +42,21 @@ async def test_lista_e_detalhe(admin, client, tmp_path):
     assert d["versoes"][0]["dataset_version"] == 1
 
 
+async def test_viewer_le_os_parametros_de_treino_da_versao(admin, client, tmp_path):
+    """O que treinou a versão chega à tela pela rota de leitura, que é `viewer`."""
+    from .test_projects import novo_usuario
+    await _produzir_modelo(admin, client, tmp_path)
+    async with novo_usuario(admin, client, "ver@teste.com") as (ver, _):
+        await admin.put(f"/v1/projects/{PROJ['slug']}/members",
+                        json={"email": "ver@teste.com", "role": "viewer"})
+        r = await ver.get(f"/v1/projects/{PROJ['slug']}/models/detector")
+    assert r.status_code == 200, r.text
+    v = r.json()["versoes"][0]
+    assert v["params"]["epochs"] == 3
+    assert v["base_model"] == "yolo11n.pt"
+    assert v["duration_s"] is not None
+
+
 async def test_promover_para_champion(admin, client, tmp_path):
     await _produzir_modelo(admin, client, tmp_path)
     r = await admin.put(

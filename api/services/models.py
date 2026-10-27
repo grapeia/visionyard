@@ -84,12 +84,18 @@ async def _detalhe(conn: db.Conn, project_slug: str, model_slug: str) -> dict:
     versoes = await db.fetch_all(
         "SELECT mv.id, mv.version, mv.metrics, mv.weights_uri, mv.bytes, mv.status,"
         "       mv.created_at, mv.run_id, e.slug AS experimento,"
-        "       d.slug AS dataset, dv.version AS dataset_version"
+        "       d.slug AS dataset, dv.version AS dataset_version,"
+        "       r.params, r.best_epoch, r.duration_s, r.code_version,"
+        # base externa ('yolo11n.pt') ou uma versão deste registro (fine-tune)
+        "       COALESCE(r.base_model_name, bm.slug || ' v' || bmv.version)"
+        "         AS base_model"
         "  FROM model_version mv"
         "  LEFT JOIN training_run r ON r.id = mv.run_id"
         "  LEFT JOIN experiment e ON e.id = r.experiment_id"
         "  LEFT JOIN dataset_version dv ON dv.id = r.dataset_version_id"
         "  LEFT JOIN dataset d ON d.id = dv.dataset_id"
+        "  LEFT JOIN model_version bmv ON bmv.id = r.base_model_version_id"
+        "  LEFT JOIN model bm ON bm.id = bmv.model_id"
         " WHERE mv.model_id = %s ORDER BY mv.version DESC", (m["id"],), conn=conn)
     # builds (onnx/engine) por versão — o artefato implantável de cada uma
     builds = await db.fetch_all(
