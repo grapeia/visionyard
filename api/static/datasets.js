@@ -104,6 +104,7 @@ function render(ds, previa) {
       <header>
         <span class="rotulo">Origens</span>
         <span class="espaco"></span>
+        <button id="botaoImportar" ${pode("datasets.origens.editar") && pode("datasets.origens.importar") ? "" : "hidden"}>Importar anotações</button>
         <button id="botaoNovaOrigem" ${pode("datasets.origens.editar") && pode("datasets.origens.navegar") && pode("datasets.origens.importar") ? "" : "hidden"}>Adicionar origem</button>
       </header>
       ${ds.origens.length ? `<ul class="origens">${ds.origens.map(linhaOrigem).join("")}</ul>`
@@ -141,6 +142,10 @@ function render(ds, previa) {
     $("botaoDescartarPretags").addEventListener("click",
       () => descartarPretags(ds.slug, ds.pretags_rascunho));
   $("botaoRotular").addEventListener("click", () => rotularDataset(ds.slug));
+  $("botaoImportar").addEventListener("click", () => {
+    $("imRelatorio").textContent = "";
+    $("dlgImportar").showModal();
+  });
   $("botaoNovaOrigem").addEventListener("click",
     () => abrirOrigem().catch((e) => avisar(e.message, true)));
   $("painelDataset").querySelectorAll("[data-remover]").forEach((b) =>
@@ -301,3 +306,48 @@ async function verDiff(versao) {
           lista("Entraram", d.entraram) + "\n\n" + lista("Saíram", d.sairam));
   } catch (e) { avisar(e.message, true); }
 }
+
+
+function pedidoImportacao() {
+  const kind = $("imTipo").value;
+  const class_overrides = JSON.parse($("imClasses").value.trim() || "{}");
+  if (!class_overrides || Array.isArray(class_overrides) ||
+      typeof class_overrides !== "object" ||
+      Object.values(class_overrides).some((v) => typeof v !== "string"))
+    throw new Error("O mapeamento deve ser um objeto JSON com nomes de classes.");
+  return { kind, [kind === "label_studio_sqlite" ? "sqlite_path" : "json_path"]:
+    $("imArquivo").value.trim(), image_root: $("imImagens").value.trim(),
+    image_base_uri: $("imDestino").value.trim(), class_overrides };
+}
+
+function relatorioImportacao(r) {
+  $("imRelatorio").textContent = JSON.stringify(r, null, 2);
+}
+
+$("imSimular").addEventListener("click", async () => {
+  if (!$("formImportar").reportValidity()) return;
+  $("imSimular").disabled = true;
+  try {
+    const r = await post(`/projects/${estado.projeto}/imports`, pedidoImportacao());
+    relatorioImportacao(r);
+  } catch (e) { avisar(e.message, true); }
+  finally { $("imSimular").disabled = false; }
+});
+
+$("formImportar").addEventListener("submit", comTravaDeEnvio($("formImportar"), async () => {
+  const projeto = estado.projeto, dataset = estado.atual;
+  try {
+    const r = await post(`/projects/${projeto}/imports?dry_run=false`,
+                         pedidoImportacao());
+    await api(`/projects/${projeto}/datasets/${dataset}` +
+              `/sources/${r.source_id}`, { method: "PUT" });
+    avisar("Importação enfileirada.");
+    try {
+      const job = await esperarJob(r.job_id);
+      relatorioImportacao(job.result || job);
+    } finally {
+      if (estado.projeto === projeto && estado.atual === dataset)
+        await abrirDataset(dataset);
+    }
+  } catch (e) { avisar(e.message, true); }
+}));

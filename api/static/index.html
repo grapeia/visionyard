@@ -292,6 +292,35 @@
   </form>
 </dialog>
 
+<!-- importação de anotações -->
+<dialog id="dlgImportar">
+  <form method="dialog" id="formImportar">
+    <h2>Importar anotações</h2>
+    <p class="ajuda">Use arquivos e imagens disponíveis na pasta de importação
+      do servidor. As imagens devem já existir no destino informado.</p>
+    <label for="imTipo">Formato</label>
+    <select id="imTipo">
+      <option value="labelme_json">LabelMe (JSON por imagem)</option>
+      <option value="label_studio_json">Label Studio (export JSON)</option>
+      <option value="label_studio_sqlite">Label Studio (dump sqlite)</option>
+    </select>
+    <label for="imArquivo">Arquivo no servidor (ou pasta de JSONs LabelMe)</label>
+    <input id="imArquivo" required>
+    <label for="imImagens">Pasta local das imagens</label>
+    <input id="imImagens" required>
+    <label for="imDestino">Prefixo das imagens no bucket</label>
+    <input id="imDestino" required placeholder="gs://bucket/frames">
+    <label for="imClasses">Mapeamento de classes (JSON, opcional)</label>
+    <textarea id="imClasses" placeholder='{"nome na origem": "nome no projeto"}'></textarea>
+    <pre id="imRelatorio" style="white-space:pre-wrap"></pre>
+    <div class="acoes">
+      <button type="button" class="cancelar">Cancelar</button>
+      <button type="button" id="imSimular">Simular</button>
+      <button class="primario" value="ok">Importar</button>
+    </div>
+  </form>
+</dialog>
+
 <!-- congelar -->
 <dialog id="dlgCongelar">
   <form method="dialog" id="formCongelar">

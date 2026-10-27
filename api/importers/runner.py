@@ -67,8 +67,12 @@ async def run_import(*, project_id: str, schema_id: str,
     for name in unmapped:
         report.unmapped_classes.setdefault(name, 0)
         report.warn(f"classe '{name}' não existe no schema do projeto — "
-                    f"as caixas dela não serão importadas")
+                    f"as formas dela não serão importadas")
 
+    async with db.connection() as conn:
+        projeto = await db.fetch_row("SELECT task_type FROM project WHERE id = %s",
+                                     (project_id,), conn=conn)
+    tarefa = projeto["task_type"]
     seen = 0
     # Digests já vistos NESTA passada. No modo real quem garante a unicidade é
     # o banco; no dry-run não há gravação, então sem isto a mesma imagem
@@ -82,7 +86,7 @@ async def run_import(*, project_id: str, schema_id: str,
         await _import_one(sample, project_id=project_id, schema_id=schema_id,
                           mapping=mapping, actor_id=actor_id,
                           source_id=source_id, dry_run=dry_run, report=report,
-                          seen_digests=seen_digests)
+                          seen_digests=seen_digests, task_type=tarefa)
     if progress_cb:
         await progress_cb(seen)
     return report
@@ -92,7 +96,8 @@ async def _import_one(sample: SourceSample, *, project_id: str, schema_id: str,
                       mapping: dict[str, int], actor_id: str,
                       source_id: str | None, dry_run: bool,
                       report: ImportReport,
-                      seen_digests: set[bytes] | None = None) -> None:
+                      seen_digests: set[bytes] | None = None,
+                      task_type: str = "detect") -> None:
     sha256 = None
     width, height = sample.width, sample.height
     size = sample.bytes_size
@@ -105,38 +110,62 @@ async def _import_one(sample: SourceSample, *, project_id: str, schema_id: str,
         if not path.is_file():
             report.skip(sample.key, "arquivo sumiu durante a importação")
             return
-        digest, sha256, size = _hashes_and_size(path)
-        if not (width and height):
-            dims = _dimensions(path)
-            if dims is None:
-                report.skip(sample.key,
-                            "não consegui ler as dimensões da imagem")
-                return
-            width, height = dims
+        try:
+            digest, sha256, size = _hashes_and_size(path)
+        except OSError:
+            report.skip(sample.key, "não consegui ler o arquivo da imagem")
+            return
+        dims = _dimensions(path)
+        if dims is None:
+            report.skip(sample.key, "não consegui ler as dimensões da imagem")
+            return
+        if ((width is not None and width != dims[0])
+                or (height is not None and height != dims[1])):
+            report.skip(sample.key, "dimensões da anotação divergem da imagem")
+            return
+        width, height = dims
     else:
         report.skip(sample.key, "origem não forneceu md5 nem arquivo local")
         return
 
     # Caixas: mapeia nomes; o que não mapeia é contado, não descartado calado.
-    boxes = []
+    boxes: list[dict] = []
     for box in sample.boxes:
         if box.cls_name not in mapping:
             report.unmapped_classes[box.cls_name] = (
                 report.unmapped_classes.get(box.cls_name, 0) + 1)
             continue
         boxes.append({"cls": mapping[box.cls_name],
-                      "cx": round(box.cx, 6), "cy": round(box.cy, 6),
-                      "w": round(box.w, 6), "h": round(box.h, 6)})
+                      "cx": box.cx, "cy": box.cy,
+                      "w": box.w, "h": box.h})
 
-    # `[]` significa "anotado, sem objetos" — um exemplo negativo. Se a origem
-    # TINHA caixas e todas caíram fora do schema, gravar `[]` ensinaria o
-    # modelo que ali não há nada, que é o oposto da verdade. Melhor não
-    # importar a anotação e dizer por quê.
-    todas_descartadas = bool(sample.boxes) and not boxes
+    for poly in sample.polygons:
+        if poly.cls_name not in mapping:
+            report.unmapped_classes[poly.cls_name] = (
+                report.unmapped_classes.get(poly.cls_name, 0) + 1)
+            continue
+        if task_type != "segment":
+            report.skip(sample.key, "polígono exige projeto de segmentação")
+            sample.annotation_incomplete = True
+            continue
+        boxes.append({"cls": mapping[poly.cls_name], "pts": poly.pts})
+    if task_type == "segment":
+        for i, forma in enumerate(boxes):
+            if "pts" in forma:
+                continue
+            x, y = forma["cx"] - forma["w"] / 2, forma["cy"] - forma["h"] / 2
+            r, b = x + forma["w"], y + forma["h"]
+            boxes[i] = {"cls": forma["cls"], "pts": [[x, y], [r, y], [r, b], [x, b]]}
+
+    # Uma forma perdida não pode transformar a imagem em negativo de treino.
+    todas_descartadas = bool(sample.boxes or sample.polygons) and not boxes
     if todas_descartadas:
-        report.skip(sample.key,
-                    "todas as caixas são de classes fora do schema — "
-                    "anotação não importada (use class_overrides)")
+        report.skip(sample.key, "nenhuma forma compatível com o schema — "
+                    "anotação não importada (confira class_overrides e tarefa)")
+    incompleta = todas_descartadas or sample.annotation_incomplete
+    if sample.annotation_incomplete:
+        report.skip(sample.key, "anotação incompleta — não importada; "
+                    "corrija as formas recusadas e tente novamente")
 
     if dry_run:
         # Sem gravação nenhuma: uma conexão só, para a contagem do relatório.
@@ -151,7 +180,7 @@ async def _import_one(sample: SourceSample, *, project_id: str, schema_id: str,
             report.samples_created += 1
         if seen_digests is not None:
             seen_digests.add(digest)
-        if sample.annotated:
+        if sample.annotated and not incompleta:
             report.annotations_created += 1
         return
 
@@ -210,7 +239,7 @@ async def _import_one(sample: SourceSample, *, project_id: str, schema_id: str,
                 " VALUES (%s,%s) ON CONFLICT DO NOTHING",
                 (sample_id, source_id))
 
-        if not sample.annotated or todas_descartadas:
+        if not sample.annotated or incompleta:
             return
 
         # Reimportar atualiza a anotação daquele autor em vez de duplicar,

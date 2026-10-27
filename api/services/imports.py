@@ -35,6 +35,8 @@ from ..config import settings
 from ..importers.base import Importer, ImportReport
 from ..importers.gcs_prefix import GCSPrefixImporter
 from ..importers.label_studio import LabelStudioImporter
+from ..importers.label_studio_json import LabelStudioJSONImporter
+from ..importers.labelme import LabelMeImporter
 from .datasets import travar_origens
 from .projects import projeto_ou_404 as _projeto_ou_404
 
@@ -211,7 +213,7 @@ def construir_importador(payload: dict[str, Any]) -> Importer:
         return GCSPrefixImporter(bucket=payload["bucket"],
                                  prefix=payload.get("prefix", ""),
                                  limit=payload.get("limit"))
-    if kind != "label_studio_sqlite":
+    if kind not in {"label_studio_sqlite", "label_studio_json", "labelme_json"}:
         # Payload que este processo não sabe ler. Acontece com job enfileirado
         # por um controlador mais novo — o mesmo caso do `PayloadInvalido` do
         # contrato do agente, e a mensagem tem de dizer o que fazer.
@@ -219,17 +221,24 @@ def construir_importador(payload: dict[str, Any]) -> Importer:
             status.HTTP_400_BAD_REQUEST,
             f"origem de importação desconhecida ({kind!r}) — atualize o "
             f"processo que executa a importação")
-    if not payload.get("sqlite_path"):
+    campo = "sqlite_path" if kind == "label_studio_sqlite" else "json_path"
+    if not payload.get(campo):
         raise HTTPException(status.HTTP_400_BAD_REQUEST,
-                            "informe o caminho do dump do Label Studio")
+                            "informe o caminho do dump ou JSON de importação")
     if not payload.get("image_root"):
         # Sem isto o importador pula TODOS os samples (não tem como calcular a
         # identidade) e o job termina com "succeeded" e zero importados.
         raise HTTPException(status.HTTP_400_BAD_REQUEST,
                             "informe onde estão as imagens (image_root)")
-    caminho = _dentro_da_raiz(payload["sqlite_path"])
+    caminho = _dentro_da_raiz(payload[campo])
     raiz_img = _dentro_da_raiz(payload["image_root"])
     try:
+        if kind == "labelme_json":
+            return LabelMeImporter(str(caminho), str(raiz_img),
+                                   payload.get("image_base_uri", ""))
+        if kind == "label_studio_json":
+            return LabelStudioJSONImporter(str(caminho), str(raiz_img),
+                                           payload.get("image_base_uri", ""))
         return LabelStudioImporter(
             sqlite_path=str(caminho), image_root=str(raiz_img),
             image_base_uri=payload.get("image_base_uri", ""),
@@ -238,7 +247,7 @@ def construir_importador(payload: dict[str, Any]) -> Importer:
         # Mensagem sem o caminho: dizer "não encontrado em /x/y" confirmaria o
         # que existe e o que não existe no servidor.
         raise HTTPException(status.HTTP_400_BAD_REQUEST,
-                            "dump do Label Studio não encontrado") from None
+                            "arquivo de importação não encontrado") from None
 
 
 async def contexto_do_projeto(project_id: str, *,
@@ -369,7 +378,9 @@ async def pedir(project_slug: str, actor: Principal, payload: dict[str, Any],
         gcs = payload["kind"] == "gcs_prefix"
         uri = (f"gs://{payload['bucket'].strip('/')}"
                f"/{payload.get('prefix', '').lstrip('/')}"
-               if gcs else payload["sqlite_path"])
+               if gcs else payload.get(
+                   "sqlite_path" if payload["kind"] == "label_studio_sqlite"
+                   else "json_path", ""))
         source_id = await upsert_source(
             str(proj["id"]), "gcs" if gcs else "import", uri,
             importador.describe(), payload, actor.id, conn=conn)

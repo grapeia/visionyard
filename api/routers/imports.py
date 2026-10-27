@@ -24,7 +24,8 @@ router = APIRouter(tags=["imports"])
 
 
 class ImportIn(BaseModel):
-    kind: Literal["label_studio_sqlite", "gcs_prefix"]
+    kind: Literal["label_studio_sqlite", "label_studio_json",
+                  "labelme_json", "gcs_prefix"]
     # --- gcs_prefix ---
     bucket: str = ""
     prefix: str = ""
@@ -32,6 +33,8 @@ class ImportIn(BaseModel):
     # --- label_studio_sqlite ---
     # Caminho do dump no servidor da API.
     sqlite_path: str = ""
+    # Arquivo JSON, ou pasta de JSONs no caso LabelMe.
+    json_path: str = ""
     # Onde os arquivos de imagem estão, para calcular sha256 e dimensões.
     image_root: str | None = None
     # Prefixo do URI final gravado no banco (ex: gs://bucket/frames).

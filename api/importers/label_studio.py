@@ -27,7 +27,9 @@ import urllib.parse
 from collections.abc import Iterator
 from pathlib import Path
 
-from .base import ImportReport, SourceBox, SourceSample
+from .base import ImportReport, SourceSample
+from .local import image_path
+from .shapes import ls_results
 
 IMG_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 LABEL_RE = re.compile(r'<Label\s+value="([^"]+)"', re.IGNORECASE)
@@ -46,7 +48,7 @@ def _unwrap_path(raw: str) -> str | None:
     return raw.lstrip("/") or None
 
 
-def _task_path(data_json: str) -> str | None:
+def _task_path(data_json: str, *, preserve_absolute: bool = False) -> str | None:
     """Primeiro valor de `task.data` que pareça imagem — a chave varia."""
     try:
         data = json.loads(data_json)
@@ -56,6 +58,9 @@ def _task_path(data_json: str) -> str | None:
         return None
     for value in data.values():
         path = _unwrap_path(value) if isinstance(value, str) else None
+        if (preserve_absolute and isinstance(value, str)
+                and value.startswith("/") and "?" not in value):
+            path = value
         if path and Path(path.split("?")[0]).suffix.lower() in IMG_EXTS:
             return path
     return None
@@ -135,52 +140,26 @@ class LabelStudioImporter:
                    else rel)
             local = None
             if self.image_root is not None and "://" not in rel:
-                candidate = self.image_root / rel
-                # A raiz local do LS costuma incluir o diretório do storage;
-                # se não bater, tenta só o nome do arquivo.
-                if not candidate.is_file():
-                    alt = self.image_root / Path(rel).name
-                    candidate = alt if alt.is_file() else candidate
-                local = str(candidate) if candidate.is_file() else None
-                if local is None:
-                    report.skip(rel, "arquivo não encontrado em image_root")
+                try:
+                    local = str(image_path(self.image_root, rel, report))
+                except ValueError as exc:
+                    report.skip(rel, str(exc))
                     continue
 
-            boxes: list[SourceBox] = []
-            width = height = None
-            annotated = bool(row["results"])
-
-            for chunk in (row["results"] or "").split("\x1e"):
+            sample = SourceSample(key=rel, uri=uri, local_path=local,
+                                  annotated=bool(row["results"]),
+                                  author_email=row["author"],
+                                  metadata={"ls_task_id": row["id"]})
+            chunks = (row["results"] or "").split("\x1e")
+            if sum(bool(c.strip()) for c in chunks) > 1:
+                report.warn(f"{rel}: múltiplas anotações do LS serão combinadas; "
+                            "confira objetos duplicados")
+            for chunk in chunks:
                 if not chunk.strip():
                     continue
                 try:
-                    items = json.loads(chunk)
-                except json.JSONDecodeError:
+                    ls_results(json.loads(chunk), sample, report)
+                except (TypeError, ValueError):
                     report.skip(rel, "result do LS não é JSON válido")
-                    continue
-                for item in items or []:
-                    if item.get("type") != "rectanglelabels":
-                        report.warn(
-                            f"tipo '{item.get('type')}' ignorado — só "
-                            f"rectanglelabels vira bbox")
-                        continue
-                    value = item.get("value") or {}
-                    names = value.get("rectanglelabels") or []
-                    if not names:
-                        continue
-                    if float(value.get("rotation") or 0):
-                        # YOLO axis-aligned não representa caixa girada;
-                        # importar ignorando a rotação daria caixa errada.
-                        report.skip(rel, "bbox com rotação — não suportado")
-                        continue
-                    width = width or item.get("original_width")
-                    height = height or item.get("original_height")
-                    cx, cy, w, h = _to_yolo(value)
-                    boxes.append(SourceBox(cls_name=names[0], cx=cx, cy=cy,
-                                           w=w, h=h))
-
-            yield SourceSample(key=rel, uri=uri, local_path=local,
-                               width=width, height=height, boxes=boxes,
-                               annotated=annotated,
-                               author_email=row["author"],
-                               metadata={"ls_task_id": row["id"]})
+                    sample.annotation_incomplete = True
+            yield sample

@@ -741,3 +741,239 @@ async def test_maquina_nao_reclama_importacao_na_fila(admin, client, superuser,
     r = await client.post("/v1/agent/claim", headers=_h(dev["token"]))
     assert r.status_code == 200
     assert r.json()["job"] is None
+
+
+def _json_origem(tmp_path, kind, *, forma="polygon", classe="classe_a"):
+    _png(tmp_path / "foto.png")
+    if kind == "labelme_json":
+        dados = {"imagePath": "foto.png", "imageWidth": 64, "imageHeight": 48,
+                 "shapes": [{"label": classe, "shape_type": forma,
+                             "points": ([[0, 0], [32, 24]] if forma == "rectangle"
+                                        else [[0, 0], [32, 0], [32, 24]])}]}
+    else:
+        tipo = "rectanglelabels" if forma == "rectangle" else "polygonlabels"
+        valor = {tipo: [classe]}
+        if forma == "rectangle":
+            valor.update(x=0, y=0, width=50, height=50)
+        else:
+            valor["points"] = [[0, 0], [50, 0], [50, 50]]
+        dados = [{"id": 12, "data": {"image": "/data/local-files/?d=foto.png"},
+                  "annotations": [{"result": [{"type": tipo, "value": valor,
+                    "original_width": 64, "original_height": 48}]}]}]
+    arquivo = tmp_path / "anotacao.json"
+    arquivo.write_text(json.dumps(dados))
+    return {"kind": kind, "json_path": str(arquivo), "image_root": str(tmp_path),
+            "image_base_uri": "gs://bucket/frames"}
+
+
+@pytest.mark.parametrize("kind", ["labelme_json", "label_studio_json"])
+@pytest.mark.parametrize("forma", ["polygon", "rectangle"])
+async def test_json_segmentacao_grava_geometria_e_reimporta(
+        admin, tmp_path, kind, forma):
+    from api import db
+
+    await admin.post("/v1/projects", json={**PROJ, "task_type": "segment"})
+    payload = _json_origem(tmp_path, kind, forma=forma)
+    url = f"/v1/projects/{PROJ['slug']}/imports"
+    simulado = await admin.post(url, json=payload)
+    assert simulado.status_code == 200, simulado.text
+    assert simulado.json()["report"]["annotations_created"] == 1
+    for rodada in range(2):
+        r = await admin.post(url + "?dry_run=false", json=payload)
+        assert r.status_code == 200, r.text
+        job = await _aguarda(admin, r.json()["job_id"])
+        assert job["status"] == "succeeded", job
+        assert job["result"]["samples_existing" if rodada else "samples_created"] == 1
+    async with db.connection() as conn:
+        ann = await db.fetch_row("SELECT boxes FROM annotation", conn=conn)
+    pts = [[0, 0], [0.5, 0], [0.5, 0.5]]
+    if forma == "rectangle":
+        pts.append([0, 0.5])
+    assert ann["boxes"] == [{"cls": 0, "pts": pts}]
+
+
+@pytest.mark.parametrize("kind", ["labelme_json", "label_studio_json"])
+async def test_poligono_em_detect_nao_vira_negativo(admin, tmp_path, kind):
+    await admin.post("/v1/projects", json=PROJ)
+    payload = _json_origem(tmp_path, kind)
+    url = f"/v1/projects/{PROJ['slug']}/imports"
+    r = await admin.post(url, json=payload)
+    assert r.json()["report"]["annotations_created"] == 0
+    assert any("segmentação" in s["reason"] for s in r.json()["report"]["skipped"])
+    r = await admin.post(url + "?dry_run=false", json=payload)
+    job = await _aguarda(admin, r.json()["job_id"])
+    assert job["result"]["annotations_created"] == 0
+    assert job["result"]["samples_created"] == 1
+
+
+@pytest.mark.parametrize("kind", ["labelme_json", "label_studio_json"])
+async def test_json_mapeamento_de_classe(admin, tmp_path, kind):
+    await admin.post("/v1/projects", json={**PROJ, "task_type": "segment"})
+    payload = _json_origem(tmp_path, kind, classe="origem")
+    url = f"/v1/projects/{PROJ['slug']}/imports"
+    r = await admin.post(url, json=payload)
+    assert r.json()["report"]["unmapped_classes"] == {"origem": 1}
+    assert r.json()["report"]["annotations_created"] == 0
+    payload["class_overrides"] = {"origem": "classe_b"}
+    r = await admin.post(url, json=payload)
+    assert r.json()["report"]["annotations_created"] == 1
+
+
+def test_labelme_pasta_reporta_formas_invalidas_e_continua(tmp_path):
+    from api.importers.labelme import LabelMeImporter
+
+    payload = _json_origem(tmp_path, "labelme_json")
+    arquivo = Path(payload["json_path"])
+    data = json.loads(arquivo.read_text())
+    data["shapes"].append({"label": "classe_a", "shape_type": "circle",
+                           "points": [[10, 10], [20, 20]]})
+    arquivo.write_text(json.dumps(data))
+    (tmp_path / "quebrado.json").write_text("{")
+    report = ImportReport()
+    samples = list(LabelMeImporter(str(tmp_path), str(tmp_path)).read(report))
+    assert len(samples) == 1
+    assert samples[0].annotation_incomplete
+    assert len(samples[0].polygons) == 1
+    assert report.skipped_total == 2
+
+
+@pytest.mark.parametrize("symlink", [False, True])
+def test_labelme_imagem_nao_escapa_da_raiz(tmp_path, symlink):
+    from api.importers.labelme import LabelMeImporter
+
+    pasta = tmp_path / "origem"
+    pasta.mkdir()
+    payload = _json_origem(pasta, "labelme_json")
+    _png(tmp_path / "fora.png")
+    if symlink:
+        (pasta / "link.png").symlink_to(tmp_path / "fora.png")
+    arquivo = Path(payload["json_path"])
+    data = json.loads(arquivo.read_text())
+    data["imagePath"] = "link.png" if symlink else "../fora.png"
+    arquivo.write_text(json.dumps(data))
+    report = ImportReport()
+    assert list(LabelMeImporter(str(arquivo), str(pasta)).read(report)) == []
+    assert report.skipped_total == 1
+
+
+def test_ls_json_canceladas_e_negativas(tmp_path):
+    from api.importers.label_studio_json import LabelStudioJSONImporter
+
+    payload = _json_origem(tmp_path, "label_studio_json")
+    arquivo = Path(payload["json_path"])
+    data = json.loads(arquivo.read_text())
+    data[0]["annotations"][0]["was_cancelled"] = True
+    arquivo.write_text(json.dumps(data))
+    imp = LabelStudioJSONImporter(str(arquivo), str(tmp_path))
+    assert not next(imp.read(ImportReport())).annotated
+    data[0]["annotations"].append({"result": []})
+    arquivo.write_text(json.dumps(data))
+    sample = next(imp.read(ImportReport()))
+    assert sample.annotated and not sample.polygons and not sample.annotation_incomplete
+
+
+def test_sqlite_poligono_tambem_e_lido(tmp_path):
+    db_path, _ = _dump(tmp_path, n_tasks=1, annotate=1)
+    result = [{"type": "polygonlabels", "value": {
+        "polygonlabels": ["classe_a"], "points": [[0, 0], [50, 0], [50, 50]]}}]
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("UPDATE task_completion SET result=?", (json.dumps(result),))
+    imp = LabelStudioImporter(str(db_path), str(tmp_path))
+    samples = list(imp.read(ImportReport()))
+    assert samples[0].polygons[0].pts == [(0, 0), (0.5, 0), (0.5, 0.5)]
+
+
+@pytest.mark.parametrize("kind", ["labelme_json", "label_studio_json"])
+async def test_json_caminho_fora_da_raiz(admin, tmp_path, kind):
+    await admin.post("/v1/projects", json=PROJ)
+    r = await admin.post(f"/v1/projects/{PROJ['slug']}/imports", json={
+        "kind": kind, "json_path": "/etc/passwd", "image_root": str(tmp_path)})
+    assert r.status_code == 400
+    assert "fora da pasta" in r.json()["detail"]
+
+
+async def test_ls_dimensao_invalida_e_reportada_sem_abortar_lote(admin, tmp_path):
+    await admin.post("/v1/projects", json=PROJ)
+    payload = _json_origem(tmp_path, "label_studio_json", forma="rectangle")
+    arquivo = Path(payload["json_path"])
+    data = json.loads(arquivo.read_text())
+    data[0]["annotations"][0]["result"][0]["original_width"] = "inválida"
+    arquivo.write_text(json.dumps(data))
+    r = await admin.post(f"/v1/projects/{PROJ['slug']}/imports", json=payload)
+    assert r.status_code == 200, r.text
+    rel = r.json()["report"]
+    assert rel["samples_created"] == 0
+    assert any("dimensões" in s["reason"] for s in rel["skipped"])
+
+
+async def test_forma_invalida_nao_grava_anotacao_parcial(admin, tmp_path):
+    await admin.post("/v1/projects", json={**PROJ, "task_type": "segment"})
+    payload = _json_origem(tmp_path, "labelme_json")
+    arquivo = Path(payload["json_path"])
+    data = json.loads(arquivo.read_text())
+    data["shapes"].append({"label": "classe_a", "shape_type": "polygon",
+                           "points": [[0, 0], [0, 0], [0, 0]]})
+    arquivo.write_text(json.dumps(data))
+    url = f"/v1/projects/{PROJ['slug']}/imports"
+    r = await admin.post(url, json=payload)
+    assert r.json()["report"]["annotations_created"] == 0
+    r = await admin.post(url + "?dry_run=false", json=payload)
+    job = await _aguarda(admin, r.json()["job_id"])
+    assert job["result"]["annotations_created"] == 0
+    assert any("incompleta" in s["reason"] for s in job["result"]["skipped"])
+
+
+def test_ls_borda_tolera_arredondamento_e_metadados():
+    from api.importers.base import SourceSample
+    from api.importers.shapes import ls_results
+
+    sample = SourceSample("foto", "foto")
+    report = ImportReport()
+    ls_results([
+        {"type": "rectanglelabels", "value": {"rectanglelabels": ["classe_a"],
+         "x": 45.2, "y": 0, "width": 54.800000000000004, "height": 100}},
+        {"type": "choices", "value": {"choices": ["aprovado"]}},
+    ], sample, report)
+    assert len(sample.boxes) == 1
+    assert sample.boxes[0].cx + sample.boxes[0].w / 2 == 1
+    assert not sample.annotation_incomplete
+    assert report.warnings and not report.skipped_total
+
+
+@pytest.mark.parametrize("kind", ["labelme_json", "label_studio_json"])
+@pytest.mark.parametrize("rel", ["sub/../foto.png", "sub\\..\\foto.png", "absoluto",
+                                  "pasta-a/foto.png", "foto#1.png"])
+def test_json_uri_corresponde_ao_arquivo_lido(tmp_path, kind, rel):
+    from api.services.imports import construir_importador
+
+    payload = _json_origem(tmp_path, kind)
+    arquivo = Path(payload["json_path"])
+    data = json.loads(arquivo.read_text())
+    caminho = str(tmp_path / "foto.png") if rel == "absoluto" else rel
+    if rel == "foto#1.png":
+        (tmp_path / "foto.png").rename(tmp_path / rel)
+    if kind == "labelme_json":
+        data["imagePath"] = caminho
+    else:
+        data[0]["data"]["image"] = caminho
+    arquivo.write_text(json.dumps(data))
+    report = ImportReport()
+    sample = next(construir_importador(payload).read(report))
+    nome = "foto#1.png" if rel == "foto#1.png" else "foto.png"
+    assert sample.uri == f"gs://bucket/frames/{nome}"
+    assert sample.local_path == str(tmp_path / nome)
+    if rel == "pasta-a/foto.png":
+        assert report.warnings
+
+
+def test_labelme_borda_tolera_meio_pixel(tmp_path):
+    from api.services.imports import construir_importador
+
+    payload = _json_origem(tmp_path, "labelme_json")
+    arquivo = Path(payload["json_path"])
+    data = json.loads(arquivo.read_text())
+    data["shapes"][0]["points"][0][0] = -0.3
+    arquivo.write_text(json.dumps(data))
+    sample = next(construir_importador(payload).read(ImportReport()))
+    assert not sample.annotation_incomplete
+    assert sample.polygons[0].pts[0] == (0, 0)

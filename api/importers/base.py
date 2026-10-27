@@ -33,6 +33,13 @@ class SourceBox:
 
 
 @dataclass
+class SourcePolygon:
+    """Contorno normalizado no quadro 0..1 da imagem."""
+    cls_name: str
+    pts: list[tuple[float, float]]
+
+
+@dataclass
 class SourceSample:
     """Uma imagem da origem, com suas anotações (se houver).
 
@@ -50,6 +57,8 @@ class SourceSample:
     width: int | None = None
     height: int | None = None
     boxes: list[SourceBox] = field(default_factory=list)
+    polygons: list[SourcePolygon] = field(default_factory=list)
+    annotation_incomplete: bool = False
     annotated: bool = False        # False = imagem sem anotação na origem
     author_email: str | None = None
     metadata: dict = field(default_factory=dict)
