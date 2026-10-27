@@ -47,6 +47,7 @@ export async function carregarModelos() {
 
 async function abrirModelo(slug) {
   modelos.atual = slug;
+  galeria.geracao++;   // galeria aberta de outro modelo não desenha mais
   document.querySelectorAll("[data-modelo]").forEach((b) =>
     b.setAttribute("aria-current", b.dataset.modelo === slug));
   $("painelModelo").innerHTML = `<p class="carregando">Carregando…</p>`;
@@ -82,10 +83,16 @@ async function abrirModelo(slug) {
       </section>
     </div>
     <div id="subAvaliacoes">
+      <div id="cmpAvaliacoes">
       ${seccaoComparacoes(d.versoes) || `<div class="vazio"><p>Nenhuma avaliação ainda.</p>
         <p class="dica">Avalie uma versão num benchmark (botão ◎ na aba Versões)
           para comparar mAP e tempo de cada formato.</p></div>`}
+      </div>
+      <div id="galeriaAval" hidden></div>
     </div>`;
+  $("cmpAvaliacoes").querySelectorAll("[data-galeria]").forEach((b) =>
+    b.addEventListener("click", () =>
+      abrirGaleria(slug, d, b.dataset.galeria).catch(erroAviso)));
   // detalhe do treino: aberto por qualquer papel, a rota de leitura já é viewer
   $("painelModelo").querySelectorAll("[data-detalhe]").forEach((b) =>
     b.addEventListener("click", () => {
@@ -466,7 +473,8 @@ function gruposAval(versoes) {
         const m = a.metrics || {};
         const pre = m.pre_ms || 0, inf = m.inf_ms || 0, pos = m.pos_ms || 0;
         return { rotulo: rotuloAval(a), map: m["mAP50-95"], map50: m["mAP50"],
-                 pre, inf, pos, total: pre + inf + pos };
+                 pre, inf, pos, total: pre + inf + pos, amb: a.environment || {},
+                 id: a.id, galeria: a.tem_galeria };
       }),
     }));
   }
@@ -485,8 +493,8 @@ function seccaoComparacoes(versoes) {
     ${grupos.map((g) => `<div class="cmp-grupo">
       <span class="cmp-titulo">${esc(g.titulo)}</span>
       <table class="tab-versoes cmp-tab"><thead><tr><th>artefato</th>
-        <th>mAP50-95</th><th>mAP50</th><th>pré</th><th>inf</th><th>pós</th>
-        <th>total</th></tr></thead>
+        <th>máquina</th><th>mAP50-95</th><th>mAP50</th><th>pré</th><th>inf</th><th>pós</th>
+        <th>total</th><th></th></tr></thead>
         <tbody>${g.rows.map(linhaAval).join("")}</tbody></table>
       <canvas class="cmp-chart" id="${g.id}" width="640"
         height="${Math.max(60, g.rows.length * 34 + 16)}"></canvas>
@@ -496,10 +504,31 @@ function seccaoComparacoes(versoes) {
 function linhaAval(r) {
   const ms = (x) => x ? x.toFixed(1) : "—";
   const mp = (x) => x != null ? Number(x).toFixed(3) : "—";
-  return `<tr><td class="mono">${esc(r.rotulo)}</td><td class="mono">${mp(r.map)}</td>
+  return `<tr><td class="mono">${esc(r.rotulo)}</td><td class="amb-cel">${celulaAmbiente(r.amb)}</td>
+    <td class="mono">${mp(r.map)}</td>
     <td class="mono">${mp(r.map50)}</td><td class="mono">${ms(r.pre)}</td>
     <td class="mono">${ms(r.inf)}</td><td class="mono">${ms(r.pos)}</td>
-    <td class="mono">${r.total ? r.total.toFixed(1) + "ms" : "—"}</td></tr>`;
+    <td class="mono">${r.total ? r.total.toFixed(1) + "ms" : "—"}</td>
+    <td>${r.galeria ? `<button class="discreto" data-galeria="${esc(r.id)}"
+      title="ver as imagens do benchmark com a predição">imagens</button>` : ""}</td></tr>`;
+}
+
+/** Onde a avaliação foi medida: sem isso dois tempos de inferência lado a lado
+ *  parecem comparáveis mesmo vindo de GPUs diferentes. Avaliação de antes da
+ *  migration 019 não tem ambiente e mostra só o traço. */
+function celulaAmbiente(amb) {
+  if (!amb.device) return "—";
+  const partes = [
+    amb.gpu,
+    amb.driver && `driver ${amb.driver}`,
+    amb.cuda && `CUDA ${amb.cuda}`,
+    amb.jetpack && `JetPack ${amb.jetpack}`,
+    amb.runtime && [amb.runtime, amb.runtime === "tensorrt" ? amb.trt
+      : amb.runtime === "pytorch" ? amb.torch : amb[amb.runtime]].filter(Boolean).join(" "),
+    amb.agent_version && `agente ${amb.agent_version}`,
+  ].filter(Boolean);
+  return `<span class="mono">${esc(amb.device)}</span>
+    ${partes.length ? `<span class="amb-medicao">${esc(partes.join(" · "))}</span>` : ""}`;
 }
 
 function desenharComparacoes(versoes) {
@@ -531,4 +560,146 @@ function desenharBarras(cv, rows) {
     cx.fillStyle = css("--texto") || "#e6edf3"; cx.textAlign = "left";
     cx.fillText(r.total ? r.total.toFixed(1) + "ms" : "sem tempo", x + 6, y + h / 2 + 4);
   });
+}
+
+// ---- galeria da avaliação: onde o modelo erra, imagem a imagem ----
+
+const FILTROS_GALERIA = [
+  ["erros", "Com erro", (r) => r.com_erro],
+  ["fp", "Falso positivo", (r) => r.fp],
+  ["fn", "Falso negativo", (r) => r.fn],
+  ["troca", "Classe trocada", (r) => r.swapped],
+  ["todas", "Todas", (r) => r.imagens],
+];
+// `geracao` descarta resposta velha: trocar de filtro duas vezes seguidas, ou
+// de modelo com a galeria aberta, não pode deixar a resposta mais lenta
+// desenhar por cima da mais nova.
+const galeria = { slug: null, ev: null, filtro: "erros", pagina: 1, comparar: "",
+                  geracao: 0 };
+
+/** Avaliações do modelo, com rótulo legível e o benchmark de cada uma: a
+ *  comparação só oferece as do mesmo benchmark, que é o que a API aceita. */
+function avaliacoesDoModelo(d) {
+  return d.versoes.flatMap((v) => (v.avaliacoes || []).map((a) => ({
+    id: a.id, galeria: a.tem_galeria,
+    bench: `${a.benchmark}@v${a.benchmark_version}`,
+    rotulo: `v${v.version} · ${rotuloAval(a)}`,
+  })));
+}
+
+async function abrirGaleria(slug, d, ev) {
+  Object.assign(galeria, { slug, d, ev, filtro: "erros", pagina: 1, comparar: "" });
+  $("cmpAvaliacoes").hidden = true;
+  $("galeriaAval").hidden = false;
+  await desenharGaleria();
+}
+
+function fecharGaleria() {
+  $("galeriaAval").hidden = true;
+  $("cmpAvaliacoes").hidden = false;
+}
+
+async function desenharGaleria() {
+  const { slug, d, ev, filtro, pagina, comparar } = galeria;
+  const minha = ++galeria.geracao, projeto = estado.projeto;
+  const todas = avaliacoesDoModelo(d);
+  const esta = todas.find((a) => a.id === ev);
+  const outras = todas.filter((a) => a.id !== ev && a.galeria && a.bench === esta.bench);
+  const q = new URLSearchParams({ filtro, pagina });
+  if (comparar) q.set("comparar", comparar);
+  const g = await api(`/projects/${estado.projeto}/models/${encodeURIComponent(slug)}` +
+                      `/evaluations/${ev}/gallery?${q}`);
+  // o slug do modelo se repete entre projetos: confere os dois
+  if (minha !== galeria.geracao || estado.projeto !== projeto || modelos.atual !== slug
+      || !$("galeriaAval")) return;
+  const outra = outras.find((a) => a.id === comparar);
+  const filtros = [...FILTROS_GALERIA.map(([k, nome, n]) =>
+      `<button data-gfiltro="${k}" aria-current="${k === filtro}">${nome}
+        <span class="qtd">${num(n(g.resumo))}</span></button>`),
+    ...(comparar ? [`<button data-gfiltro="diferentes" aria-current="${filtro === "diferentes"}"
+        title="imagens em que as duas avaliações erraram diferente">Diferentes</button>`] : [])];
+  const paginas = Math.max(1, Math.ceil(g.total / g.por_pagina));
+  $("galeriaAval").innerHTML = `<section class="secao">
+    <header><button class="discreto" id="galVoltar">← avaliações</button>
+      <span class="rotulo">${esc(esta.rotulo)} · benchmark ${esc(esta.bench)}</span>
+      <span class="espaco"></span>
+      <span class="legenda"><i class="gal-l-gt"></i>gabarito
+        <i class="gal-l-pred"></i>predição</span></header>
+    <div class="gal-barra">
+      <div class="filtros">${filtros.join("")}</div>
+      <label class="gal-comparar">comparar com
+        <select id="galComparar"><option value="">—</option>
+          ${outras.map((a) => `<option value="${esc(a.id)}" ${a.id === comparar ? "selected" : ""}>
+            ${esc(a.rotulo)}</option>`).join("")}</select></label>
+    </div>
+    ${g.itens.length ? `<div class="gal-grade${comparar ? " gal-dupla" : ""}">
+      ${g.itens.map((it) => cartaoGaleria(it, g.classes, esta, outra)).join("")}</div>`
+      : `<div class="vazio"><p>Nenhuma imagem neste filtro.</p></div>`}
+    ${paginas > 1 ? `<div class="gal-paginas">
+      <button class="discreto" data-gpag="-1" ${pagina <= 1 ? "disabled" : ""}>‹</button>
+      <span>${pagina} / ${paginas}</span>
+      <button class="discreto" data-gpag="1" ${pagina >= paginas ? "disabled" : ""}>›</button>
+    </div>` : ""}</section>`;
+  const recarregar = () => desenharGaleria().catch(erroAviso);
+  $("galVoltar").addEventListener("click", fecharGaleria);
+  $("galeriaAval").querySelectorAll("[data-gfiltro]").forEach((b) =>
+    b.addEventListener("click", () => {
+      Object.assign(galeria, { filtro: b.dataset.gfiltro, pagina: 1 });
+      recarregar();
+    }));
+  $("galeriaAval").querySelectorAll("[data-gpag]").forEach((b) =>
+    b.addEventListener("click", () => {
+      galeria.pagina += Number(b.dataset.gpag);
+      recarregar();
+    }));
+  $("galComparar").addEventListener("change", (e) => {
+    const filtroSemPar = !e.target.value && galeria.filtro === "diferentes";
+    Object.assign(galeria, { comparar: e.target.value, pagina: 1,
+                             filtro: filtroSemPar ? "erros" : galeria.filtro });
+    recarregar();
+  });
+}
+
+function contagemErros(e) {
+  const partes = [e.fp && `${e.fp} FP`, e.fn && `${e.fn} FN`,
+                  e.swapped && `${e.swapped} trocada${e.swapped > 1 ? "s" : ""}`];
+  return partes.filter(Boolean).join(" · ") || "sem erro";
+}
+
+function cartaoGaleria(it, classes, esta, outra) {
+  const quadro = (pred, rotulo, erros) => `<figure class="gal-quadro">
+      ${imagemComCaixas(it, pred, classes)}
+      <figcaption><span class="mono">${esc(rotulo)}</span>
+        <span class="${erros.fp + erros.fn + erros.swapped ? "gal-erro" : "gal-ok"}">
+          ${esc(contagemErros(erros))}</span></figcaption></figure>`;
+  return `<div class="gal-cartao">
+    ${quadro(it.pred, esta.rotulo, it)}
+    ${outra ? (it.outra ? quadro(it.outra.pred, outra.rotulo, it.outra)
+      : `<figure class="gal-quadro"><div class="gal-vazio">sem predição desta imagem</div>
+          <figcaption class="mono">${esc(outra.rotulo)}</figcaption></figure>`) : ""}
+  </div>`;
+}
+
+/** Imagem com o gabarito (tracejado) e a predição por cima. As coordenadas são
+ *  normalizadas, então o SVG em `viewBox 0 0 1 1` esticado sobre a imagem
+ *  acerta qualquer tamanho; o rótulo vai em HTML, porque texto dentro desse
+ *  SVG sai deformado. */
+function imagemComCaixas(it, pred, classes) {
+  const nome = (c) => classes[c] ?? `classe ${c}`;
+  const ret = (cx, cy, w, h) =>
+    `x="${cx - w / 2}" y="${cy - h / 2}" width="${w}" height="${h}"`;
+  const gt = it.gt.map((g) => g.length === 5
+    ? `<rect class="gal-gt" ${ret(g[1], g[2], g[3], g[4])}><title>${esc(nome(g[0]))}</title></rect>`
+    : `<polygon class="gal-gt" points="${g.slice(1).join(" ")}"><title>${esc(nome(g[0]))}</title></polygon>`);
+  const pr = pred.map((p) => `<rect class="gal-pred" ${ret(p[2], p[3], p[4], p[5])}>
+      <title>${esc(nome(p[0]))} ${p[1].toFixed(2)}</title></rect>`);
+  // caixa colada no topo leva o rótulo para dentro, senão ele sai cortado
+  const rotulos = pred.map((p) => `<span class="gal-rot${p[3] - p[5] / 2 < 0.06 ? " dentro" : ""}"
+      style="left:${(p[2] - p[4] / 2) * 100}%;top:${(p[3] - p[5] / 2) * 100}%">
+      ${esc(nome(p[0]))} ${p[1].toFixed(2)}</span>`);
+  const proporcao = it.w && it.h ? `aspect-ratio:${it.w}/${it.h}` : "aspect-ratio:4/3";
+  return `<div class="gal-img" style="${proporcao}">
+    ${it.url ? `<img src="${esc(it.url)}" alt="" loading="lazy">` : ""}
+    <svg viewBox="0 0 1 1" preserveAspectRatio="none">${gt.join("")}${pr.join("")}</svg>
+    ${rotulos.join("")}</div>`;
 }

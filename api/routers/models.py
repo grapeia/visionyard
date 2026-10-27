@@ -11,7 +11,7 @@ from datetime import datetime
 from typing import Annotated, Any, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Path, Request, status
+from fastapi import APIRouter, Depends, Path, Query, Request, status
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field, model_validator
 
@@ -57,13 +57,19 @@ class Build(BaseModel):
 class Avaliacao(BaseModel):
     """A mais recente por (versão, benchmark, artefato) — é o que permite
     comparar pt × onnx × engine × DLA lado a lado."""
+    id: UUID
     version: int
     benchmark: str
     benchmark_version: int
     format: str
     target: dict[str, Any] | None
     metrics: dict[str, Any] | None
+    # onde foi medida (device, GPU, driver, runtime, versão do agente) — `{}`
+    # nas avaliações de antes da 019
+    environment: dict[str, Any]
     created_at: datetime
+    # o agente gravou a predição por imagem (agente 0.3+): há galeria a abrir
+    tem_galeria: bool
 
 
 class VersaoDoModelo(BaseModel):
@@ -106,6 +112,46 @@ class DetalheDoModelo(BaseModel):
     created_at: datetime
     versoes: list[VersaoDoModelo]
     aliases: list[ApelidoDoModelo]
+
+
+class PredicaoDaOutra(BaseModel):
+    pred: list[list[float]]
+    fp: int
+    fn: int
+    swapped: int
+
+
+class ImagemDaGaleria(BaseModel):
+    """`gt` são linhas do manifesto (`[cls, cx, cy, w, h]`, ou polígono em
+    segmentação) e `pred` é `[cls, conf, cx, cy, w, h]`, tudo em coordenadas
+    normalizadas do quadro cheio."""
+    sample_id: UUID
+    url: str | None
+    w: int | None
+    h: int | None
+    gt: list[list[float]]
+    pred: list[list[float]]
+    fp: int
+    fn: int
+    swapped: int
+    outra: PredicaoDaOutra | None
+
+
+class ResumoDaGaleria(BaseModel):
+    imagens: int
+    com_erro: int
+    fp: int
+    fn: int
+    swapped: int
+
+
+class GaleriaDaAvaliacao(BaseModel):
+    pagina: int
+    por_pagina: int
+    total: int
+    resumo: ResumoDaGaleria
+    classes: list[str]
+    itens: list[ImagemDaGaleria]
 
 
 class JobEnfileirado(BaseModel):
@@ -156,6 +202,21 @@ async def list_models(project_slug: Annotated[str, Path()]):
 async def get_model(project_slug: Annotated[str, Path()],
                     model_slug: Annotated[str, Path()]):
     return await svc.detalhe(project_slug, model_slug)
+
+
+@router.get("/projects/{project_slug}/models/{model_slug}/evaluations/{evaluation_id}/gallery",
+            response_model=GaleriaDaAvaliacao,
+            dependencies=[Depends(require_role("viewer"))])
+async def galeria(project_slug: Annotated[str, Path()],
+                  model_slug: Annotated[str, Path()],
+                  evaluation_id: Annotated[UUID, Path()],
+                  filtro: Literal["erros", "fp", "fn", "troca", "todas",
+                                  "diferentes"] = "erros",
+                  pagina: Annotated[int, Query(ge=1)] = 1,
+                  comparar: UUID | None = None):
+    return await svc.galeria(
+        project_slug, model_slug, str(evaluation_id), filtro=filtro,
+        pagina=pagina, comparar=str(comparar) if comparar else None)
 
 
 @router.get("/projects/{project_slug}/models/{model_slug}/versions/{version}/download",

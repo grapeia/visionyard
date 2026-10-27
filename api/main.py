@@ -6,11 +6,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -70,6 +73,28 @@ app = FastAPI(title="visionyard — Control API", version="0.1.0",
 # Fora de qualquer rota e antes dos routers: vale para o estático e para o
 # caminho que nenhum handler previu, que é justamente o que se quer ver.
 app.middleware("http")(logs.correlacionar)
+
+
+def _finito(v: Any) -> Any:
+    """NaN e infinito viram texto; o resto passa como está."""
+    if isinstance(v, float) and not math.isfinite(v):
+        return str(v)
+    if isinstance(v, dict):
+        return {k: _finito(x) for k, x in v.items()}
+    if isinstance(v, list | tuple):
+        return [_finito(x) for x in v]
+    return v
+
+
+@app.exception_handler(RequestValidationError)
+async def entrada_invalida(_: Request, exc: RequestValidationError) -> JSONResponse:
+    """O 422 de sempre, mas que sobrevive a um NaN na entrada.
+
+    O handler padrão devolve no corpo o valor recusado, e o JSON da resposta
+    não admite NaN: a recusa certa virava 500 na rede de `logs.correlacionar`
+    — em qualquer rota com campo `float`, não só na de predições."""
+    return JSONResponse(status_code=422,
+                        content={"detail": _finito(jsonable_encoder(exc.errors()))})
 
 app.include_router(agents_router.router, prefix="/v1")
 app.include_router(auth_router.router, prefix="/v1")

@@ -742,6 +742,47 @@ dialog .acoes { display: flex; gap: 8px; justify-content: flex-end; margin-top: 
 .tab-versoes button.versao-abre[aria-expanded="true"]::before { content: "▾ "; }
 .tab-versoes tbody tr.versao-detalhe:hover { background: none; }
 .tab-versoes tr.versao-detalhe td { border-top: none; padding-top: 0; }
+/* galeria da avaliação: gabarito verde tracejado, predição laranja */
+.gal-barra { display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: center;
+  margin: 10px 0 14px; }
+.gal-comparar { display: flex; gap: 8px; align-items: center;
+  font: 12px var(--mono); color: var(--texto-fraco); }
+.gal-grade { display: grid; gap: 14px;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); }
+.gal-grade.gal-dupla { grid-template-columns: repeat(auto-fill, minmax(420px, 1fr)); }
+.gal-cartao { display: flex; gap: 8px; }
+.gal-quadro { flex: 1; min-width: 0; margin: 0; }
+.gal-quadro figcaption { display: flex; justify-content: space-between; gap: 8px;
+  margin-top: 4px; font: 11px/1.3 var(--mono); color: var(--texto-fraco); }
+.gal-img { position: relative; width: 100%; background: var(--aco-800);
+  border-radius: var(--r); overflow: hidden; }
+.gal-img img { display: block; width: 100%; height: 100%; object-fit: fill; }
+.gal-img svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+.gal-gt { fill: none; stroke: var(--selo); stroke-width: 2px;
+  stroke-dasharray: 5 3; vector-effect: non-scaling-stroke; }
+.gal-pred { fill: none; stroke: var(--acento); stroke-width: 2px;
+  vector-effect: non-scaling-stroke; }
+.gal-rot { position: absolute; transform: translateY(-100%); padding: 1px 4px;
+  background: var(--acento); color: #17110a; font: 600 10px/1.3 var(--mono);
+  white-space: nowrap; pointer-events: none; }
+.gal-rot.dentro { transform: none; }
+.gal-dupla .gal-cartao { padding: 8px; border: 1px solid var(--trilho);
+  border-radius: var(--r); }
+.gal-vazio { display: grid; place-items: center; aspect-ratio: 4/3;
+  background: var(--aco-800); border-radius: var(--r);
+  font: 11px var(--mono); color: var(--texto-tenue); }
+.gal-erro { color: var(--alerta); }
+.gal-ok { color: var(--selo); }
+.gal-paginas { display: flex; gap: 10px; align-items: center; justify-content: center;
+  margin-top: 14px; font: 12px var(--mono); color: var(--texto-fraco); }
+.legenda .gal-l-gt { border-top: 2px dashed var(--selo); height: 0; background: none; }
+.legenda .gal-l-pred { background: var(--acento); margin-left: 10px; }
+@media (max-width: 520px) {
+  .gal-grade.gal-dupla { grid-template-columns: 1fr; }
+}
+.cmp-tab .amb-cel { min-width: 240px; }
+.amb-medicao { display: block; margin-top: 2px; font: 11px/1.3 var(--mono);
+  color: var(--texto-tenue); }
 .treino-params { display: flex; flex-wrap: wrap; gap: 8px 24px; margin: 0;
   font: 12px/1.4 var(--mono); }
 .treino-params dt { color: var(--texto-tenue); font-size: 10px;

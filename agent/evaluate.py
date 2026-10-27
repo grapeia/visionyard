@@ -7,13 +7,19 @@ Como o benchmark nunca entra em treino, o número é comparável entre versões:
 """
 from __future__ import annotations
 
+import json
 import math
 from pathlib import Path
 
 from contracts import jobs
 
+from .ambiente import ambiente
 from .client import Client
-from .materialize import materializar, roi_tupla
+from .galeria import CONF_MIN, classificar, rotulo_para_quadro_cheio
+from .materialize import _reprojetar_boxes, _reprojetar_polys, materializar, roi_tupla
+
+# predições por POST: o mesmo tamanho de lote do pré-tag
+LOTE = 200
 
 
 def _finita(v) -> float | None:
@@ -89,5 +95,63 @@ def executar(cli: Client, job: dict, work_dir: Path) -> None:
     log("mAP50-95={} | pré={} inf={} pós={} ms".format(
         metrics.get("mAP50-95"), metrics.get("pre_ms"),
         metrics.get("inf_ms"), metrics.get("pos_ms")))
-    cli.evaluation(job_id, metrics)
+    cli.evaluation(job_id, metrics, environment=ambiente(artefato))
+    # A galeria é complemento: o número já está gravado, e falhar aqui não
+    # pode transformar uma medição concluída em job falho.
+    try:
+        n = publicar_predicoes(cli, job_id, modelo, raiz / "ds" / "images" / "val",
+                               items, imgsz, roi)
+        log(f"galeria: {n} imagens com predição gravada")
+    except Exception as e:
+        log(f"galeria não gravada: {e}", "warn")
     cli.finish(job_id, "succeeded", result={"metrics": metrics})
+
+
+def _arredondar(rotulo: list) -> list:
+    return [rotulo[0]] + [round(v, 5) for v in rotulo[1:]]
+
+
+def publicar_predicoes(cli: Client, job_id: str, modelo, pasta: Path,
+                       items: Path, imgsz: int, roi: tuple | None) -> int:
+    """Prevê cada imagem do benchmark, casa com o gabarito e envia em lotes.
+
+    Com ROI, a comparação acontece no espaço do recorte, contra o gabarito
+    recortado pelas MESMAS funções que o `materializar` usou: é contra ele que
+    o `val` mediu. Objeto fora do recorte não existe para a avaliação, e o que
+    cruza a borda conta só a parte de dentro. Depois de comparar, o gabarito e
+    a predição voltam ao quadro cheio, que é onde a tela desenha."""
+    gabarito: dict = {}
+    with open(items) as f:
+        for linha in f:
+            if linha.strip():
+                it = json.loads(linha)
+                polys = it.get("polys")
+                rotulos = polys if polys is not None else it.get("boxes") or []
+                if roi is not None:
+                    rotulos = (_reprojetar_polys(rotulos, roi) if polys is not None
+                               else _reprojetar_boxes(rotulos, roi))
+                gabarito[it["md5"]] = rotulos
+    lote: list = []
+    enviadas = 0
+    for res in modelo.predict(str(pasta), imgsz=imgsz, conf=CONF_MIN,
+                              stream=True, verbose=False):
+        md5 = Path(res.path).stem
+        pred = []
+        # por índice, e não zip(strict=): o agente roda em Python 3.8
+        cls, conf = res.boxes.cls.tolist(), res.boxes.conf.tolist()
+        xywhn = res.boxes.xywhn.tolist()
+        for i in range(len(cls)):
+            pred.append([int(cls[i]), float(conf[i]), *xywhn[i]])
+        gt = gabarito.get(md5, [])
+        erros = classificar(gt, pred)
+        tela_gt = [_arredondar(rotulo_para_quadro_cheio(g, roi)) for g in gt]
+        tela_pred = [[p[0], round(p[1], 4),
+                      *_arredondar(rotulo_para_quadro_cheio([p[0], *p[2:]], roi))[1:]]
+                     for p in pred]
+        lote.append({"md5": md5, "gt": tela_gt, "pred": tela_pred, **erros})
+        if len(lote) >= LOTE:
+            enviadas += cli.evaluation_predictions(job_id, lote)["gravadas"]
+            lote = []
+    if lote:
+        enviadas += cli.evaluation_predictions(job_id, lote)["gravadas"]
+    return enviadas

@@ -122,7 +122,9 @@ async def _detalhe(conn: db.Conn, project_slug: str, model_slug: str) -> dict:
         "                    COALESCE(mb.format,'pt'), ev.model_build_id)"
         "       mv.version, d.slug AS benchmark, dv.version AS benchmark_version,"
         "       COALESCE(mb.format,'pt') AS format, mb.target, ev.metrics,"
-        "       ev.created_at"
+        "       ev.environment, ev.created_at, ev.id,"
+        "       EXISTS (SELECT 1 FROM evaluation_prediction ep"
+        "                WHERE ep.evaluation_id = ev.id) AS tem_galeria"
         "  FROM evaluation ev JOIN model_version mv ON mv.id = ev.model_version_id"
         "  JOIN dataset_version dv ON dv.id = ev.dataset_version_id"
         "  JOIN dataset d ON d.id = dv.dataset_id"
@@ -133,6 +135,111 @@ async def _detalhe(conn: db.Conn, project_slug: str, model_slug: str) -> dict:
     for v in versoes:
         v["avaliacoes"] = [a for a in avals if a["version"] == v["version"]]
     return {**m, "versoes": versoes, "aliases": aliases}
+
+
+# Galeria da avaliação. O filtro é escolha numa lista fechada, e cada nome
+# casa com um trecho de SQL fixo: nada do que o usuário manda entra no texto.
+FILTROS_GALERIA = {
+    "erros": "ep.fp + ep.fn + ep.swapped > 0",
+    "fp": "ep.fp > 0",
+    "fn": "ep.fn > 0",
+    "troca": "ep.swapped > 0",
+    "todas": "true",
+    # só com `comparar`: as imagens em que as duas avaliações erraram diferente
+    "diferentes": "(ep.fp, ep.fn, ep.swapped)"
+                  " IS DISTINCT FROM (o.fp, o.fn, o.swapped)",
+}
+GALERIA_POR_PAGINA = 24
+GALERIA_URL_MIN = 15
+
+
+async def _avaliacao_do_modelo(conn: db.Conn, model_id: str,
+                               evaluation_id: str) -> dict:
+    row = await db.fetch_one(
+        "SELECT ev.id, ev.dataset_version_id FROM evaluation ev"
+        "  JOIN model_version mv ON mv.id = ev.model_version_id"
+        " WHERE ev.id = %s AND mv.model_id = %s", (evaluation_id, model_id),
+        conn=conn)
+    if row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "avaliação não encontrada")
+    return row
+
+
+async def galeria(project_slug: str, model_slug: str, evaluation_id: str, *,
+                  filtro: str, pagina: int, comparar: str | None) -> dict:
+    """As imagens do benchmark com o gabarito e a predição de cada uma.
+
+    `comparar` é outra avaliação no MESMO benchmark, de qualquer modelo do
+    projeto: o que interessa é pôr dois modelos (ou dois formatos) diante da
+    mesma imagem. Benchmark igual é o que torna a comparação justa, e é por
+    ele que a outra avaliação é procurada — a versão do dataset é do projeto,
+    então isso também a confina ao projeto."""
+    if filtro == "diferentes" and comparar is None:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            "o filtro 'diferentes' precisa de uma avaliação "
+                            "para comparar")
+    cond = FILTROS_GALERIA[filtro]
+    async with db.connection() as conn:
+        m = await buscar_modelo(conn, project_slug, model_slug)
+        ev = await _avaliacao_do_modelo(conn, m["id"], evaluation_id)
+        if comparar is not None and await db.fetch_one(
+                "SELECT 1 FROM evaluation WHERE id = %s"
+                "   AND dataset_version_id = %s",
+                (comparar, ev["dataset_version_id"]), conn=conn) is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND,
+                                "não há avaliação para comparar neste benchmark")
+        classes = (await db.fetch_row(
+            "SELECT ls.classes FROM dataset_version dv"
+            "  JOIN label_schema ls ON ls.id = dv.schema_id WHERE dv.id = %s",
+            (ev["dataset_version_id"],), conn=conn))["classes"]
+        resumo = await db.fetch_row(
+            "SELECT count(*) AS imagens,"
+            "       count(*) FILTER (WHERE fp + fn + swapped > 0) AS com_erro,"
+            "       COALESCE(sum(fp), 0)::int AS fp,"
+            "       COALESCE(sum(fn), 0)::int AS fn,"
+            "       COALESCE(sum(swapped), 0)::int AS swapped"
+            "  FROM evaluation_prediction WHERE evaluation_id = %s",
+            (evaluation_id,), conn=conn)
+        params = {"ev": evaluation_id, "outra": comparar,
+                  "lim": GALERIA_POR_PAGINA,
+                  "off": (pagina - 1) * GALERIA_POR_PAGINA}
+        # o pior primeiro: quem abre a galeria veio procurar onde o modelo erra
+        linhas = await db.fetch_all(
+            "SELECT ep.sample_id, s.uri, s.width AS w, s.height AS h, ep.gt,"
+            "       ep.pred, ep.fp, ep.fn, ep.swapped, o.pred AS o_pred,"
+            "       o.fp AS o_fp, o.fn AS o_fn, o.swapped AS o_swapped,"
+            "       count(*) OVER () AS total"
+            "  FROM evaluation_prediction ep JOIN sample s ON s.id = ep.sample_id"
+            "  LEFT JOIN evaluation_prediction o"
+            "         ON o.evaluation_id = %(outra)s AND o.sample_id = ep.sample_id"
+            f" WHERE ep.evaluation_id = %(ev)s AND {cond}"
+            " ORDER BY ep.fp + ep.fn + ep.swapped DESC, ep.sample_id"
+            " LIMIT %(lim)s OFFSET %(off)s", params, conn=conn)
+        # Página além do fim não tem de onde tirar a janela, e "0 imagens"
+        # esconderia que basta voltar uma página (o mesmo de samples.listar).
+        total = linhas[0]["total"] if linhas else 0
+        if not linhas and pagina > 1:
+            total = (await db.fetch_row(
+                "SELECT count(*) AS n"
+                "  FROM evaluation_prediction ep LEFT JOIN evaluation_prediction o"
+                "         ON o.evaluation_id = %(outra)s"
+                "        AND o.sample_id = ep.sample_id"
+                f" WHERE ep.evaluation_id = %(ev)s AND {cond}", params,
+                conn=conn))["n"]
+    # Assinar fala com o GCS: com a conexão já devolvida (ver samples.listar).
+    assinadas = await run_in_threadpool(
+        storage.assinar, [r["uri"] for r in linhas], GALERIA_URL_MIN)
+    itens = [{
+        "sample_id": r["sample_id"], "url": assinadas.get(r["uri"]),
+        "w": r["w"], "h": r["h"], "gt": r["gt"], "pred": r["pred"],
+        "fp": r["fp"], "fn": r["fn"], "swapped": r["swapped"],
+        "outra": None if r["o_pred"] is None else {
+            "pred": r["o_pred"], "fp": r["o_fp"], "fn": r["o_fn"],
+            "swapped": r["o_swapped"]},
+    } for r in linhas]
+    return {"pagina": pagina, "por_pagina": GALERIA_POR_PAGINA, "total": total,
+            "resumo": resumo, "classes": [c["name"] for c in classes],
+            "itens": itens}
 
 
 async def url_do_peso(project_slug: str, model_slug: str, version: int,

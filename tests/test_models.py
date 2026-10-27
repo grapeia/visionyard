@@ -9,12 +9,16 @@ from .test_training import _criar_run, _device, _h, _publicar, _versao_congelada
 pytestmark = pytest.mark.anyio
 
 
-async def _produzir_modelo(admin, client, tmp_path) -> None:
+async def _produzir_modelo(admin, client, tmp_path,
+                           agent_version: str | None = None) -> None:
     """Roda o protocolo do agente até registrar detector v1."""
     await _versao_congelada(admin, tmp_path)
     await _criar_run(admin)
     dev = await _device(admin, {"train": True})
     tok = dev["token"]
+    if agent_version:
+        await client.post("/v1/agent/register", json={
+            "capabilities": {}, "agent_version": agent_version}, headers=_h(tok))
     job = (await client.post("/v1/agent/claim", headers=_h(tok))).json()["job"]
     jid = job["id"]
     await client.post(f"/v1/agent/jobs/{jid}/heartbeat",
@@ -55,6 +59,12 @@ async def test_viewer_le_os_parametros_de_treino_da_versao(admin, client, tmp_pa
     assert v["params"]["epochs"] == 3
     assert v["base_model"] == "yolo11n.pt"
     assert v["duration_s"] is not None
+
+
+async def test_treino_guarda_a_versao_do_agente_que_o_rodou(admin, client, tmp_path):
+    await _produzir_modelo(admin, client, tmp_path, agent_version="0.3.0+abc1234")
+    d = (await admin.get(f"/v1/projects/{PROJ['slug']}/models/detector")).json()
+    assert d["versoes"][0]["code_version"] == "0.3.0+abc1234"
 
 
 async def test_promover_para_champion(admin, client, tmp_path):

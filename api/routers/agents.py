@@ -19,7 +19,7 @@ from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Path
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, Discriminator, Field, Tag
+from pydantic import BaseModel, ConfigDict, Discriminator, Field, Tag
 
 from ..deps import CurrentDevice
 from ..services import agents as svc
@@ -39,7 +39,7 @@ class RegisterIn(BaseModel):
 
 @router.post("/register")
 async def register(body: RegisterIn, dev: CurrentDevice):
-    await svc.registrar_presenca(dev.id, body.capabilities)
+    await svc.registrar_presenca(dev.id, body.capabilities, body.agent_version)
     return {"device_id": dev.id, "slug": dev.slug}
 
 
@@ -270,6 +270,8 @@ async def registrar_build(body: BuildIn, job_id: Annotated[str, Path()],
 class EvaluationIn(BaseModel):
     metrics: dict = Field(default_factory=dict)
     artifacts_uri: str | None = None
+    # onde mediu (GPU, driver, runtime…); o agente 0.2 não manda
+    environment: dict | None = None
 
 
 @router.post("/jobs/{job_id}/evaluation")
@@ -277,7 +279,36 @@ async def registrar_avaliacao(body: EvaluationIn, job_id: Annotated[str, Path()]
                               dev: CurrentDevice):
     """Registra a métrica do modelo naquele benchmark. Imutável."""
     return await svc.registrar_avaliacao(
-        job_id, dev.id, metrics=body.metrics, artifacts_uri=body.artifacts_uri)
+        job_id, dev.id, metrics=body.metrics, artifacts_uri=body.artifacts_uri,
+        ambiente=body.environment)
+
+
+class PredicaoDaImagem(BaseModel):
+    # NaN e infinito passariam por `float` e estourariam no `jsonb`, como 500
+    model_config = ConfigDict(allow_inf_nan=False)
+
+    md5: str = Field(pattern=r"^[0-9a-f]{32}$")
+    # linha do manifesto: [cls, cx, cy, w, h] ou [cls, x1, y1, x2, y2, ...]
+    gt: list[Annotated[list[float], Field(min_length=5)]]
+    # [cls, conf, cx, cy, w, h]
+    pred: list[Annotated[list[float], Field(min_length=6, max_length=6)]]
+    fp: int = Field(ge=0)
+    fn: int = Field(ge=0)
+    swapped: int = Field(ge=0)
+
+
+class PredicoesIn(BaseModel):
+    predicoes: list[PredicaoDaImagem] = Field(max_length=500)
+
+
+@router.post("/jobs/{job_id}/evaluation/predictions")
+async def gravar_predicoes_avaliacao(body: PredicoesIn,
+                                     job_id: Annotated[str, Path()],
+                                     dev: CurrentDevice):
+    """O que o modelo previu em cada imagem do benchmark, em lotes."""
+    gravadas = await svc.gravar_predicoes_avaliacao(
+        job_id, dev.id, [pr.model_dump() for pr in body.predicoes])
+    return {"gravadas": gravadas}
 
 
 # --------------------------------------------------------------------------- #

@@ -14,10 +14,9 @@ import platform
 import time
 import traceback
 
+from .ambiente import versao
 from .client import ApiError, Client
 from .config import Config
-
-AGENT_VERSION = "0.2.0"
 
 
 def detectar_capacidades() -> dict:
@@ -107,7 +106,7 @@ def main() -> int:
     cfg = Config.from_env()
     cli = Client(cfg.api_url, cfg.token)
     caps = detectar_capacidades()
-    reg = cli.register(caps, AGENT_VERSION)
+    reg = cli.register(caps, versao())
     print(f"agente '{reg['slug']}' registrado em {cfg.api_url}; capacidades: {caps}")
 
     ultimo_hb = 0.0

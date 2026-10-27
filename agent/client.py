@@ -145,9 +145,15 @@ class Client:
                            "bytes": nbytes, "target": target, "bench": bench})
 
     def evaluation(self, job_id: str, metrics: dict,
-                   artifacts_uri: str | None = None) -> dict:
+                   artifacts_uri: str | None = None,
+                   environment: dict | None = None) -> dict:
         return self._post(f"/agent/jobs/{job_id}/evaluation",
-                          {"metrics": metrics, "artifacts_uri": artifacts_uri})
+                          {"metrics": metrics, "artifacts_uri": artifacts_uri,
+                           "environment": environment})
+
+    def evaluation_predictions(self, job_id: str, predicoes: list) -> dict:
+        return self._post(f"/agent/jobs/{job_id}/evaluation/predictions",
+                          {"predicoes": predicoes})
 
     def finish(self, job_id: str, status: str, error: str | None = None,
                result: dict | None = None) -> None:

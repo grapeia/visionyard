@@ -63,15 +63,18 @@ async def _device_do_token(conn: db.Conn, device_id: str) -> dict[str, Any]:
 # Presença
 # --------------------------------------------------------------------------- #
 
-async def registrar_presenca(device_id: str, capabilities: dict) -> None:
+async def registrar_presenca(device_id: str, capabilities: dict,
+                             agent_version: str | None) -> None:
     diag = {k: v for k, v in capabilities.items() if k in CAPS_DIAGNOSTICO}
     async with db.connection() as conn:
         await db.execute(
             "UPDATE device SET capabilities = capabilities || %s::jsonb,"
+            "  agent_version = %s,"
             "  status = CASE WHEN status = 'disabled' THEN status"
             "                ELSE 'idle' END,"
             "  last_heartbeat = now() WHERE id = %s",
-            (json.dumps(diag), device_id), conn=conn)
+            (json.dumps(diag), (agent_version or "")[:64] or None, device_id),
+            conn=conn)
 
 
 async def bater_ponto(device_id: str, status_agente: str) -> None:
@@ -683,22 +686,94 @@ async def registrar_build(job_id: str, device_id: str, *, formato: str, uri: str
 # Avaliação (medida contra uma versão de benchmark)
 # --------------------------------------------------------------------------- #
 
+# O que o agente pode dizer sobre onde mediu. Lista fechada pelo mesmo motivo
+# de `CAPS_DIAGNOSTICO`: o ambiente é lido por quem tem papel `viewer`, e o que
+# não está aqui não tem por que viajar até a tela.
+CHAVES_AMBIENTE = CAPS_DIAGNOSTICO | {"runtime", "python", "ultralytics",
+                                     "onnxruntime", "openvino",
+                                     "agent_version"}
+
+
+async def _ambiente_da_medicao(conn: db.Conn, device_id: str,
+                               relatado: dict | None) -> dict[str, Any]:
+    """Foto do ambiente para gravar junto da avaliação.
+
+    A base é o que a máquina declarou no registro — é tudo o que se sabe do
+    agente 0.2, que não relata ambiente —, e o relato do agente vence onde
+    existe, porque é do momento da medição. `device` é sempre o do token: quem
+    mediu não é algo que o agente declare."""
+    d = await db.fetch_one(
+        "SELECT slug, capabilities, agent_version FROM device WHERE id = %s",
+        (device_id,), conn=conn)
+    if d is None:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "device não existe mais")
+    amb: dict[str, Any] = {k: v for k, v in (d["capabilities"] or {}).items()
+                           if k in CAPS_DIAGNOSTICO}
+    if d["agent_version"]:
+        amb["agent_version"] = d["agent_version"]
+    for k, v in (relatado or {}).items():
+        if k in CHAVES_AMBIENTE and isinstance(v, str | int | float | bool):
+            amb[k] = v[:120] if isinstance(v, str) else v
+    amb["device"] = d["slug"]
+    return amb
+
+
 async def registrar_avaliacao(job_id: str, device_id: str, *, metrics: dict,
-                              artifacts_uri: str | None) -> dict:
+                              artifacts_uri: str | None,
+                              ambiente: dict | None) -> dict:
     """Registra a métrica do modelo naquele benchmark. Imutável — reavaliar cria
-    outra linha; a linhagem (qual versão, qual benchmark) fica gravada."""
+    outra linha; a linhagem (qual versão, qual benchmark) fica gravada, e o
+    ambiente também: tempo de inferência sem a máquina não se compara."""
     async with db.connection() as conn, conn.transaction():
         job, p = await job_com_payload(conn, job_id, device_id, jobs.Evaluate)
+        amb = await _ambiente_da_medicao(conn, device_id, ambiente)
         # model_build_id distingue os artefatos (pt vs engine vs DLA) na mesma
         # versão+benchmark — é o que a comparação usa.
         row = await db.fetch_row(
         "INSERT INTO evaluation (model_version_id, model_build_id,"
-        " dataset_version_id, job_id, metrics, artifacts_uri, created_by)"
-        " VALUES (%s,%s,%s,%s,%s::jsonb,%s,%s) RETURNING id",
+        " dataset_version_id, job_id, metrics, artifacts_uri, environment,"
+        " created_by)"
+        " VALUES (%s,%s,%s,%s,%s::jsonb,%s,%s::jsonb,%s) RETURNING id",
         (p.model_version_id, p.model_build_id, p.dataset_version_id, job_id,
-         json.dumps(metrics), artifacts_uri, job["created_by"]),
+         json.dumps(metrics), artifacts_uri, json.dumps(amb),
+         job["created_by"]),
         conn=conn)
     return {"evaluation_id": str(row["id"]), "metrics": metrics}
+
+
+async def gravar_predicoes_avaliacao(job_id: str, device_id: str,
+                                     predicoes: list[dict]) -> int:
+    """Grava o que o modelo previu em cada imagem do benchmark, para a galeria.
+
+    Vem depois de `registrar_avaliacao`, num lote por chamada; repetir um lote
+    (a rede pisca e o cliente refaz o POST) não duplica, porque a chave é
+    (avaliação, imagem). A imagem é identificada pelo md5 do manifesto e
+    resolvida DENTRO da versão do benchmark do job: md5 de fora dela não grava
+    nada, e é o que impede o agente de pendurar predição em imagem de outro
+    projeto."""
+    gravadas = 0
+    async with db.connection() as conn, conn.transaction():
+        _, p = await job_com_payload(conn, job_id, device_id, jobs.Evaluate)
+        ev = await db.fetch_one(
+            "SELECT id FROM evaluation WHERE job_id = %s"
+            " ORDER BY created_at DESC LIMIT 1", (job_id,), conn=conn)
+        if ev is None:
+            raise HTTPException(status.HTTP_409_CONFLICT,
+                                "registre a avaliação antes das predições")
+        for pr in predicoes:
+            cur = await conn.execute(
+                "INSERT INTO evaluation_prediction (evaluation_id, sample_id,"
+                " gt, pred, fp, fn, swapped)"
+                " SELECT %s, i.sample_id, %s::jsonb, %s::jsonb, %s, %s, %s"
+                "   FROM dataset_version_item i JOIN sample s ON s.id = i.sample_id"
+                "  WHERE i.dataset_version_id = %s AND s.md5 = decode(%s, 'hex')"
+                " ON CONFLICT (evaluation_id, sample_id) DO NOTHING"
+                " RETURNING sample_id",
+                (ev["id"], json.dumps(pr["gt"]), json.dumps(pr["pred"]),
+                 pr["fp"], pr["fn"], pr["swapped"], p.dataset_version_id,
+                 pr["md5"]))
+            gravadas += len(await cur.fetchall())
+    return gravadas
 
 
 # --------------------------------------------------------------------------- #
@@ -813,11 +888,14 @@ async def finalizar_job(job_id: str, device_id: str, *, status_final: str,
         # duração = tempo de EXECUÇÃO, não a espera na fila: job.started_at
         # é setado no 1º heartbeat (início real); training_run.started_at
         # nasce no enfileiramento. Usa o do job, caindo no do run se ausente.
+        # code_version: a versão do agente que rodou o treino, a que ele
+        # declarou no registro. Sem ela a reprodutibilidade fica incompleta.
         await conn.execute(
             "UPDATE training_run r SET status = %s, finished_at = now(),"
             "  duration_s = EXTRACT(EPOCH FROM (now() - COALESCE("
-            "     (SELECT started_at FROM job WHERE id = %s), r.started_at)))::int"
-            " WHERE r.job_id = %s", (run_status, job_id, job_id))
+            "     (SELECT started_at FROM job WHERE id = %s), r.started_at)))::int,"
+            "  code_version = (SELECT agent_version FROM device WHERE id = %s)"
+            " WHERE r.job_id = %s", (run_status, job_id, device_id, job_id))
         await conn.execute(
             "UPDATE device SET status = 'idle' WHERE id = %s"
             "  AND status = 'busy'", (device_id,))
