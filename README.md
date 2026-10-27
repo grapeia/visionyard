@@ -45,6 +45,28 @@ Duas invariantes sustentam o resto:
 A interface tem as abas Projeto, Datasets, Rotulagem, Treinamento, Modelos,
 Pool (máquinas e fila de tarefas) e Usuários.
 
+## Personalizar um treino
+
+Em **Treinamento → Novo treino**, épocas, tamanho e batch continuam no formulário.
+**Configurar hiperparâmetros…** abre um painel separado por grupos, com o preset
+**Usar configuração do dev** (300 épocas, 416 px, batch 80, patience 150, Adam e
+as transformações fornecidas). O preset é opcional: só vale após **Aplicar ao treino**.
+Confira batch e GPU local para a máquina escolhida; `device=0` significa a GPU 0
+nessa máquina, enquanto o campo Máquina escolhe o device do pool.
+
+O painel aceita colar JSON ou um dicionário Python literal (`True`, `False`, `None`),
+lista os campos não aplicados e permite baixar a configuração em JSON para reutilizar.
+Campos vazios mantêm os padrões da versão da Ultralytics instalada no agente.
+Dataset, modelo-base, nomes e diretórios de saída continuam controlados pelo fluxo
+normal. Opções de inferência, exportação e classificação não entram no treino de
+detecção/segmentação. As opções de máscaras aparecem só em projetos de segmentação.
+Os parâmetros escolhidos ficam no histórico do treino e nos detalhes da versão do modelo.
+
+Atualize também `agent/` e `contracts/` nas máquinas de treino antes de usar opções
+avançadas. Esses jobs usam payload v2: um agente antigo recusa com indicação de
+atualização, em vez de treinar ignorando a configuração. Treinos básicos e jobs já
+na fila continuam compatíveis com v1. Não é necessária migration.
+
 ## Subir (desenvolvimento)
 
 Requisitos: Python ≥ 3.10 e PostgreSQL ≥ 14.

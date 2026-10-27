@@ -4,11 +4,14 @@
  * A tela lê o stream incrementalmente (cursores de seq e época), então não relê
  * o log inteiro a cada atualização. */
 
+import { editarHiperparametros } from "./hiperparametros.js";
 import { atualizarDatasets } from "./datasets.js";
 import { $, pode, api, avisar, clamp01, comTravaDeEnvio, cor, css, erroAviso, esc, estado, num, post } from "./nucleo.js";
 
 const BASES = [["yolo11n", "YOLO11n — mais rápido"], ["yolo11s", "YOLO11s"],
                ["yolo11m", "YOLO11m — mais preciso"]];
+
+let parametrosAvancados = {};
 
 const treino = { atual: null, poll: null, seq: 0, epoca: -1,
                  eventos: [], series: {} };
@@ -75,6 +78,10 @@ async function abrirRun(runId) {
           ? "alvo " + esc(d.target_device) + " · aguardando liberar"
           : "aguardando máquina"}</span>
     </div>
+
+    <details class="secao"><summary>Parâmetros deste treino</summary>
+      <pre style="white-space:pre-wrap">${esc(JSON.stringify(d.params || {}, null, 2))}</pre>
+    </details>
 
     <section class="secao">
       <header><span class="rotulo">Métrica de validação</span>
@@ -276,6 +283,7 @@ $("formRun").addEventListener("submit", comTravaDeEnvio($("formRun"), async () =
       imgsz: Number($("runImg").value),
       batch: Number($("runBatch").value),
       device_slug: $("runMaquina").value || null,
+      advanced_params: parametrosAvancados,
     });
     $("dlgRun").close();
     avisar("Treino enfileirado.");
@@ -283,3 +291,30 @@ $("formRun").addEventListener("submit", comTravaDeEnvio($("formRun"), async () =
     await abrirRun(r.run_id);
   } catch (e) { avisar(e.message, true); }
 }));
+
+
+function resumoParametros() {
+  const n = Object.keys(parametrosAvancados).length;
+  $("runResumoParametros").textContent = n
+    ? `${n} parâmetros avançados definidos para este treino.`
+    : "Demais parâmetros: padrões da Ultralytics instalada na máquina.";
+}
+
+$("runHiperparametros").addEventListener("click", async () => {
+  const projeto = estado.projeto;
+  try {
+    await editarHiperparametros(projeto, { ...parametrosAvancados,
+      epochs: Number($("runEpocas").value), imgsz: Number($("runImg").value),
+      batch: Number($("runBatch").value),
+    }, (params) => {
+      if (estado.projeto !== projeto) return;
+      const { epochs = 100, imgsz = 640, batch = 16, ...avancados } = params;
+      $("runEpocas").value = epochs; $("runImg").value = imgsz;
+      $("runBatch").value = batch; parametrosAvancados = avancados;
+      resumoParametros();
+    });
+  } catch (e) { avisar(e.message, true); }
+});
+$("formRun").addEventListener("reset", () => {
+  parametrosAvancados = {}; resumoParametros();
+});

@@ -30,6 +30,7 @@ class RunIn(BaseModel):
     epochs: int = Field(default=100, ge=1, le=1000)
     imgsz: int = Field(default=640, ge=64, le=2048)
     batch: int = Field(default=16, ge=1, le=256)
+    advanced_params: dict[str, Any] = Field(default_factory=dict)
     # máquina desejada: vazio = próxima livre do pool; um slug = fixa nela
     # (o job espera essa máquina liberar, mesmo se estiver ocupada).
     device_slug: str | None = Field(default=None, max_length=64)
@@ -145,6 +146,7 @@ async def criar_run(body: RunIn, project_slug: Annotated[str, P()],
         version=body.version, experiment=body.experiment,
         model_slug=body.model_slug, base_model=body.base_model,
         params={"epochs": body.epochs, "imgsz": body.imgsz, "batch": body.batch},
+        advanced_params=body.advanced_params,
         device_slug=body.device_slug, ip=auth.client_ip(request))
 
 
@@ -199,3 +201,32 @@ async def cancelar_run(project_slug: Annotated[str, P()],
     próximo heartbeat."""
     return await svc.cancelar_run(project_slug, run_id, actor,
                                   ip=auth.client_ip(request))
+
+
+class OpcoesDeTreino(BaseModel):
+    fields: list[dict[str, Any]]
+    preset_dev: dict[str, Any]
+    defaults: dict[str, Any]
+
+
+class ConfiguracaoTexto(BaseModel):
+    text: str = Field(max_length=50000)
+
+
+class ConfiguracaoImportada(BaseModel):
+    params: dict[str, Any]
+    ignored: list[dict[str, str]]
+
+
+@router.get("/projects/{project_slug}/training-options", response_model=OpcoesDeTreino,
+            dependencies=[Depends(require_role("viewer"))])
+async def opcoes_de_treino(project_slug: Annotated[str, P()]):
+    return await svc.opcoes_de_treino(project_slug)
+
+
+@router.post("/projects/{project_slug}/training-options/parse",
+             response_model=ConfiguracaoImportada,
+             dependencies=[Depends(require_action("treino.runs.criar"))])
+async def importar_configuracao(project_slug: Annotated[str, P()],
+                               body: ConfiguracaoTexto):
+    return await svc.importar_configuracao(project_slug, body.text)

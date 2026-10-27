@@ -66,6 +66,7 @@ def executar(cli: Client, job: dict, work_dir: Path) -> None:
     cfg = {"data": conta["data_yaml"], "epochs": epochs,
            "imgsz": params.get("imgsz", 640),
            "batch": params.get("batch", 16),
+           "params": params,
            "base_model": p.base_model,
            "project": str(raiz / "runs")}
     raiz_repo = Path(__file__).resolve().parent.parent

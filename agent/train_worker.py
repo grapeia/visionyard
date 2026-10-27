@@ -21,6 +21,8 @@ import math
 import signal
 import sys
 
+from contracts.training import normalizar as normalizar_parametros
+
 # Colunas do Ultralytics → chaves normalizadas que a API guarda. Nomes estáveis
 # aqui blindam a tela de mudanças de nome entre versões do framework.
 KEYMAP = {
@@ -74,6 +76,17 @@ def normalizar(trainer) -> dict:
     return norm
 
 
+def argumentos_de_treino(cfg: dict) -> dict:
+    # O agente valida de novo: payload vindo de controlador novo não pode
+    # sobrescrever caminhos nem ser aceito parcialmente pela biblioteca.
+    params = cfg.get("params", {k: cfg[k] for k in ("epochs", "imgsz", "batch")
+                                if k in cfg})
+    return {"epochs": 100, "imgsz": 640, "batch": 16, **normalizar_parametros(params),
+            "data": cfg["data"], "project": cfg["project"], "name": "train",
+            "exist_ok": True, "save": True, "val": True,
+            "verbose": params.get("verbose", False)}
+
+
 def main() -> int:
     cfg = json.loads(sys.argv[1])
     from ultralytics import YOLO
@@ -94,10 +107,7 @@ def main() -> int:
     modelo = YOLO(cfg.get("base_model", "yolo11n.pt"))
     modelo.add_callback("on_train_epoch_start", parar_se_pedido)
     modelo.add_callback("on_fit_epoch_end", ao_fim_da_epoca)
-    modelo.train(data=cfg["data"], epochs=cfg.get("epochs", 100),
-                 imgsz=cfg.get("imgsz", 640), batch=cfg.get("batch", 16),
-                 project=cfg["project"], name="train", exist_ok=True,
-                 verbose=False)
+    modelo.train(**argumentos_de_treino(cfg))
     return 0
 
 

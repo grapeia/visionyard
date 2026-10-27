@@ -18,11 +18,13 @@ from uuid import UUID, uuid4
 from fastapi import HTTPException, status
 
 from contracts import jobs
+from contracts import training as hiperparametros
 
 from .. import db
 from ..audit import audit
 from ..auth import Principal
 from .jobs import TERMINAIS
+from .projects import projeto_ou_404
 
 # Bases YOLO aceitas — restringir evita que um typo vire download silencioso de
 # um peso qualquer no agente, e documenta o que a instalação suporta.
@@ -40,12 +42,20 @@ def slug_experimento(texto: str) -> str:
 async def criar_run(project_slug: str, actor: Principal, *, dataset_slug: str,
                     version: int, experiment: str, model_slug: str,
                     base_model: str, params: dict, device_slug: str | None,
-                    ip: str | None) -> dict:
+                    ip: str | None, advanced_params: dict | None = None) -> dict:
     if base_model not in BASES:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
                             f"base '{base_model}' não suportada "
                             f"({', '.join(sorted(BASES))})")
 
+    avancados = advanced_params or {}
+    if hiperparametros.BASICOS & avancados.keys():
+        raise HTTPException(422,
+                            "epochs, imgsz e batch devem ser preenchidos no formulário")
+    try:
+        params = hiperparametros.normalizar({**params, **avancados})
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from None
     exp_slug = slug_experimento(experiment)
     async with db.connection() as conn, conn.transaction():
         dv = await db.fetch_one(
@@ -73,6 +83,10 @@ async def criar_run(project_slug: str, actor: Principal, *, dataset_slug: str,
                 status.HTTP_422_UNPROCESSABLE_ENTITY,
                 f"'{base_model}' é base de segmentação; este projeto é de"
                 " detecção")
+        try:
+            params = hiperparametros.normalizar(params, dv["task_type"])
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
         target_device_id = await _maquina_alvo(conn, device_slug)
 
         exp = await db.fetch_row(
@@ -263,3 +277,18 @@ async def cancelar_run(project_slug: str, run_id: UUID, actor: Principal, *,
         await audit(actor, "run.cancel", "training_run", str(run_id), ip=ip,
                     conn=conn)
     return {"run_id": run_id, "status": j["status"]}
+
+
+async def opcoes_de_treino(project_slug: str) -> dict:
+    async with db.connection() as conn:
+        projeto = await projeto_ou_404(conn, project_slug, "task_type")
+    return hiperparametros.catalogo(projeto["task_type"])
+
+
+async def importar_configuracao(project_slug: str, texto: str) -> dict:
+    async with db.connection() as conn:
+        projeto = await projeto_ou_404(conn, project_slug, "task_type")
+    try:
+        return hiperparametros.importar_texto(texto, projeto["task_type"])
+    except (ValueError, RecursionError) as exc:
+        raise HTTPException(422, str(exc)) from None

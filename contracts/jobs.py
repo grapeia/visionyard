@@ -29,7 +29,7 @@ from collections.abc import Mapping
 from dataclasses import MISSING, asdict, dataclass, fields
 from typing import Any, TypeVar
 
-PAYLOAD_VERSION = 1
+PAYLOAD_VERSION = 2
 
 # Chave da versão. Curta porque o payload é lido em log e em tela de depuração;
 # ausente quer dizer v1 — é o que os jobs gravados até aqui têm.
@@ -52,7 +52,7 @@ class Payload:
 
     def como_dict(self) -> dict[str, Any]:
         """O dicionário a gravar em `job.payload`, com a versão junto."""
-        return {CHAVE_VERSAO: PAYLOAD_VERSION, **asdict(self)}
+        return {CHAVE_VERSAO: 1, **asdict(self)}
 
     @classmethod
     def de_payload(cls: type[P], payload: Mapping[str, Any]) -> P:
@@ -91,11 +91,15 @@ class Train(Payload):
     project_slug: str
     dataset_slug: str
     version: int
-    # epochs/imgsz/batch. Fica `dict` de propósito: o default de cada um mora
-    # no `RunIn` da rota, e o executor já os lê com `.get(chave, default)` —
-    # não há KeyError a evitar aqui, que é o que este contrato existe para
-    # fechar. Virar dataclass é v2.
     params: dict[str, Any]
+
+    def como_dict(self) -> dict[str, Any]:
+        # Um agente v1 ignoraria os parâmetros novos e treinaria outro modelo.
+        # Só o treino avançado exige v2; jobs antigos e básicos seguem em v1.
+        saida = super().como_dict()
+        if self.params.keys() - {"epochs", "imgsz", "batch"}:
+            saida[CHAVE_VERSAO] = 2
+        return saida
 
 
 @dataclass(frozen=True)
