@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="420" viewBox="0 0 1000 420" role="img" aria-labelledby="title desc">
+  <title id="title">Visionyard — proposta de logo</title>
+  <desc id="desc">Marca laranja com a letra V entre cantos de enquadramento, acompanhada do nome visionyard sobre fundo escuro.</desc>
+  <rect width="1000" height="420" rx="20" fill="#0d1217"/>
+  <g transform="translate(112 143)" fill="none" stroke="#ff8a1f" stroke-width="7" stroke-linecap="square" stroke-linejoin="miter">
+    <path d="M26 0H0V26 M90 0h26v26 M0 90v26h26 M116 90v26H90"/>
+    <path d="M28 31 58 86 88 31" stroke-width="10"/>
+  </g>
+  <text x="272" y="227" fill="#e6edf3" font-family="DejaVu Sans" font-size="78" font-weight="bold">vision</text>
+  <text x="531.859375" y="227" fill="#ff8a1f" font-family="DejaVu Sans" font-size="78" font-weight="bold">yard</text>
+  <text x="277" y="270" fill="#8fa3b3" font-family="DejaVu Sans" font-size="18">DA IMAGEM AO MODELO.</text>
+</svg>
