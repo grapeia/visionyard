@@ -697,7 +697,10 @@ function imagemComCaixas(it, pred, classes) {
   const rotulos = pred.map((p) => `<span class="gal-rot${p[3] - p[5] / 2 < 0.06 ? " dentro" : ""}"
       style="left:${(p[2] - p[4] / 2) * 100}%;top:${(p[3] - p[5] / 2) * 100}%">
       ${esc(nome(p[0]))} ${p[1].toFixed(2)}</span>`);
-  const proporcao = it.w && it.h ? `aspect-ratio:${it.w}/${it.h}` : "aspect-ratio:4/3";
+  // Com imagem, a altura é a dela: a proporção gravada falta em muita amostra
+  // importada, e forçar 4:3 achatava a foto. Sem imagem, reserva o espaço.
+  const proporcao = it.url ? ""
+    : `aspect-ratio:${it.w && it.h ? `${it.w}/${it.h}` : "4/3"}`;
   return `<div class="gal-img" style="${proporcao}">
     ${it.url ? `<img src="${esc(it.url)}" alt="" loading="lazy">` : ""}
     <svg viewBox="0 0 1 1" preserveAspectRatio="none">${gt.join("")}${pr.join("")}</svg>
