@@ -24,8 +24,43 @@ visionyard-deploy/
 *.onnx
 *.engine
 
-# Claude Code: o plano e as convenções são versionados; a config local não.
-.claude/settings.local.json
+# Assistentes de IA: instruções, planos, memória e configuração ficam locais.
+# O diretório agent/ é o executor do produto e continua versionado.
+.claude/
+.codex/
+.agents/
+.agent/
+.ai/
+.ai-team/
+.gemini/
+.cursor/
+.windsurf/
+.cline/
+.clinerules/
+.roo/
+.roorules/
+.continue/
+.copilot/
+.opencode/
+.aider*
+.cursorrules
+.cursorignore
+.windsurfrules
+.clinerules
+.roorules*
+CLAUDE.md
+CLAUDE.local.md
+AGENTS.md
+AGENTS.local.md
+AGENTS.override.md
+AGENT.md
+CODEX.md
+GEMINI.md
+copilot-instructions.md
+.github/agents/
+.github/instructions/
+.github/prompts/
+.github/skills/
 
 # Editor / SO
 .vscode/

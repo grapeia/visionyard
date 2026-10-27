@@ -63,7 +63,7 @@ async def test_erro_do_gcs_nao_vaza_detalhe(admin, monkeypatch):
     from api.services import buckets as mod
 
     def explode(*a, **k):
-        raise RuntimeError("403 conta-secreta@production-438011.iam "
+        raise RuntimeError("403 conta-secreta@projeto-ficticio.iam "
                            "sem permissão em gs://bucket-interno/segredo")
     monkeypatch.setattr(mod, "_navegar", explode)
 
@@ -73,5 +73,5 @@ async def test_erro_do_gcs_nao_vaza_detalhe(admin, monkeypatch):
     assert r.status_code == 502
     corpo = r.text
     assert "conta-secreta" not in corpo
-    assert "production-438011" not in corpo
+    assert "projeto-ficticio" not in corpo
     assert "bucket-interno" not in corpo
