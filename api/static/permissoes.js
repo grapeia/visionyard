@@ -26,9 +26,11 @@ function render() {
     const cabeca = grupo !== anterior
       ? `<tr class="permissoes-grupo"><th colspan="${matriz.papeis.length + 2}" scope="rowgroup">${esc(grupo)}</th></tr>` : "";
     anterior = grupo;
-    return cabeca + `<tr><th scope="row">${esc(acao.nome)}
-      <small>${esc(acao.ajuda)}</small><code>${esc(acao.chave)}</code>
-      ${acao.sensivel ? '<small class="permissao-alerta">Sensível: permite administrar membros e conceder acesso ao projeto.</small>' : ""}
+    return cabeca + `<tr><th scope="row" class="perm-acao">
+      <span class="perm-nome">${esc(acao.nome)}</span>
+      <span class="perm-ajuda">${esc(acao.ajuda)}</span>
+      <code class="perm-chave">${esc(acao.chave)}</code>
+      ${acao.sensivel ? '<span class="permissao-alerta">Sensível: permite administrar membros e conceder acesso ao projeto.</span>' : ""}
       </th>${matriz.papeis.map((papel) => {
         const valor = acao.papeis[papel.chave];
         return `<td class="${valor.alterado ? "permissao-alterada" : ""}">

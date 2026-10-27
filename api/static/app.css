@@ -838,8 +838,19 @@ a.selo-alias:hover { border-color: currentColor; }
 .permissoes-tabela table { width: 100%; }
 .permissoes-tabela th:first-child { min-width: 260px; text-align: left; }
 .permissoes-tabela td { text-align: center; min-width: 110px; }
-.permissoes-tabela small, .permissoes-tabela code { display: block; font-size: 12px; font-weight: normal; margin-top: 5px; }
-.permissoes-grupo th { background: var(--aco-800); padding-top: 20px; }
-.permissao-alterada { box-shadow: inset 0 -2px #ff8a1f; }
-.permissao-alerta { color: #ff8a1f; }
+.permissoes-tabela td small { display: block; font-size: 12px; margin-top: 5px; }
+/* O th da linha herdaria o rótulo mono em caixa alta de .tab-versoes: aqui
+   são três textos de papéis diferentes — o nome, a explicação e a chave. */
+.permissoes-tabela th.perm-acao { font: 400 13px/1.4 var(--sans);
+  letter-spacing: 0; text-transform: none; padding: 10px; }
+.perm-acao > span { display: block; }
+.perm-nome { font-weight: 600; font-size: 14px; color: var(--texto); }
+.perm-ajuda { color: var(--texto-fraco); margin-top: 2px; }
+.permissoes-tabela .perm-chave { display: table; margin-top: 6px;
+  font: 11px/1 var(--mono); color: var(--texto-tenue); background: var(--aco-700);
+  border: 1px solid var(--trilho); border-radius: var(--r); padding: 3px 6px; }
+.permissoes-grupo th { background: var(--aco-800); padding-top: 20px;
+  color: var(--acento); }
+.permissao-alterada { box-shadow: inset 0 -2px var(--acento); }
+.permissao-alerta { color: var(--acento); font-size: 12px; margin-top: 6px; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; }
