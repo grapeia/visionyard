@@ -3,7 +3,7 @@
  * SAM); o resto — navegação, classes, gravação — é o mesmo. */
 
 import { mostrarAba } from "./abas.js";
-import { $, api, avisar, clamp, clamp01, cor, erroAviso, esc, estado, post } from "./nucleo.js";
+import { $, pode, api, avisar, clamp, clamp01, cor, erroAviso, esc, estado, post } from "./nucleo.js";
 import { hachurarFora } from "./roi.js";
 import { carregarDados, dados, desenharGrade, ehPretag, preencherEscopo } from "./rotulagem.js";
 import * as segm from "./segmentador.js";
@@ -22,6 +22,9 @@ const anot = { id: null, boxes: [], classe: 0, classes: [], sel: -1,
                geracao: 0 };
 
 export async function abrirAnotador(id) {
+  $("anotPretag").hidden = !pode("rotulagem.prelabel.executar");
+  $("anotSalvar").hidden = !pode("rotulagem.anotador.salvar");
+  document.querySelector('[data-gabarito="salvar"]').hidden = !pode("rotulagem.anotador.gabarito");
   const geracao = ++anot.geracao;
   segm.esquecer();
   $("anotSam").hidden = true;      // o estado da imagem anterior não vale aqui
@@ -242,6 +245,7 @@ document.querySelectorAll("#anotGabarito [data-gabarito]").forEach((b) =>
 
 /** Grava os cortes da principal ativa como gabarito da classe dela. */
 async function salvarGabarito() {
+  if (!pode("rotulagem.anotador.gabarito")) { avisar("Seu papel não permite esta ação.", true); return; }
   const g = segm.montarGabarito(anot);
   if (g.erro) { avisar(g.erro, true); return; }
   if (segm.seg.gabaritos.has(g.classe) &&
@@ -607,7 +611,7 @@ async function irParaImagem(passo) {
   if (pendente) { segm.apontarPendencia(anot); redesenhar(); avisar(pendente, true); return; }
   // marca `sujo` se recortou algo; sem a ferramenta, não sai da imagem
   if (segmentacao() && !segm.travar(anot)) return;
-  if (anot.sujo) await salvarAnotacao({ silencioso: true });
+  if (anot.sujo && pode("rotulagem.anotador.salvar")) await salvarAnotacao({ silencioso: true });
 
   let i = anot.indice + passo;
   if (passo > 0 && i >= dados.itens.length && FILTRO_ENCOLHE.has(dados.filtro)) {
@@ -644,6 +648,7 @@ async function irParaImagem(passo) {
  * o resultado no canvas. Só faz sentido numa imagem em branco — o modelo não
  * sobrescreve o que você já desenhou. */
 async function prerotular() {
+  if (!pode("rotulagem.prelabel.executar")) { avisar("Seu papel não permite esta ação.", true); return; }
   if (anot.boxes.length || segm.seg.rascunho) {
     avisar("esta imagem já tem anotação — o pré-tag é para começar do zero");
     return;
@@ -725,6 +730,7 @@ function fecharAnotador() {
 }
 
 async function salvarAnotacao({ silencioso = false } = {}) {
+  if (!pode("rotulagem.anotador.salvar")) { avisar("Seu papel não permite esta ação.", true); return; }
   // a principal em edição trava antes: é ao travar que os recortes dela são
   // cortados pelo contorno novo
   if (segmentacao() && !segm.travar(anot))

@@ -3,13 +3,13 @@
  * Aqui o dataset é o ESCOPO já escolhido na barra; o que se escolhe é o modelo.
  * É a assistência do rotulador: os rascunhos caem na grade daquela mesma aba. */
 
-import { $, RANK, api, avisar, comTravaDeEnvio, erroAviso, esc, estado, num, post } from "./nucleo.js";
+import { $, pode, api, avisar, comTravaDeEnvio, erroAviso, esc, estado, num, post } from "./nucleo.js";
 import { dados } from "./rotulagem.js";
 
 /** Mostra/habilita o botão de pré-tag conforme papel e escopo. */
 export function atualizarBotaoPretag() {
   const b = $("botaoPreTagLote");
-  b.hidden = RANK[estado.papel] < RANK.engineer;
+  b.hidden = !pode("rotulagem.prelabel.executar");
   b.disabled = !dados.dataset;
   b.title = dados.dataset ? "rode um modelo sobre este dataset"
     : "escolha um dataset no escopo para pré-taguear";

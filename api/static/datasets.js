@@ -2,7 +2,7 @@
 
 import { rotularDataset } from "./anotador.js";
 import { abrirOrigem } from "./bucket.js";
-import { $, api, avisar, comTravaDeEnvio, esc, estado, num, post } from "./nucleo.js";
+import { $, pode, api, avisar, comTravaDeEnvio, esc, estado, num, post } from "./nucleo.js";
 import { abrirRoi, pctRoi } from "./roi.js";
 import { preencherEscopo } from "./rotulagem.js";
 
@@ -16,6 +16,7 @@ export async function atualizarDatasets() {
 }
 
 export async function carregarDatasets() {
+  $("botaoNovoDataset").hidden = !pode("datasets.lista.criar");
   await atualizarDatasets();
   const ul = $("listaDatasets");
   ul.innerHTML = estado.datasets.map((d) => `
@@ -31,7 +32,7 @@ export async function carregarDatasets() {
         <p>Nenhum dataset neste projeto.</p>
         <p class="dica">Um dataset reúne origens do bucket e produz versões congeladas,
            que é o que torna dois treinos comparáveis.</p>
-        <button class="primario" id="botaoPrimeiroDataset">Criar o primeiro</button>
+        <button class="primario" id="botaoPrimeiroDataset" ${pode("datasets.lista.criar") ? "" : "hidden"}>Criar o primeiro</button>
       </div>`;
     $("botaoPrimeiroDataset").addEventListener(
       "click", () => $("dlgDataset").showModal());
@@ -70,13 +71,13 @@ export async function abrirDataset(slug) {
 function render(ds, previa) {
   // imagem sem md5 barra o congelamento inteiro no servidor: sem isto o botão
   // ficava ativo e todo clique voltava 409
-  const podeCongelar = previa.entrariam > 0 && !previa.sem_md5;
+  const podeCongelar = pode("datasets.versoes.congelar") && previa.entrariam > 0 && !previa.sem_md5;
   $("painelDataset").innerHTML = `
     <div class="cabeca">
       <h1>${esc(ds.name)}</h1>
       <span class="tipo-ds ${esc(ds.kind)}">${esc(rotuloTipo(ds.kind))}</span>
       <span class="espaco"></span>
-      ${ds.pretags_rascunho ? `<button class="discreto ruim" id="botaoDescartarPretags"
+      ${pode("datasets.prelabel.descartar") && ds.pretags_rascunho ? `<button class="discreto ruim" id="botaoDescartarPretags"
         title="remover os pré-tags rascunho não corrigidos">Descartar ${num(ds.pretags_rascunho)} pré-tags</button>` : ""}
       <button id="botaoRotular">Rotular estas imagens</button>
       <button class="primario" id="botaoCongelar" ${podeCongelar ? "" : "disabled"}>
@@ -87,7 +88,7 @@ function render(ds, previa) {
       <header>
         <span class="rotulo">Recorte (ROI)</span>
         <span class="espaco"></span>
-        <button id="botaoRoi">${ds.roi ? "Editar recorte" : "Configurar recorte"}</button>
+        <button id="botaoRoi" ${pode("datasets.recorte.editar") ? "" : "hidden"}>${ds.roi ? "Editar recorte" : "Configurar recorte"}</button>
       </header>
       ${ds.roi ? `<p class="dica">Recorta cada imagem para
          <strong>x ${pctRoi(ds.roi.x)}–${pctRoi(ds.roi.x + ds.roi.w)}%,
@@ -103,7 +104,7 @@ function render(ds, previa) {
       <header>
         <span class="rotulo">Origens</span>
         <span class="espaco"></span>
-        <button id="botaoNovaOrigem">Adicionar origem</button>
+        <button id="botaoNovaOrigem" ${pode("datasets.origens.editar") && pode("datasets.origens.navegar") && pode("datasets.origens.importar") ? "" : "hidden"}>Adicionar origem</button>
       </header>
       ${ds.origens.length ? `<ul class="origens">${ds.origens.map(linhaOrigem).join("")}</ul>`
         : `<div class="vazio"><p>Nenhuma origem ainda.</p>
@@ -161,7 +162,7 @@ const linhaOrigem = (o) => `
     <span class="uri">${esc(o.uri)}</span>
     <span class="imagens">${num(o.imagens)} img</span>
     <button class="discreto" data-remover="${esc(o.id)}" data-uri="${esc(o.uri)}"
-            title="Remover da definição">Remover</button>
+            ${pode("datasets.origens.editar") ? "" : "hidden"} title="Remover da definição">Remover</button>
   </li>`;
 
 const linhaVersao = (v) => `

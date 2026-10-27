@@ -55,6 +55,7 @@
     <button data-aba="devices" id="abaBotaoDevices" hidden>Pool</button>
     <button data-aba="usuarios" id="abaBotaoUsuarios" hidden>Usuários</button>
     <button data-aba="parametros" id="abaBotaoParametros" hidden>Parâmetros</button>
+    <button data-aba="permissoes" id="abaBotaoPermissoes" hidden>Permissões</button>
     <span class="espaco"></span>
     <button id="botaoAjuda" title="O que é cada coisa nesta tela"
       aria-label="Ajuda da tela">Help</button>
@@ -148,6 +149,11 @@
       <span class="rotulo">Parâmetros da instalação</span>
     </div>
     <div id="painelParametros"><p class="carregando">Carregando…</p></div>
+  </div>
+
+  <div id="abaPermissoes" hidden>
+    <div class="barra-dados"><span class="rotulo">Permissões por papel</span></div>
+    <div id="painelPermissoes"></div>
   </div>
 
   <!-- aba Máquinas (superusuário) -->

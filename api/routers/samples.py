@@ -19,7 +19,7 @@ from fastapi import APIRouter, Depends, Path, Query, Response
 from pydantic import BaseModel, Discriminator, Field, Tag, field_validator
 
 from ..auth import Principal
-from ..deps import CurrentUser, projeto_ou_404, require_role
+from ..deps import CurrentUser, projeto_ou_404, require_action, require_role
 from ..services import samples as svc
 
 router = APIRouter(tags=["samples"])
@@ -186,7 +186,8 @@ async def imagem_sam(project_slug: Annotated[str, Path()],
             response_model=AnotacaoGravada)
 async def salvar(body: AnotacaoIn, project_slug: Annotated[str, Path()],
                  sample_id: Annotated[UUID, Path()],
-                 user: Annotated[Principal, Depends(require_role("annotator"))]):
+                 user: Annotated[Principal,
+                                 Depends(require_action("rotulagem.anotador.salvar"))]):
     """Grava a SUA anotação. A de outro rotulador não é tocada."""
     return await svc.salvar_anotacao(
         project_slug, sample_id, user.id,

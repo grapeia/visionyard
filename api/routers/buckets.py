@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, Query
 from fastapi import Path as P
 from pydantic import BaseModel
 
-from ..deps import require_role
+from ..deps import require_action
 from ..services import buckets as svc
 
 router = APIRouter(tags=["buckets"])
@@ -45,7 +45,7 @@ class Navegacao(BaseModel):
 
 @router.get("/projects/{project_slug}/buckets",
             response_model=list[BucketConfigurado],
-            dependencies=[Depends(require_role("engineer"))])
+            dependencies=[Depends(require_action("datasets.origens.navegar"))])
 async def listar_buckets(project_slug: Annotated[str, P()]):
     """Buckets pré-definidos na instalação.
 
@@ -59,7 +59,7 @@ async def listar_buckets(project_slug: Annotated[str, P()]):
 
 @router.get("/projects/{project_slug}/buckets/browse",
             response_model=Navegacao,
-            dependencies=[Depends(require_role("engineer"))])
+            dependencies=[Depends(require_action("datasets.origens.navegar"))])
 async def navegar(project_slug: Annotated[str, P()],
                   bucket: Annotated[str, Query(min_length=1)],
                   prefixo: str = ""):

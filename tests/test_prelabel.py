@@ -232,11 +232,12 @@ async def test_prelabel_id_malformado_nao_e_500(admin):
     """Id que não é uuid é erro de entrada: recusa na validação, não estoura no
     cast do Postgres três camadas adiante.
 
-    Sem projeto montado de propósito: o 422 sai do pydantic antes da primeira
-    linha do handler, e `admin` é superusuário — `require_role` o deixa passar
-    sem consultar nada. Montar modelo aqui era um minuto de setup que nenhuma
-    asserção lia.
+    Projeto sem modelo de propósito: o 422 sai do pydantic antes da primeira
+    linha do handler. O projeto precisa existir porque a decisão por ação
+    (`require_action`) lê a linha dele mesmo para o superusuário; montar
+    modelo aqui era um minuto de setup que nenhuma asserção lia.
     """
+    await admin.post("/v1/projects", json=PROJ)
     base = f"/v1/projects/{PROJ['slug']}/prelabel"
     r = await admin.post(base, json={"model_slug": "detector",
                                      "sample_id": "nao-e-uuid"})

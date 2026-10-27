@@ -16,7 +16,7 @@ from pydantic import BaseModel, EmailStr, Field
 from .. import auth
 from ..auth import Principal
 from ..config import settings
-from ..deps import CurrentUser, require_role, require_superuser
+from ..deps import CurrentUser, require_action, require_role, require_superuser
 from ..services import users as svc
 
 router = APIRouter(tags=["users"])
@@ -147,7 +147,7 @@ async def list_members(project_slug: Annotated[str, Path()]):
 
 @router.get("/projects/{project_slug}/member-candidates",
             response_model=list[CandidatoAMembro],
-            dependencies=[Depends(require_role("admin"))])
+            dependencies=[Depends(require_action("projeto.membros.gerenciar"))])
 async def list_member_candidates(project_slug: Annotated[str, Path()]):
     """Quem pode ser incluído: só admin+ vê, porque é a lista de contas da
     instalação — o resto dos membros enxerga só quem já está no projeto."""
@@ -158,7 +158,8 @@ async def list_member_candidates(project_slug: Annotated[str, Path()]):
             response_model=MembroDefinido)
 async def upsert_member(body: MemberIn, project_slug: Annotated[str, Path()],
                         request: Request,
-                        actor: Annotated[Principal, Depends(require_role("admin"))]):
+                        actor: Annotated[Principal,
+                                         Depends(require_action("projeto.membros.gerenciar"))]):
     return await svc.definir_membro(project_slug, actor, email=body.email,
                                     role=body.role,
                                     ip=auth.client_ip(request))
@@ -169,6 +170,7 @@ async def upsert_member(body: MemberIn, project_slug: Annotated[str, Path()],
 async def remove_member(project_slug: Annotated[str, Path()],
                         user_id: Annotated[UUID, Path()],
                         request: Request,
-                        actor: Annotated[Principal, Depends(require_role("admin"))]):
+                        actor: Annotated[Principal,
+                                         Depends(require_action("projeto.membros.gerenciar"))]):
     await svc.remover_membro(project_slug, actor, user_id=user_id,
                              ip=auth.client_ip(request))

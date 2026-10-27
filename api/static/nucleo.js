@@ -9,7 +9,7 @@
 
 export const $ = (id) => document.getElementById(id);
 
-export const estado = { usuario: null, projeto: null, datasets: [], atual: null };
+export const estado = { usuario: null, projeto: null, datasets: [], atual: null, permissoes: [] };
 
 // ------------------------------------------------------------------ rede --
 
@@ -90,7 +90,7 @@ export const clamp01 = (v) => clamp(v, 0, 1);
 export const css = (v) =>
   getComputedStyle(document.documentElement).getPropertyValue(v).trim();
 
-export const RANK = { viewer: 0, annotator: 1, engineer: 2, admin: 3, owner: 4 };
+export const pode = (acao) => estado.permissoes.includes(acao);
 
 /** Nome do papel na tela. O banco e a API guardam a chave em inglês; quem lê é
  *  português. Chave que não estiver aqui aparece como veio. */

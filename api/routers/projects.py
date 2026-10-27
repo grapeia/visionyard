@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .. import auth
 from ..auth import Principal
-from ..deps import CurrentUser, require_role, require_superuser
+from ..deps import CurrentUser, require_action, require_role, require_superuser
 from ..services import projects as svc
 
 router = APIRouter(tags=["projects"])
@@ -225,6 +225,9 @@ class DetalheDoProjeto(BaseModel):
     created_at: datetime
     archived_at: datetime | None
     role: str
+    # As ações de `services/permissions.py` que eu posso neste projeto: é por
+    # elas, e não pelo papel, que a tela mostra ou esconde cada botão.
+    permissoes: list[str]
     # `schema` colide com um atributo de `BaseModel`; o alias mantém a chave
     # que o `app.js` já lê.
     esquema: SchemaAtual | None = Field(alias="schema")
@@ -279,7 +282,8 @@ async def get_project(project_slug: Annotated[str, Path()], user: CurrentUser):
 @router.patch("/projects/{project_slug}", response_model=ProjetoAlterado)
 async def patch_project(body: ProjectPatchIn,
                         project_slug: Annotated[str, Path()], request: Request,
-                        actor: Annotated[Principal, Depends(require_role("admin"))]):
+                        actor: Annotated[Principal,
+                                         Depends(require_action("projeto.geral.editar"))]):
     return await svc.alterar(project_slug, actor,
                              campos=body.model_dump(exclude_unset=True),
                              ip=auth.client_ip(request))
@@ -290,7 +294,8 @@ async def patch_project(body: ProjectPatchIn,
 async def append_classes(
         body: SchemaAppendIn, project_slug: Annotated[str, Path()],
         request: Request,
-        actor: Annotated[Principal, Depends(require_role("engineer"))]):
+        actor: Annotated[
+            Principal, Depends(require_action("projeto.classes.acrescentar"))]):
     """Acrescenta classe(s) no fim → nova versão de schema, back-compatible.
 
     O schema é imutável (não há UPDATE): toda mudança é uma versão nova. Como só
@@ -316,7 +321,8 @@ async def list_templates(project_slug: Annotated[str, Path()]):
 async def put_template(
         body: GabaritoIn, project_slug: Annotated[str, Path()],
         class_index: Annotated[int, Path(ge=0)], request: Request,
-        actor: Annotated[Principal, Depends(require_role("annotator"))]):
+        actor: Annotated[
+            Principal, Depends(require_action("rotulagem.anotador.gabarito"))]):
     """Grava o gabarito de cortes de uma classe principal, substituindo o
     anterior. `annotator` e não `engineer`: quem monta o gabarito é quem
     recorta as bandas, e ele só agiliza o começo — o que se grava como
@@ -334,7 +340,8 @@ async def put_template(
              status_code=status.HTTP_204_NO_CONTENT)
 async def archive_project(project_slug: Annotated[str, Path()],
                           request: Request,
-                          actor: Annotated[Principal, Depends(require_role("owner"))]):
+                          actor: Annotated[Principal,
+                                           Depends(require_action("projeto.geral.arquivar"))]):
     """Arquiva (some das listagens). Não deleta: os dados seguem referenciados
     por datasets, runs e modelos, e apagá-los quebraria a linhagem."""
     await svc.arquivar(project_slug, actor, ip=auth.client_ip(request))

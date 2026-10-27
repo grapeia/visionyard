@@ -25,6 +25,7 @@ from .. import db
 from ..audit import audit
 from ..auth import Principal
 from ..deps import project_role
+from . import permissions
 
 
 async def projeto_ou_404(conn: db.Conn, project_slug: str,
@@ -164,8 +165,9 @@ async def detalhe(project_slug: str, user: Principal) -> dict[str, Any]:
             "          WHERE project_id = %(p)s) AS models",
             {"p": proj["id"]}, conn=conn)
         papel = await project_role(project_slug, user, conn=conn)
-    return {**proj, "role": papel, "schema": schema, "schemas": schemas,
-            "counts": counts}
+        pode = await permissions.efetivas(conn, papel)
+    return {**proj, "role": papel, "permissoes": pode, "schema": schema,
+            "schemas": schemas, "counts": counts}
 
 
 async def alterar(project_slug: str, actor: Principal, *,

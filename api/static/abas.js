@@ -6,11 +6,12 @@
 
 import { carregarDatasets } from "./datasets.js";
 import { carregarModelos } from "./modelos.js";
-import { $, erroAviso } from "./nucleo.js";
+import { $, erroAviso, estado } from "./nucleo.js";
 import { carregarDevices } from "./pool.js";
 import { carregarProjetoTab } from "./projeto.js";
 import { carregarDados } from "./rotulagem.js";
 import { carregarRuns, pararPollRun } from "./treino.js";
+import { carregarPermissoes } from "./permissoes.js";
 import { carregarParametros } from "./parametros.js";
 import { carregarUsuarios } from "./usuarios.js";
 
@@ -26,7 +27,8 @@ const AJUDA = {
     <dl>
       <dt>Projeto</dt><dd>O espaço de trabalho de um cliente/linha (imagens,
         datasets, modelos e máquinas ficam dentro dele).</dd>
-      <dt>Papéis</dt><dd><b>Dono</b> e <b>Administrador</b> gerenciam tudo;
+      <dt>Papéis</dt><dd>As permissões são configuráveis pelo superusuário. Por padrão,
+        <b>Dono</b> e <b>Administrador</b> gerenciam projetos;
         <b>Engenheiro</b> treina, compila e implanta modelos; <b>Anotador</b> só
         rotula imagens; <b>Visualizador</b> só consulta.</dd>
     </dl>`],
@@ -122,6 +124,8 @@ const AJUDA = {
       <dt>Membro do projeto</dt><dd>O papel vale por projeto: a mesma pessoa
         pode ser Engenheiro num projeto e Anotador em outro.</dd>
     </dl>`],
+  permissoes: ["Permissões", `<p>Organização por página, seção e ação. Cada papel pode ter
+    permissões próprias; o dono sempre tem todas. Restaurar remove a personalização.</p>`],
   parametros: ["Parâmetros", `
     <dl>
       <dt>Origem</dt><dd><b>travado no ambiente</b>: o servidor define por
@@ -147,12 +151,14 @@ $("botaoAjuda").addEventListener("click", () => {
  *  visível e do que precisa carregar ao entrar. Antes só havia duas abas e a
  *  lógica era um if binário — não escala para Treinamento e Máquinas. */
 export function mostrarAba(nome) {
+  if (["permissoes", "parametros", "usuarios", "devices"].includes(nome)
+      && !estado.usuario?.is_superuser) return;
   document.querySelectorAll("#abas [data-aba]").forEach((x) =>
     x.setAttribute("aria-current", x.dataset.aba === nome));
   for (const [aba, el] of Object.entries({
     projeto: "abaProjeto", datasets: "abaDatasets", dados: "abaDados",
     treino: "abaTreino", modelos: "abaModelos", devices: "abaDevices",
-    usuarios: "abaUsuarios", parametros: "abaParametros",
+    usuarios: "abaUsuarios", parametros: "abaParametros", permissoes: "abaPermissoes",
   })) $(el).hidden = aba !== nome;
   // Sair da aba de treino encerra o polling ao vivo — senão ele segue batendo
   // na API em segundo plano por uma tela que ninguém está vendo.
@@ -167,5 +173,6 @@ export function mostrarAba(nome) {
   if (nome === "modelos") carregarModelos().catch(erroAviso);
   if (nome === "devices") carregarDevices().catch(erroAviso);
   if (nome === "usuarios") carregarUsuarios().catch(erroAviso);
+  if (nome === "permissoes") carregarPermissoes().catch(erroAviso);
   if (nome === "parametros") carregarParametros().catch(erroAviso);
 }

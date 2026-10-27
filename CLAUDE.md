@@ -237,11 +237,23 @@ pede.
   conta. O que é sensível fica de fora do `SELECT` — token e `capabilities`,
   que é o que decide roteamento, só o superusuário vê, em `/devices`. Não
   acrescente coluna a essas duas rotas sem refazer essa conta.
-- **RBAC é por projeto.** Rota com `{project_slug}` usa
-  `Depends(require_role("papel"))`. Não-membro recebe 404, não 403: 403
-  revelaria que o projeto existe. A dependência **não** garante que o projeto
-  existe — o superusuário passa por ela sem consulta nenhuma; o handler que
-  precisa da linha usa `deps.projeto_ou_404`.
+- **RBAC é por projeto, e quem pode o quê é configurável.** Rota com
+  `{project_slug}` que escreve usa `Depends(require_action("pagina.secao.acao"))`;
+  o catálogo de ações e o papel mínimo padrão de cada uma moram em
+  `services/permissions.py`, e o superusuário grava exceções por papel na aba
+  Permissões (`role_permission`, só o que difere do padrão). `owner` pode tudo
+  e não é configurável. `require_role("viewer")` sobra só para leitura —
+  `test_permissoes.py` reprova papel fixo acima disso numa rota e ação do
+  catálogo que nenhuma rota exige. Ação nova: entra no catálogo com padrão, e
+  o front esconde o botão por `pode("chave")`, que lê `permissoes` do detalhe
+  do projeto. Não-membro recebe 404, não 403: 403 revelaria que o projeto
+  existe. `require_action` lê a linha do projeto e dá 404 até ao superusuário;
+  `require_role` **não** — o superusuário passa por ela sem consulta, e o
+  handler que precisa da linha usa `deps.projeto_ou_404`.
+- **Quem gere membros não passa do próprio papel.** `_confere_alcance` em
+  `services/users.py`: não concede papel acima do seu nem mexe em membro acima
+  do seu. Com `projeto.membros.gerenciar` configurável, sem isso quem recebesse
+  a ação se promoveria.
 - **Relato atrasado do agente não reescreve desfecho.** A rede pisca e o
   `agent/client.py` repete o POST; `finalizar_job` e `atualizar_deployment` só
   transicionam a partir de estado não-terminal (`status <> ALL(TERMINAIS)`,

@@ -5,7 +5,7 @@
  * o log inteiro a cada atualização. */
 
 import { atualizarDatasets } from "./datasets.js";
-import { $, api, avisar, clamp01, comTravaDeEnvio, cor, css, erroAviso, esc, estado, num, post } from "./nucleo.js";
+import { $, pode, api, avisar, clamp01, comTravaDeEnvio, cor, css, erroAviso, esc, estado, num, post } from "./nucleo.js";
 
 const BASES = [["yolo11n", "YOLO11n — mais rápido"], ["yolo11s", "YOLO11s"],
                ["yolo11m", "YOLO11m — mais preciso"]];
@@ -28,6 +28,7 @@ const seloRun = (s) => {
 const ativo = (s) => s === "queued" || s === "claimed" || s === "running";
 
 export async function carregarRuns() {
+  $("botaoNovoRun").hidden = !pode("treino.runs.criar");
   const runs = await api(`/projects/${estado.projeto}/runs`);
   treino.runs = runs;
   $("listaRuns").innerHTML = runs.length
@@ -62,7 +63,7 @@ async function abrirRun(runId) {
       <span id="runSelo">${seloRun(d.job_status)}</span>
       <span class="espaco"></span>
       <button class="discreto" id="botaoCancelarRun"
-        ${ativo(d.job_status) ? "" : "hidden"}>Cancelar</button>
+        ${pode("treino.runs.cancelar") && ativo(d.job_status) ? "" : "hidden"}>Cancelar</button>
     </div>
     <div class="run-meta">
       <span>${esc(d.dataset)} v${d.dataset_version}</span>
@@ -117,7 +118,7 @@ async function tickRun() {
     treino.eventos = treino.eventos.slice(-400);
 
   $("runSelo").innerHTML = seloRun(s.job_status);
-  $("botaoCancelarRun").hidden = !ativo(s.job_status);
+  $("botaoCancelarRun").hidden = !pode("treino.runs.cancelar") || !ativo(s.job_status);
   const p = s.progress || {};
   $("runProgresso").textContent = p.epoch ? `época ${p.epoch}/${p.de || "?"}` : "";
 

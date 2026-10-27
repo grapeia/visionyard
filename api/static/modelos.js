@@ -5,7 +5,7 @@
  * versão — dá para voltar atrás sem reconstruir nada. */
 
 import { atualizarDatasets } from "./datasets.js";
-import { $, RANK, api, avisar, comTravaDeEnvio, css, erroAviso, esc, estado, num, post } from "./nucleo.js";
+import { $, pode, api, avisar, comTravaDeEnvio, css, erroAviso, esc, estado, num, post } from "./nucleo.js";
 import { tipoProjeto } from "./projeto.js";
 
 const ALIASES_MODELO = ["champion", "challenger", "baseline"];
@@ -51,7 +51,8 @@ async function abrirModelo(slug) {
     b.setAttribute("aria-current", b.dataset.modelo === slug));
   $("painelModelo").innerHTML = `<p class="carregando">Carregando…</p>`;
   const d = await api(`/projects/${estado.projeto}/models/${slug}`);
-  const podeProm = RANK[estado.papel] >= RANK.engineer;
+  const temAcoes = ["modelos.versoes.promover", "modelos.versoes.baixar", "modelos.versoes.avaliar",
+    "modelos.versoes.exportar", "modelos.implantacao.implantar"].some(pode);
   // apelido vigente por versão, para marcar na tabela
   const nAval = d.versoes.reduce((n, v) => n + (v.avaliacoes || []).length, 0);
   const aliasDe = {};
@@ -62,7 +63,7 @@ async function abrirModelo(slug) {
       <h1>${esc(d.name)}</h1>
       <span class="tipo-ds">${esc(tipoProjeto(d.task_type))}</span>
       <span class="espaco"></span>
-      ${d.aliases.map((a) => podeProm
+      ${d.aliases.map((a) => pode("modelos.versoes.baixar")
         ? `<a class="selo-alias ${esc(a.alias)}" href="${esc(urlPeso(slug, a.version))}"
              title="baixar o peso (.pt) da v${a.version}">${esc(a.alias)} → v${a.version} ↓</a>`
         : `<span class="selo-alias ${esc(a.alias)}">${esc(a.alias)} → v${a.version}</span>`).join("")}
@@ -75,8 +76,8 @@ async function abrirModelo(slug) {
       <section class="secao">
         <table class="tab-versoes">
           <thead><tr><th>versão</th><th>mAP50-95</th><th>origem</th>
-            <th>tamanho</th><th>builds</th><th>quando</th>${podeProm ? "<th>ações</th>" : ""}</tr></thead>
-          <tbody>${d.versoes.map((v) => linhaModeloVersao(slug, v, aliasDe[v.version], podeProm)).join("")}</tbody>
+            <th>tamanho</th><th>builds</th><th>quando</th>${temAcoes ? "<th>ações</th>" : ""}</tr></thead>
+          <tbody>${d.versoes.map((v) => linhaModeloVersao(slug, v, aliasDe[v.version], temAcoes)).join("")}</tbody>
         </table>
       </section>
     </div>
@@ -93,7 +94,7 @@ async function abrirModelo(slug) {
 
   desenharComparacoes(d.versoes);
 
-  if (podeProm) {
+  if (temAcoes) {
     $("painelModelo").querySelectorAll("[data-prom]").forEach((b) =>
       b.addEventListener("click", () =>
         promover(slug, b.dataset.alias, Number(b.dataset.prom))));
@@ -192,7 +193,7 @@ function badgeBuild(b) {
     b.built_on ? " · " + esc(b.built_on) : ""}">${rot}</span>`;
 }
 
-function linhaModeloVersao(slug, v, aliases, podeProm) {
+function linhaModeloVersao(slug, v, aliases, temAcoes) {
   const m = v.metrics || {};
   const map = m["mAP50-95"] != null ? Number(m["mAP50-95"]).toFixed(4) : "—";
   const origem = v.experimento
@@ -203,14 +204,14 @@ function linhaModeloVersao(slug, v, aliases, podeProm) {
     `<span class="selo-alias ${esc(a)}">${esc(a)}</span>`).join(" ");
   const artefatos = [...(v.builds || []).map(badgeBuild),
                      ...(v.avaliacoes || []).map(badgeAval)].join(" ") || "—";
-  const acoes = podeProm ? `<td class="prom-cel">${ALIASES_MODELO.map((a) =>
+  const acoes = temAcoes ? `<td class="prom-cel">${(pode("modelos.versoes.promover") ? ALIASES_MODELO : []).map((a) =>
     `<button class="discreto" data-prom="${v.version}" data-alias="${a}"
        title="apontar ${a} para v${v.version}">${SIGLA_ALIAS[a]}</button>`).join("")}
-    <a class="discreto" href="${esc(urlPeso(slug, v.version))}"
-       title="baixar o peso (.pt) da v${v.version}">↓</a>
-    <button class="discreto" data-eval="${v.version}" title="avaliar num benchmark">◎</button>
-    <button class="discreto" data-export="${v.version}" title="compilar (onnx/engine)">⤓</button>
-    ${(v.builds || []).length ? `<button class="discreto" data-deploy="${v.version}"
+    ${pode("modelos.versoes.baixar") ? `<a class="discreto" href="${esc(urlPeso(slug, v.version))}"
+       title="baixar o peso (.pt) da v${v.version}">↓</a>` : ""}
+    ${pode("modelos.versoes.avaliar") ? `<button class="discreto" data-eval="${v.version}" title="avaliar num benchmark">◎</button>` : ""}
+    ${pode("modelos.versoes.exportar") ? `<button class="discreto" data-export="${v.version}" title="compilar (onnx/engine)">⤓</button>` : ""}
+    ${pode("modelos.implantacao.implantar") && (v.builds || []).length ? `<button class="discreto" data-deploy="${v.version}"
        title="implantar num dispositivo">↗</button>` : ""}</td>` : "";
   return `<tr>
     <td class="mono">v${v.version} ${selos}</td>

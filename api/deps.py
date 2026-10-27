@@ -18,9 +18,9 @@ from .auth import (
     principal_from_request,
     resolve_device_token,
 )
+from .services import permissions
 
-# Papéis são lineares: quem pode mais pode menos.
-ROLE_RANK = {"viewer": 0, "annotator": 1, "engineer": 2, "admin": 3, "owner": 4}
+ROLE_RANK = permissions.ROLE_RANK
 
 
 async def current_user(request: Request) -> Principal:
@@ -84,6 +84,27 @@ def require_role(minimum: str):
                 status.HTTP_403_FORBIDDEN,
                 f"requer papel '{minimum}' ou superior neste projeto "
                 f"(seu papel: '{role}')")
+        return user
+
+    return dep
+
+
+def require_action(acao: str):
+    """Dependência que exige poder `acao` no projeto da rota.
+
+    É a forma de toda rota que escreve: quem pode o quê é a matriz de
+    `services/permissions.py`, que o superusuário edita na tela. Mesmos erros
+    de `require_role` e na mesma ordem — e, diferente dela, o superusuário
+    também recebe 404 de projeto inexistente, porque a decisão lê a linha do
+    projeto de qualquer jeito.
+    """
+    if acao not in permissions.ACOES:
+        raise ValueError(f"ação desconhecida: {acao}")
+
+    async def dep(user: CurrentUser,
+                  project_slug: Annotated[str, Path()]) -> Principal:
+        async with db.connection() as conn:
+            await permissions.decidir(conn, project_slug, user, acao)
         return user
 
     return dep

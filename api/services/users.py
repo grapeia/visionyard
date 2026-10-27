@@ -168,6 +168,24 @@ async def candidatos_a_membro(project_slug: str) -> list[dict[str, Any]]:
             (proj["id"],), conn=conn)
 
 
+def _confere_alcance(papel_do_ator: str | None, novo: str | None,
+                     atual: str | None) -> None:
+    """Ninguém concede papel acima do próprio, nem mexe em quem está acima.
+
+    Com o papel mínimo fixo em admin isto só dizia respeito a owner, e as
+    guardas de owner acima já cobriam. Desde que `projeto.membros.gerenciar` é
+    configurável (`services/permissions.py`), um engenheiro que receba a ação
+    se promoveria a admin, ou rebaixaria o admin que lha deu.
+    """
+    teto = ROLE_RANK[papel_do_ator] if papel_do_ator else -1
+    if novo is not None and ROLE_RANK[novo] > teto:
+        raise HTTPException(status.HTTP_403_FORBIDDEN,
+                            "não é possível conceder papel acima do seu")
+    if atual is not None and ROLE_RANK[atual] > teto:
+        raise HTTPException(status.HTTP_403_FORBIDDEN,
+                            "não é possível alterar membro de papel acima do seu")
+
+
 async def definir_membro(project_slug: str, actor: Principal, *, email: str,
                          role: str, ip: str | None) -> dict[str, Any]:
     async with db.connection() as conn, conn.transaction():
@@ -191,6 +209,7 @@ async def definir_membro(project_slug: str, actor: Principal, *, email: str,
             "SELECT role FROM project_member"
             " WHERE project_id = %s AND user_id = %s",
             (proj["id"], alvo["id"]), conn=conn)
+        _confere_alcance(papel_do_ator, role, antes["role"] if antes else None)
 
         # Rebaixar owner é tão sensível quanto removê-lo, e as duas portas
         # carregam as mesmas duas guardas — quem pode, e o que sobra depois.
@@ -244,6 +263,8 @@ async def remover_membro(project_slug: str, actor: Principal, *,
             if await _quantos_owners(conn, str(proj["id"])) <= 1:
                 raise HTTPException(status.HTTP_409_CONFLICT,
                                     "o projeto ficaria sem owner")
+        _confere_alcance(await project_role(project_slug, actor, conn=conn),
+                         None, row["role"])
 
         await db.execute(
             "DELETE FROM project_member"

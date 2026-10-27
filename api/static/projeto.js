@@ -6,7 +6,7 @@
 
 import { carregarProjeto } from "./app.js";
 import { carregarDatasets } from "./datasets.js";
-import { $, PAPEL, RANK, api, avisar, comTravaDeEnvio, cor, esc, estado, nomePapel, num,
+import { $, PAPEL, pode, api, avisar, comTravaDeEnvio, cor, esc, estado, nomePapel, num,
   post } from "./nucleo.js";
 import { dados, preencherEscopo } from "./rotulagem.js";
 
@@ -24,7 +24,8 @@ export async function carregarProjetoTab() {
   }
   const d = await api(`/projects/${estado.projeto}`);
   estado.papel = d.role;
-  const podeEditar = RANK[d.role] >= RANK.engineer;
+  estado.permissoes = d.permissoes || [];
+  const podeEditar = pode("projeto.classes.acrescentar");
   const classes = (d.schema && d.schema.classes) || [];
   const segmento = d.task_type === "segment";
   const c = d.counts || {};
@@ -69,7 +70,7 @@ export async function carregarProjetoTab() {
           v${(d.schema ? d.schema.version : 1) + 1} e não invalida o que já foi
           rotulado. Renomear ou reordenar é outra história (quebra compatibilidade)
           e ainda não é feito por aqui.</p>`
-        : `<p class="dica">Só engenheiro ou acima altera o vocabulário.</p>`}
+        : `<p class="dica">Seu papel não permite alterar o vocabulário.</p>`}
     </section>
 
     <section class="secao">
@@ -105,16 +106,17 @@ export async function carregarProjetoTab() {
     } catch (e) { avisar(e.message, true); }
     finally { botao.disabled = false; }
   });
-  renderMembros(d.slug, RANK[d.role] >= RANK.admin).catch(() => {});
+  renderMembros(d.slug, pode("projeto.membros.gerenciar")).catch(() => {});
 }
 
 const PAPEIS = ["viewer", "annotator", "engineer", "admin", "owner"];
 
-const opcoesPapel = (atual) => PAPEIS.map((p) =>
+const podeConceder = (papel) => estado.usuario?.is_superuser ||
+  PAPEIS.indexOf(papel) <= PAPEIS.indexOf(estado.papel);
+const opcoesPapel = (atual) => PAPEIS.filter(podeConceder).map((p) =>
   `<option value="${p}" ${p === atual ? "selected" : ""}>${PAPEL[p]}</option>`).join("");
 
-/** Membros do projeto: quem tem acesso e com que papel. Admin+ concede/remove;
- *  "Dono" só um dono concede (o backend garante). */
+/** A permissão de gerenciar membros respeita o teto do papel de quem concede. */
 async function renderMembros(slug, podeAdmin) {
   const [membros, candidatos] = await Promise.all([
     api(`/projects/${slug}/members`).catch(() => []),
@@ -130,7 +132,7 @@ async function renderMembros(slug, podeAdmin) {
       <li><span class="user-nome">${esc(m.display_name)}</span>
         <span class="mono slug">${esc(m.email)}</span>
         <span class="espaco"></span>
-        ${podeAdmin ? `<select class="papel-sel" data-membro="${esc(m.email)}"
+        ${podeAdmin && podeConceder(m.role) ? `<select class="papel-sel" data-membro="${esc(m.email)}"
             aria-label="Papel de ${esc(m.display_name)}">${opcoesPapel(m.role)}</select>
         <button class="discreto ruim" data-remover-membro="${esc(m.id)}">remover</button>`
         : `<span class="selo-run neutro">${esc(nomePapel(m.role))}</span>`}</li>`).join("")}</ul>

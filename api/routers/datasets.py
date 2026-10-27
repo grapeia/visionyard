@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .. import auth
 from ..auth import Principal
-from ..deps import require_role
+from ..deps import require_action, require_role
 from ..services import datasets as svc
 from .projects import SLUG_RE
 
@@ -180,7 +180,7 @@ async def list_datasets(project_slug: Annotated[str, P()]):
              status_code=status.HTTP_201_CREATED)
 async def create_dataset(
         body: DatasetIn, project_slug: Annotated[str, P()], request: Request,
-        actor: Annotated[Principal, Depends(require_role("engineer"))]):
+        actor: Annotated[Principal, Depends(require_action("datasets.lista.criar"))]):
     return await svc.criar(
         project_slug, actor, slug=body.slug, name=body.name, kind=body.kind,
         roi=body.roi.model_dump() if body.roi else None,
@@ -191,7 +191,8 @@ async def create_dataset(
               response_model=RoiDefinida)
 async def update_roi(body: RoiIn, project_slug: Annotated[str, P()],
                      dataset_slug: Annotated[str, P()], request: Request,
-                     actor: Annotated[Principal, Depends(require_role("engineer"))]):
+                     actor: Annotated[Principal,
+                                      Depends(require_action("datasets.recorte.editar"))]):
     """Define ou remove a ROI do dataset (`roi: null` remove).
 
     Só afeta as PRÓXIMAS versões congeladas — as já existentes carregam a ROI
@@ -217,7 +218,8 @@ async def get_dataset(project_slug: Annotated[str, P()],
 async def add_origin(project_slug: Annotated[str, P()],
                      dataset_slug: Annotated[str, P()], source_id: str,
                      request: Request,
-                     actor: Annotated[Principal, Depends(require_role("engineer"))]):
+                     actor: Annotated[Principal,
+                                      Depends(require_action("datasets.origens.editar"))]):
     await svc.vincular_origem(project_slug, dataset_slug, actor,
                               source_id=source_id, ip=auth.client_ip(request))
 
@@ -230,7 +232,7 @@ class ImpactoDaRemocao(BaseModel):
 
 @router.get("/projects/{project_slug}/datasets/{dataset_slug}/sources/{source_id}/impacto",
             response_model=ImpactoDaRemocao,
-            dependencies=[Depends(require_role("engineer"))])
+            dependencies=[Depends(require_action("datasets.origens.editar"))])
 async def origin_removal_impact(project_slug: Annotated[str, P()],
                                 dataset_slug: Annotated[str, P()],
                                 source_id: str):
@@ -243,7 +245,8 @@ async def origin_removal_impact(project_slug: Annotated[str, P()],
 async def remove_origin(project_slug: Annotated[str, P()],
                         dataset_slug: Annotated[str, P()], source_id: str,
                         request: Request,
-                        actor: Annotated[Principal, Depends(require_role("engineer"))]):
+                        actor: Annotated[Principal,
+                                         Depends(require_action("datasets.origens.editar"))]):
     """Remove a origem e as imagens que só ela trazia ao projeto (ver
     `services/datasets.py: desvincular_origem`). Versão congelada não muda."""
     await svc.desvincular_origem(project_slug, dataset_slug, actor,
@@ -266,7 +269,8 @@ async def preview(project_slug: Annotated[str, P()],
              status_code=status.HTTP_201_CREATED)
 async def freeze(body: FreezeIn, project_slug: Annotated[str, P()],
                  dataset_slug: Annotated[str, P()], request: Request,
-                 actor: Annotated[Principal, Depends(require_role("engineer"))]):
+                 actor: Annotated[Principal,
+                                  Depends(require_action("datasets.versoes.congelar"))]):
     return await svc.congelar(
         project_slug, dataset_slug, actor, descricao=body.descricao,
         split_method=body.split_method, val_ratio=body.val_ratio,

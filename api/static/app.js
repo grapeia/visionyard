@@ -8,11 +8,12 @@ import "./entrada.js";
 import "./dialogos.js";
 import "./roi.js";
 import "./bucket.js";
-import "./abas.js";
+import { mostrarAba } from "./abas.js";
 import "./anotador.js";
 import "./pool.js";
 import "./prelabel.js";
 import "./parametros.js";
+import "./permissoes.js";
 import "./usuarios.js";
 import { carregarDatasets } from "./datasets.js";
 import { carregarModelos, modelos } from "./modelos.js";
@@ -30,6 +31,11 @@ export async function iniciar() {
   $("abaBotaoDevices").hidden = !eu.is_superuser;
   $("abaBotaoUsuarios").hidden = !eu.is_superuser;
   $("abaBotaoParametros").hidden = !eu.is_superuser;
+  $("abaBotaoPermissoes").hidden = !eu.is_superuser;
+  estado.projeto = null; estado.permissoes = [];
+  const abaAtual = document.querySelector('#abas [aria-current="true"]')?.dataset.aba;
+  if (!eu.is_superuser && ["permissoes", "parametros", "usuarios", "devices"].includes(abaAtual))
+    mostrarAba("projeto");
   $("telaEntrada").hidden = true;
   $("telaApp").hidden = false;
 
@@ -80,7 +86,12 @@ $("seletorProjeto").addEventListener("change", async (ev) => {
 
 /** Classes e tipo do projeto: o painel de anotação precisa deles. */
 export async function carregarProjeto() {
-  const p = await api(`/projects/${estado.projeto}`);
+  estado.permissoes = [];
+  const slug = estado.projeto;
+  const p = await api(`/projects/${slug}`);
+  if (estado.projeto !== slug) return;
+  estado.permissoes = p.permissoes || [];
+  estado.papel = p.role;
   const classes = (p.schema || {}).classes || [];
   estado.classes = classes.map((c) => c.name);
   // `inside` é o índice da principal que recorta a classe (segmentação);

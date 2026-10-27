@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field
 
 from .. import auth
 from ..auth import Principal
-from ..deps import require_role
+from ..deps import require_action
 from ..services import prelabel as svc
 
 router = APIRouter(tags=["prelabel"])
@@ -52,7 +52,8 @@ class PrelabelsDescartados(BaseModel):
 async def enfileirar_prelabel(
         body: PrelabelIn, project_slug: Annotated[str, Path()],
         request: Request,
-        actor: Annotated[Principal, Depends(require_role("engineer"))]):
+        actor: Annotated[
+            Principal, Depends(require_action("rotulagem.prelabel.executar"))]):
     return await svc.enfileirar(
         project_slug, actor, model_slug=body.model_slug, version=body.version,
         alias=body.alias, dataset_slug=body.dataset_slug,
@@ -65,7 +66,8 @@ async def enfileirar_prelabel(
 async def descartar_prelabels(
         project_slug: Annotated[str, Path()],
         dataset_slug: Annotated[str, Path()], request: Request,
-        actor: Annotated[Principal, Depends(require_role("engineer"))]):
+        actor: Annotated[
+            Principal, Depends(require_action("datasets.prelabel.descartar"))]):
     """Remove os pré-tags rascunho das imagens deste dataset — de todos os
     autores. Só apaga saída de máquina não tocada (`origin='prelabel'` e
     `status='draft'`): anotação humana e pré-tag já corrigido (`correction`) ou

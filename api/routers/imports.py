@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field
 
 from .. import auth, worker
 from ..auth import Principal
-from ..deps import require_role
+from ..deps import require_action, require_role
 from ..services import imports as svc
 
 router = APIRouter(tags=["imports"])
@@ -110,7 +110,8 @@ class DetalheDeJob(BaseModel):
              response_model=Simulacao | ImportacaoEnfileirada)
 async def create_import(body: ImportIn, project_slug: Annotated[str, Path()],
                         request: Request,
-                        actor: Annotated[Principal, Depends(require_role("engineer"))],
+                        actor: Annotated[Principal,
+                                         Depends(require_action("datasets.origens.importar"))],
                         dry_run: bool = True):
     """Importa (ou simula) dados de uma origem para o projeto.
 

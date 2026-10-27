@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from .. import auth
 from ..auth import Principal
-from ..deps import require_role
+from ..deps import require_action, require_role
 from ..services import models as svc
 
 router = APIRouter(tags=["models"])
@@ -157,7 +157,8 @@ async def get_model(project_slug: Annotated[str, Path()],
 async def baixar_peso(project_slug: Annotated[str, Path()],
                       model_slug: Annotated[str, Path()], version: int,
                       request: Request,
-                      actor: Annotated[Principal, Depends(require_role("engineer"))]):
+                      actor: Annotated[Principal,
+                                       Depends(require_action("modelos.versoes.baixar"))]):
     """Redireciona para o `.pt` no bucket, por URL assinada de vida curta.
 
     Engenheiro para cima, como compilar e implantar: quem só visualiza vê as
@@ -191,7 +192,8 @@ class ExportIn(BaseModel):
 async def exportar(body: ExportIn, project_slug: Annotated[str, Path()],
                    model_slug: Annotated[str, Path()], version: int,
                    request: Request,
-                   actor: Annotated[Principal, Depends(require_role("engineer"))]):
+                   actor: Annotated[Principal,
+                                    Depends(require_action("modelos.versoes.exportar"))]):
     """Enfileira a compilação de uma versão para um formato implantável."""
     return await svc.enfileirar_export(
         project_slug, model_slug, version, actor, formato=body.format,
@@ -216,7 +218,8 @@ class EvaluateIn(BaseModel):
 async def avaliar(body: EvaluateIn, project_slug: Annotated[str, Path()],
                   model_slug: Annotated[str, Path()], version: int,
                   request: Request,
-                  actor: Annotated[Principal, Depends(require_role("engineer"))]):
+                  actor: Annotated[Principal,
+                                   Depends(require_action("modelos.versoes.avaliar"))]):
     """Enfileira a medição de um artefato (peso ou build) contra um benchmark."""
     return await svc.enfileirar_avaliacao(
         project_slug, model_slug, version, actor,
@@ -236,7 +239,8 @@ class DeployIn(BaseModel):
              status_code=status.HTTP_201_CREATED)
 async def implantar(body: DeployIn, project_slug: Annotated[str, Path()],
                     model_slug: Annotated[str, Path()], request: Request,
-                    actor: Annotated[Principal, Depends(require_role("engineer"))]):
+                    actor: Annotated[Principal,
+                                     Depends(require_action("modelos.implantacao.implantar"))]):
     """Marca um build para ser implantado num dispositivo."""
     return await svc.implantar(
         project_slug, model_slug, actor, version=body.version,
@@ -258,7 +262,8 @@ async def set_alias(project_slug: Annotated[str, Path()],
                     model_slug: Annotated[str, Path()],
                     alias: Annotated[str, Path()], body: AliasIn,
                     request: Request,
-                    actor: Annotated[Principal, Depends(require_role("engineer"))]):
+                    actor: Annotated[Principal,
+                                     Depends(require_action("modelos.versoes.promover"))]):
     """Aponta um apelido para uma versão (promover). A versão não muda."""
     return await svc.definir_alias(project_slug, model_slug, alias, body.version,
                                    actor, ip=auth.client_ip(request))
@@ -269,6 +274,7 @@ async def set_alias(project_slug: Annotated[str, Path()],
 async def remove_alias(project_slug: Annotated[str, Path()],
                        model_slug: Annotated[str, Path()],
                        alias: Annotated[str, Path()], request: Request,
-                       actor: Annotated[Principal, Depends(require_role("engineer"))]):
+                       actor: Annotated[Principal,
+                                        Depends(require_action("modelos.versoes.promover"))]):
     await svc.remover_alias(project_slug, model_slug, alias, actor,
                             ip=auth.client_ip(request))

@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field
 
 from .. import auth
 from ..auth import Principal
-from ..deps import CurrentUser, require_role
+from ..deps import CurrentUser, require_action, require_role
 from ..services import training as svc
 
 router = APIRouter(tags=["training"])
@@ -138,7 +138,8 @@ class RunCancelado(BaseModel):
              status_code=status.HTTP_201_CREATED)
 async def criar_run(body: RunIn, project_slug: Annotated[str, P()],
                     request: Request,
-                    actor: Annotated[Principal, Depends(require_role("engineer"))]):
+                    actor: Annotated[Principal,
+                                     Depends(require_action("treino.runs.criar"))]):
     return await svc.criar_run(
         project_slug, actor, dataset_slug=body.dataset_slug,
         version=body.version, experiment=body.experiment,
@@ -192,7 +193,8 @@ async def stream_run(project_slug: Annotated[str, P()],
 async def cancelar_run(project_slug: Annotated[str, P()],
                        run_id: Annotated[UUID, P()],
                        request: Request,
-                       actor: Annotated[Principal, Depends(require_role("engineer"))]):
+                       actor: Annotated[Principal,
+                                        Depends(require_action("treino.runs.cancelar"))]):
     """Pede cancelamento. Na fila cancela na hora; rodando, o agente para no
     próximo heartbeat."""
     return await svc.cancelar_run(project_slug, run_id, actor,
